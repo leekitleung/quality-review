@@ -286,16 +286,38 @@ function loadConfig() {
   try {
     if (existsSync(CONFIG_FILE)) {
       const content = readFileSync(CONFIG_FILE, 'utf-8');
-      // Simple YAML parser for our config
-      const config = {};
+      const config = {
+        verification: {},
+        gate: {},
+      };
       const lines = content.split('\n');
+      let currentSection = '';
+
       for (const line of lines) {
         const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('#') && trimmed.includes(':')) {
+        if (!trimmed || trimmed.startsWith('#')) continue;
+
+        // Section headers
+        if (trimmed.startsWith('verification:') || trimmed.startsWith('gate:')) {
+          currentSection = trimmed.replace(':', '').trim();
+          continue;
+        }
+
+        if (trimmed && trimmed.includes(':')) {
           const [key, ...valueParts] = trimmed.split(':');
           const value = valueParts.join(':').trim();
+
           if (value) {
-            config[key.trim()] = value.replace(/^["']|["']$/g, '');
+            const cleanValue = value.replace(/^["']|["']$/g, '');
+
+            // Map to correct section
+            if (currentSection === 'verification' || ['test', 'build', 'lint', 'typecheck', 'e2e', 'audit'].includes(key.trim())) {
+              config.verification[key.trim()] = cleanValue;
+            } else if (currentSection === 'gate' || ['min_score', 'fail_on_redlines', 'fail_on_p0_p1_blockers'].includes(key.trim())) {
+              config.gate[key.trim()] = cleanValue;
+            } else {
+              config[key.trim()] = cleanValue;
+            }
           }
         }
       }
@@ -304,7 +326,7 @@ function loadConfig() {
   } catch (e) {
     log.warn(`Could not load config: ${e.message}`);
   }
-  return {};
+  return { verification: {}, gate: {} };
 }
 
 // Load YAML profile configuration
@@ -696,7 +718,7 @@ function parseBlockers(blockerContent) {
 }
 
 // Collect evidence automatically
-function collectEvidence_() {
+function collectEvidence_(config) {
   log.info('Collecting evidence...');
 
   const evidence = {
@@ -733,14 +755,14 @@ function collectEvidence_() {
     // Ignore
   }
 
-  // Automated checks
-  evidence.automatedChecks = runAutomatedChecks();
+  // Automated checks with config
+  evidence.automatedChecks = runAutomatedChecks(config);
 
   return evidence;
 }
 
 // Run automated gate checks
-function runAutomatedChecks() {
+function runAutomatedChecks(config) {
   const checks = {
     oversizedFiles: { status: 'pass', issues: [] },
     circularDeps: { status: 'pass', issues: [] },
@@ -748,6 +770,11 @@ function runAutomatedChecks() {
     testGate: { status: 'unknown', output: '' },
     typecheckGate: { status: 'unknown', output: '' },
   };
+
+  // Get commands from config or use defaults
+  const testCmd = config?.verification?.test || 'pnpm test';
+  const typecheckCmd = config?.verification?.typecheck || 'pnpm typecheck';
+  const buildCmd = config?.verification?.build || 'pnpm build';
 
   // Check 1: Oversized files (>2000 lines)
   log.info('Checking for oversized files...');
@@ -820,9 +847,9 @@ function runAutomatedChecks() {
   }
 
   // Check 4: Test gate
-  log.info('Running test gate...');
+  log.info(`Running test gate: ${testCmd}`);
   try {
-    const testOutput = execSync('pnpm test 2>&1', { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 120000 });
+    const testOutput = execSync(`${testCmd} 2>&1`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 120000 });
     checks.testGate.status = 'pass';
     checks.testGate.output = 'Tests passed';
   } catch (e) {
@@ -831,9 +858,9 @@ function runAutomatedChecks() {
   }
 
   // Check 5: Typecheck gate
-  log.info('Running typecheck gate...');
+  log.info(`Running typecheck gate: ${typecheckCmd}`);
   try {
-    const typeOutput = execSync('pnpm typecheck 2>&1', { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 120000 });
+    const typeOutput = execSync(`${typecheckCmd} 2>&1`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 120000 });
     checks.typecheckGate.status = 'pass';
     checks.typecheckGate.output = 'Typecheck passed';
   } catch (e) {
@@ -1412,7 +1439,7 @@ async function runGate() {
   let evidence = null;
   if (collectEvidence) {
     try {
-      evidence = collectEvidence_();
+      evidence = collectEvidence_(config);
       log.success(`Evidence collected`);
     } catch (e) {
       log.warn(`Evidence collection failed: ${e.message}`);
@@ -1586,6 +1613,32 @@ async function runGate() {
       log.success('Goal mode constraint satisfied - all reviewers describe final state');
     } else {
       log.error(`${goalModeViolations.length} goal mode violations detected`);
+    }
+
+    // If goal-mode-validator.mjs exists, run it for detailed analysis
+    const goalModeValidatorScript = join(SKILL_DIR, 'scripts', 'goal-mode-validator.mjs');
+    if (existsSync(goalModeValidatorScript)) {
+      try {
+        const roundName = `round-${String(roundNumber).padStart(3, '0')}`;
+        log.info(`Running goal-mode-validator for detailed analysis...`);
+
+        const validatorOutput = execSync(
+          `node "${goalModeValidatorScript}" --round ${roundName}`,
+          { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 60000 }
+        );
+
+        // Save detailed report
+        const reportPath = join(roundDir, 'goal-mode-validation.md');
+        writeFileSync(reportPath, `# Goal Mode Validation\n\n${validatorOutput}\n`);
+        log.info(`Detailed report: ${reportPath}`);
+      } catch (e) {
+        // Validator exits 1 on violations - expected behavior
+        if (e.stdout) {
+          const reportPath = join(roundDir, 'goal-mode-validation.md');
+          writeFileSync(reportPath, `# Goal Mode Validation\n\n${e.stdout}\n`);
+          log.info(`Detailed report: ${reportPath}`);
+        }
+      }
     }
   }
 

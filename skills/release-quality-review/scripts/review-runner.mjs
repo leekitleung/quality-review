@@ -60,6 +60,7 @@ let targetDir = null; // Override target directory for self-review
 let autoGenerate = false; // Auto-generate review files (for self-review)
 let autoLoop = false; // Auto-loop until gate passes
 let maxLoops = 10; // Maximum iterations before giving up
+let checkGoalMode = false; // Goal 模式约束：强制描述最终状态而非实现步骤
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -77,6 +78,7 @@ for (let i = 0; i < args.length; i++) {
   else if (arg === '--auto') autoGenerate = true;
   else if (arg === '--auto-loop') autoLoop = true;
   else if (arg === '--max-loops' && args[i + 1]) maxLoops = parseInt(args[++i], 10);
+  else if (arg === '--check-goal-mode') checkGoalMode = true;
   else if (arg === '--help' || arg === '-h') {
     printHelp();
     process.exit(0);
@@ -104,6 +106,7 @@ Options:
   --auto             Auto-generate review files (for self-review)
   --skip-evidence    Skip automatic evidence collection
   --dry-run          Validate configuration without running
+  --check-goal-mode  Enable goal mode constraint check
   --help, -h         Show this help
 
 Examples:
@@ -111,6 +114,7 @@ Examples:
   node review-runner.mjs --profile default --parallel
   node review-runner.mjs --reviewer destructive-qa --dry-run
   node review-runner.mjs --target skills/release-quality-review --profile quick --auto  # Self-review
+  node review-runner.mjs --check-goal-mode --auto-loop  # Run with goal mode validation
   `);
 }
 
@@ -227,11 +231,15 @@ function loadReviewer(name) {
   return readFileSync(path, 'utf-8');
 }
 
-// Collect evidence
-function collectEvidence() {
+// Collect evidence with config
+function collectEvidence(config) {
   log.info('Collecting evidence...');
   const isSelfReview = REVIEW_TARGET !== PROJECT_ROOT;
   const targetName = isSelfReview ? 'Skill Self-Review' : 'Project';
+
+  // Get commands from config or use defaults
+  const testCmd = config?.verification?.test || 'pnpm test';
+  const typecheckCmd = config?.verification?.typecheck || 'pnpm typecheck';
 
   const evidence = {
     timestamp: new Date().toISOString(),
@@ -342,7 +350,8 @@ function collectEvidence() {
   if (!isSelfReview && REVIEW_TARGET === PROJECT_ROOT) {
     try {
       // Run tests
-      const testOutput = execSync('pnpm test 2>&1', {
+      log.info(`Running: ${testCmd}`);
+      const testOutput = execSync(`${testCmd} 2>&1`, {
         encoding: 'utf-8',
         timeout: 120000,
         cwd: PROJECT_ROOT
@@ -364,7 +373,8 @@ function collectEvidence() {
 
     try {
       // Run typecheck
-      const typeOutput = execSync('pnpm typecheck 2>&1', {
+      log.info(`Running: ${typecheckCmd}`);
+      const typeOutput = execSync(`${typecheckCmd} 2>&1`, {
         encoding: 'utf-8',
         timeout: 60000,
         cwd: PROJECT_ROOT
@@ -563,14 +573,37 @@ function loadConfig() {
   try {
     if (existsSync(CONFIG_FILE)) {
       const content = readFileSync(CONFIG_FILE, 'utf-8');
-      const config = {};
+      const config = {
+        verification: {},
+        gate: {},
+      };
+      let currentSection = '';
+
       for (const line of content.split('\n')) {
         const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith('#') && trimmed.includes(':')) {
+        if (!trimmed || trimmed.startsWith('#')) continue;
+
+        // Section headers
+        if (trimmed.startsWith('verification:') || trimmed.startsWith('gate:')) {
+          currentSection = trimmed.replace(':', '').trim();
+          continue;
+        }
+
+        if (trimmed && trimmed.includes(':')) {
           const [key, ...valueParts] = trimmed.split(':');
           const value = valueParts.join(':').trim();
+
           if (value && !key.includes('-')) {
-            config[key.trim()] = value.replace(/^["']|["']$/g, '');
+            const cleanValue = value.replace(/^["']|["']$/g, '');
+
+            // Map to correct section
+            if (currentSection === 'verification' || ['test', 'build', 'lint', 'typecheck', 'e2e', 'audit'].includes(key.trim())) {
+              config.verification[key.trim()] = cleanValue;
+            } else if (currentSection === 'gate' || ['min_score', 'fail_on_redlines', 'fail_on_p0_p1_blockers'].includes(key.trim())) {
+              config.gate[key.trim()] = cleanValue;
+            } else {
+              config[key.trim()] = cleanValue;
+            }
           }
         }
       }
@@ -579,7 +612,7 @@ function loadConfig() {
   } catch (e) {
     // Ignore
   }
-  return {};
+  return { verification: {}, gate: {} };
 }
 
 // Generate reviewer prompt
@@ -1332,7 +1365,9 @@ function runGateCheck(roundDir, profileName, round) {
     const gateScript = join(SKILL_DIR, 'scripts', 'review-gate.mjs');
     if (existsSync(gateScript)) {
       const roundName = `round-${String(round).padStart(3, '0')}`;
-      execSync(`node "${gateScript}" --profile ${profileName} --round ${roundName}`, {
+      const goalModeFlag = checkGoalMode ? '--check-goal-mode' : '';
+      const cmd = `node "${gateScript}" --profile ${profileName} --round ${roundName} ${goalModeFlag}`.trim();
+      execSync(cmd, {
         stdio: 'inherit',
         cwd: PROJECT_ROOT,
       });
@@ -1529,8 +1564,9 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     return { roundDir, evidence: {}, allReviewers: [], results: [] };
   }
 
-  // Collect evidence
-  const evidence = skipEvidence ? { timestamp: new Date().toISOString(), git: {}, structure: {} } : collectEvidence();
+  // Collect evidence with config
+  const config = loadConfig();
+  const evidence = skipEvidence ? { timestamp: new Date().toISOString(), git: {}, structure: {} } : collectEvidence(config);
 
   // Detect change scale (right-size throttle)
   const scaleInfo = detectChangeScale(evidence);
