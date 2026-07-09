@@ -1,0 +1,22 @@
+node_modules/
+.DS_Store
+apps/extension/dist/
+.cli-bridge-data/
+*.cli-bridge-runtime/
+
+# WorkBuddy agent state (memory, session files) — local only
+.workbuddy/
+
+# Local reference docs — not part of the codebase
+docs/参考/
+
+# Test/playwright/CDP runtime output — never tracked
+output/
+
+# Kiro spec files — local design scratchpad, not part of the repo
+.kiro/
+
+# Local operator launcher config (may reference real workspace roots; tokens via env only)
+scripts/local-config.json
+scripts/local-config.*.json
+!scripts/local-config.example.json

@@ -1,0 +1,63 @@
+# Default Profile - 标准 PR 评审
+
+## 适用场景
+- PR 合并前审查
+- 日常代码审查
+- 功能完成后的小优化
+
+## 评审配置
+
+```yaml
+profile: default
+description: 标准 PR 评审 - 轻量级
+estimated_time: "~10 分钟"
+
+# 常驻 Reviewers (2个核心)
+resident_reviewers:
+  - product-flow          # 功能完整度、用户路径闭环
+  - destructive-qa        # 安全、数据、异常路径
+
+# 条件触发 Reviewers (按需)
+conditional_reviewers:
+  - terminal-veteran     # 有 CLI/本地服务时
+  - architecture-maintainer  # 有架构变更时
+
+# 通过条件
+gate:
+  min_score: 90
+  fail_on_redlines: true
+  fail_on_p0_p1_blockers: true
+
+# 输出
+output:
+  verbose: true
+  include_evidence: true
+```
+
+## 评审器详情
+
+### product-flow (常驻)
+- **权重**: 50%
+- **重点**: 功能完成度、用户路径闭环
+- **必须**: 实际运行证据
+
+### destructive-qa (常驻)
+- **权重**: 50%
+- **重点**: 安全漏洞、异常路径、边界破坏
+- **必须**: OWASP Top 10 检查
+
+### terminal-veteran (条件触发)
+- **权重**: 25%
+- **触发条件**: 变更文件匹配 `**/cli/**`, `**/local-server/**`, `**/scripts/**`
+- **重点**: 命令设计、错误处理、日志质量
+
+### architecture-maintainer (条件触发)
+- **触发条件**: 变更涉及 `**/routes/**`, `**/storage/**`, `**/execution/**`
+- **权重**: 25%
+- **重点**: 模块职责、SRP/OCP、状态管理
+
+## 不包含
+- release-verifier (发布验收 - 使用 release-gate profile)
+- native-designer (UI 检查 - 使用 full profile)
+- data-security (深度数据安全 - 使用 full profile)
+- zero-doc-user (文档完整性 - 使用 full profile)

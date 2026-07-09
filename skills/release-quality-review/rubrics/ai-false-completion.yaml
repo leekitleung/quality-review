@@ -1,0 +1,176 @@
+# AI False Completion Rubric
+
+AI Agent 特有的伪完成检测规则。
+
+## Overview
+
+检测 AI Agent 执行中的典型伪完成模式。这些模式在人类代码交付中较少见，但在 AI Agent 交付中非常普遍。
+
+## Detection Dimensions
+
+### 1. Over-Explanation / Low-Diff Completion
+
+**问题**: 声称完成很多，但实际 diff 很小。
+
+**典型信号**:
+- changes.md 超长，但 diff 只有几行
+- 大量解释"为什么这样做"，但实际改了什么很少
+- 没有新增测试
+- 没有触达关键文件
+- 使用"应该""理论上""现在可以"替代证据
+
+**检测规则**:
+```yaml
+detection:
+  signal: "changes.md 长度 / diff 行数 > 10:1"
+  threshold:
+    high_risk: ratio > 20
+    medium_risk: ratio > 10
+    low_risk: ratio > 5
+```
+
+**门禁**: 高风险标记，需要额外证据
+
+---
+
+### 2. Circular Justification
+
+**问题**: 结论依赖自身声明，没有独立证据。
+
+**典型模式**:
+```text
+"我已经完成，因为我实现了目标。"
+"目标已经实现，因为我已经完成。"
+"代码存在 = 功能正确"
+"没有报错 = 实现正确"
+```
+
+**检测规则**:
+```yaml
+detection:
+  patterns:
+    - "因为.*所以.*"
+    - "已经.*因为.*已经"
+    - "没有.*错误.*正确"
+  require_external_evidence: true
+```
+
+**门禁**: 证据不足，claim 必须有外部支撑
+
+---
+
+### 3. Success Transferred
+
+**问题**: 把历史能力归到本次交付。
+
+**典型信号**:
+- 本次只改了少量 glue code
+- 总结里把已有能力都归功于本次
+- claim 中的能力在 diff 中找不到
+- "已支持 X" 实际是之前就支持
+
+**检测规则**:
+```yaml
+detection:
+  check: "claim 必须映射到本次 diff"
+  mapping_required:
+    - claim
+    - diff_files
+    - evidence_ref
+  signal: "claim 中的能力没有对应本次 diff"
+```
+
+**门禁**: 硬规则 - claim 必须有 diff 映射
+
+---
+
+### 4. Test Substitute
+
+**问题**: 没有真实测试，只有占位或跳过。
+
+**典型模式**:
+```text
+"可通过测试验证"
+"应该不会影响"
+只运行了无关测试，却宣称全局通过
+测试被 skip > 50%
+```
+
+**检测规则**:
+```yaml
+detection:
+  required_fields:
+    - command
+    - exit_code
+    - output_summary
+  forbidden_patterns:
+    - "可通过.*验证"
+    - "应该.*不会.*影响"
+  check:
+    - test_command_exists
+    - test_related_to_changes
+    - no_excessive_skip
+```
+
+**门禁**: 证据必须包含命令+结果+退出码
+
+---
+
+### 5. Scope Evaporation
+
+**问题**: 原 goal 要解决 A+B+C，实际只解决 A，声称整体完成。
+
+**典型信号**:
+- acceptance criterion 被遗漏
+- 声称 PASS 但部分 criteria 未达成
+- 模糊处理 B/C，只强调 A
+
+**检测规则**:
+```yaml
+detection:
+  check:
+    - "所有 acceptance criteria 都有对应 verdict"
+    - "PARTIAL 状态是否正确标注"
+    - "遗漏的 criteria 是否有 defer 说明"
+  signal: "criteria 未全部达成但 verdict = PASS"
+```
+
+**门禁**: 遗漏的 criteria 必须标注为 PARTIAL 或有 defer 说明
+
+---
+
+## Red Lines (Immediate Fail)
+
+```yaml
+immediate_fail:
+  - claim_without_current_diff_mapping     # claim 找不到本次 diff
+  - test_declaration_without_command       # 测试声明但没有命令
+  - circular_completion_self_justification  # 循环自证无外部证据
+  - acceptance_criteria_unmet_pass         # criteria 未达成但 PASS
+  - forbidden_scope_modified               # 修改了禁止范围
+  - p0_unresolved                        # P0 未关闭
+```
+
+---
+
+## Scoring
+
+```
+Score = 100 - Σ(Penalty Points)
+
+Penalty Points:
+- Over-Explanation: -15 (high), -10 (medium)
+- Circular Justification: -25 (无外部证据)
+- Success Transferred: -20
+- Test Substitute: -15 (无命令), -10 (占位)
+- Scope Evaporation: -15
+```
+
+---
+
+## Integration
+
+此 rubric 配合:
+- `evidence-integrity.md` - 验证证据真实性
+- `goal-compliance.md` - 验证 goal 质量
+- `delivery-packet.schema.yaml` - 验证 packet 完整性

@@ -1,0 +1,119 @@
+# Release Gate Profile - 发布门禁 ⭐推荐
+
+## 适用场景
+- 发布前必须通过
+- 合并到 main/release 分支
+- 版本发布
+
+## 评审配置
+
+```yaml
+profile: release-gate
+description: 发布门禁 - 必须通过才能发布
+estimated_time: "~30 分钟"
+
+# 常驻 Reviewers (4个核心角色)
+resident_reviewers:
+  - product-flow            # 功能完成度、用户路径闭环
+  - architecture-maintainer # 模块职责、代码结构
+  - release-verifier        # 测试覆盖、构建可复现
+  - destructive-qa          # 安全、异常路径、权限
+
+# 条件触发 Reviewers (按变更类型激活)
+conditional_reviewers:
+  - terminal-veteran    # 有 CLI/本地服务时 - 权重 20%
+  - native-designer     # 有 UI 变更时 - 权重 20%
+  - data-security       # 有 token/auth 变更时 - 权重 20%
+  - zero-doc-user       # 有文档变更时 - 权重 20%
+
+# 触发条件定义
+trigger_conditions:
+  terminal-veteran:
+    files: ['**/cli/**', '**/local-server/**', '**/scripts/**']
+  native-designer:
+    files: ['**/*.tsx', '**/*.jsx', '**/*.css', '**/ui/**']
+  data-security:
+    files: ['**/auth/**', '**/storage/**']
+    patterns: ['token', 'secret', 'password', 'api-key']
+  zero-doc-user:
+    files: ['**/README.md', '**/docs/**', '**/*.md']
+    conditions: ['new-feature', 'onboarding']
+
+# 通过条件
+gate:
+  min_score: 90
+  fail_on_redlines: true
+  fail_on_p0_p1_blockers: true
+  require_all_resident: true
+  max_rounds: 5
+
+# 输出
+output:
+  verbose: true
+  include_evidence: true
+  generate_final_report: true
+```
+
+## 评审器详情
+
+### product-flow (常驻)
+- **权重**: 25%
+- **重点**: 功能完成度、用户路径闭环、状态处理
+- **必须**: 实际运行证据
+
+### architecture-maintainer (常驻)
+- **权重**: 25%
+- **重点**: 模块职责、SRP/OCP、状态管理
+- **必须**: 代码结构分析
+
+### release-verifier (常驻)
+- **权重**: 25%
+- **重点**: 测试覆盖、构建可复现、发布验证
+- **必须**: `pnpm test`, `pnpm build` 通过
+
+### destructive-qa (常驻)
+- **权重**: 25%
+- **重点**: 安全、异常路径、权限、边界破坏
+- **必须**: OWASP Top 10 + 实际安全检查
+
+### terminal-veteran (条件触发)
+- **触发条件**: 变更文件匹配 `**/cli/**`, `**/local-server/**`, `**/scripts/**`
+- **权重**: 20%
+- **重点**: 命令设计、错误处理、日志质量
+
+### native-designer (条件触发)
+- **触发条件**: 变更文件匹配 `**/*.tsx`, `**/*.jsx`, `**/*.css`, `**/ui/**`
+- **权重**: 20%
+- **重点**: 视觉层级、间距系统、色彩克制、状态反馈
+
+### data-security (条件触发)
+- **触发条件**: 变更文件匹配 `**/auth/**`, `**/storage/**`, diff 包含 token/secret/password
+- **权重**: 20%
+- **重点**: 数据加密、传输安全、隐私合规
+
+### zero-doc-user (条件触发)
+- **触发条件**: 变更涉及 README、docs、onboarding 文档
+- **权重**: 20%
+- **重点**: 首次使用体验、文档清晰度、可发现性
+
+## 发布检查清单
+
+- [ ] 所有常驻 Reviewer >= 90
+- [ ] 无 P0/P1 红线
+- [ ] `pnpm test` 通过
+- [ ] `pnpm build` 通过
+- [ ] `pnpm typecheck` 通过
+- [ ] 条件触发 Reviewer (如有) >= 90
+- [ ] 变更日志已更新
+- [ ] 版本号已更新
+
+## 评审轮次规则
+
+1. **Round 1**: 运行所有 reviewer，识别 blockers
+2. **Round N**: 只运行：
+   - 上轮未通过的 reviewer
+   - 与本轮修复区域相关的 reviewer
+   - destructive-qa 做 sanity check
+   - release-verifier 做最终 gate
+3. **Max Rounds**: 5（超过需要手动介入）
+4. **Score Delta**: 如果某 reviewer 分数下降 >10 分，需要调查

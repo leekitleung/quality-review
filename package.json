@@ -1,0 +1,48 @@
+{
+  "name": "cli-bridge",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "start": "node --experimental-strip-types scripts/start.ts",
+    "dev": "tsx watch --tsconfig apps/local-server/tsconfig.json apps/local-server/src/server.ts",
+    "dev:configured": "tsx watch --tsconfig apps/local-server/tsconfig.json scripts/start-local-configured.ts",
+    "web-auto:e2e": "node --experimental-strip-types scripts/web-auto-release-e2e.ts",
+    "dual-endpoint:e2e": "node --experimental-strip-types scripts/dual-endpoint-release-e2e.ts",
+    "build-extension": "node ./scripts/build-extension.mjs",
+    "lint": "node ./scripts/lint.mjs",
+    "lint:eslint": "eslint apps packages --ext .ts,.tsx,.js,.mjs",
+    "format": "prettier --write \"{apps,packages,scripts}/**/*.{ts,tsx,js,mjs}\"",
+    "format:check": "prettier --check \"{apps,packages,scripts}/**/*.{ts,tsx,js,mjs}\"",
+    "remote-review-gate": "node ./scripts/remote-review-gate.mjs --pretty",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --test tests/unit/*.test.ts tests/e2e/goal-loop-integration.test.ts",
+    "start:local-server": "node --experimental-strip-types apps/local-server/src/server.ts",
+    "start:local-server:configured": "node --experimental-strip-types scripts/start-local-configured.ts",
+    "review": "node --experimental-strip-types apps/local-server/src/cli/review.ts",
+    "skill:check": "node --experimental-strip-types scripts/sync-skills.ts check",
+    "skill:install": "node --experimental-strip-types scripts/sync-skills.ts install",
+    "skill:verify": "node --experimental-strip-types scripts/sync-skills.ts verify",
+    "skill:diff": "node --experimental-strip-types scripts/sync-skills.ts diff",
+    "skill:update": "node --experimental-strip-types scripts/sync-skills.ts update",
+    "skill:gate": "node skills/release-quality-review/scripts/review-gate.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.13.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "esbuild": "^0.28.0",
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.7.0",
+    "js-yaml": "^5.2.1",
+    "jsdom": "^29.1.1",
+    "prettier": "^3.9.4",
+    "tsx": "^4.23.0",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.62.1"
+  }
+}

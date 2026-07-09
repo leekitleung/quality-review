@@ -1,0 +1,172 @@
+# Release Quality Review Configuration
+# 项目级评审配置 - 支持常驻 4 角色 + 条件触发 Reviewer 设计
+
+# ============================================================
+# 项目基本信息
+# ============================================================
+project:
+  name: cli-bridge
+  type: browser-extension + local-server
+  description: Claude Code / Codex 与 ChatGPT Web 的桥接工具
+  repository: https://github.com/example/cli-bridge
+
+# ============================================================
+# 默认 Profile
+# ============================================================
+default_profile: release-gate
+
+# 评审报告目录
+reports_dir: quality-reports
+
+# ============================================================
+# Reviewer 配置 - 核心架构
+#
+# 设计原则：
+# - 常驻 Reviewer: 每次评审必运行
+# - 条件触发 Reviewer: 根据变更内容自动检测是否启用
+# ============================================================
+reviewers:
+  # 常驻 Reviewer (4个核心角色，每次评审必运行)
+  resident:
+    - product-flow        # 产品闭环审查官
+    - architecture-maintainer  # 工程架构审查官
+    - release-verifier    # 验收发布审查官
+    - destructive-qa      # 破坏性质量官
+
+  # 条件触发 Reviewer (按需启用)
+  conditional:
+    - name: native-designer
+      trigger:
+        changed_files_match:
+          - "**/*.css"
+          - "**/*.tsx"
+          - "**/*.jsx"
+          - "**/ui/**"
+          - "**/components/**"
+        evidence_has:
+          - screenshots
+          - design-files
+
+    - name: terminal-veteran
+      trigger:
+        changed_files_match:
+          - "**/cli/**"
+          - "**/scripts/**"
+          - "**/local-server/**"
+          - "**/command-backend.ts"
+          - "**/contained-process.ts"
+        has_commands:
+          - true
+
+    - name: data-security
+      trigger:
+        changed_files_match:
+          - "**/auth/**"
+          - "**/storage/**"
+          - "**/security/**"
+          - "**/pairing.ts"
+          - "**/token*.ts"
+        diff_contains:
+          - "token"
+          - "secret"
+          - "password"
+          - "key"
+          - "credential"
+          - "auth"
+
+    - name: zero-doc-user
+      trigger:
+        changed_files_match:
+          - "**/README.md"
+          - "**/docs/**"
+          - "**/package.json"
+        is_first_use: true
+
+# ============================================================
+# 通过条件 (Gate Rules)
+# ============================================================
+gate:
+  min_score: 90              # 最低通过分数
+  fail_on_redlines: true     # 红线是否阻塞
+  fail_on_p0_p1_blockers: true  # P0/P1 是否阻塞
+  require_all_reviewers: false  # 是否要求所有 reviewer 完成
+  max_rounds: 10             # 最大评审轮次
+
+# ============================================================
+# 验证命令 (用于 release-verifier)
+# ============================================================
+verification:
+  test: "pnpm test"
+  build: "pnpm build"
+  lint: "pnpm lint"
+  typecheck: "pnpm typecheck"
+  e2e: "pnpm test:e2e"
+  audit: "npm audit --production 2>/dev/null || true"
+
+# ============================================================
+# 证据收集 (自动收集的证据)
+# ============================================================
+evidence:
+  auto_collect:
+    - git_diff          # 变更内容
+    - git_status        # 工作区状态
+    - git_log           # 最近提交
+    - package_json      # 依赖信息
+    - package_lock_json # 锁文件
+  require_optional:
+    - screenshots       # UI 项目需要
+    - test_logs         # 发布前需要
+    - build_logs        # 发布前需要
+  output_dir: "quality-reports/round-{N}/evidence"
+
+# ============================================================
+# 输出格式
+# ============================================================
+output:
+  format: markdown
+  include_timestamps: true
+  include_git_info: true
+  include_correlation_id: true
+
+# ============================================================
+# 评分校准 (帮助保持评分一致性)
+# ============================================================
+calibration:
+  high_score_criteria:
+    - "有实际运行证据 (截图、日志、测试输出)"
+    - "引用了具体代码位置 (file:line)"
+    - "问题有明确的修复建议"
+    - "分析了权衡和替代方案"
+  low_score_criteria:
+    - "主路径不可用"
+    - "有安全隐患"
+    - "有未处理的错误"
+    - "缺少必要证据"
+
+# ============================================================
+# 通知配置
+# ============================================================
+notifications:
+  on_pass: "生成 final-report.md"
+  on_fail: "输出 blockers 到 summary.md"
+  on_redline: "阻塞发布流程"
+  on_round_complete: "总结本轮评审结果"
+
+# ============================================================
+# 多 Agent 支持配置
+# ============================================================
+multi_agent:
+  enabled: true
+  # Claude Code subagent 配置
+  claude_code:
+    use_subagents: true
+    subagent_instructions_dir: ".claude/agents"
+    max_concurrent: 4
+  # Codex 配置
+  codex:
+    use_subagents: true
+    agents_md_ref: "AGENTS.md"
+    max_concurrent: 4
+  # 通用配置
+  parallel_execution: true
+  result_aggregation: "merge"

@@ -1,0 +1,97 @@
+# Goal Compliance Rubric (Goal 合规标准)
+
+## Purpose
+
+定义什么是合格的 Goal 指令，用于审查执行前的目标质量。
+
+## Core Definition
+
+### 合格 Goal 的特征
+
+1. **描述最终状态**: "X 必须达到 Y"，而不是 "先做 X，再做 Y"
+2. **可独立验证**: 任何执行者都能判断目标是否达成
+3. **有明确边界**: 清楚定义范围内和范围外
+4. **可量化标准**: 有客观的测量方式
+5. **无流程词**: 不包含 "第一步"/"然后"/"接下来"
+
+### 不合格 Goal 的特征
+
+```yaml
+不合格_goal:
+  - "优化代码质量"              # 无法验证
+  - "先实现登录功能"            # 包含流程词
+  - "让用户体验更好"           # 主观判断
+  - "重构这个模块"              # 无边界
+  - "修复所有 bug"             # 无范围
+```
+
+## Anti-Patterns
+
+### P1 Patterns (严重)
+
+| Pattern | Example | Fix |
+|---------|---------|-----|
+| Step-by-Step | "第一步: X, 第二步: Y" | "X 和 Y 都必须完成" |
+| Vague | "优化 X" | "X 的 Y 指标必须 > N" |
+| Unverifiable | "代码要好看" | "lint 必须通过" |
+
+### P2 Patterns (中等)
+
+| Pattern | Example | Fix |
+|---------|---------|-----|
+| Infinite | "所有 X 都必须处理" | "以下 X 必须处理: [列表]" |
+| Self-Reference | "我需要你实现 X" | "X 必须实现" |
+| Tool-Prescribed | "用 React 实现 X" | "X 必须可交互" |
+
+## Compliance Checklist
+
+### Must Have (必须项)
+
+- [ ] 描述最终状态，不是过程
+- [ ] 包含可验证的标准
+- [ ] 定义成功和失败条件
+- [ ] 无 "第一步"/"然后"/"接下来"
+- [ ] 无主观描述词
+
+### Should Have (应该项)
+
+- [ ] 明确标注范围边界
+- [ ] 列出依赖条件
+- [ ] 标注优先级
+- [ ] 列出风险假设
+
+### Can Have (可选项)
+
+- [ ] 参考实现提示
+- [ ] 备选方案说明
+- [ ] 已知限制
+
+## Red Lines
+
+```yaml
+immediate_fail:
+  - 目标包含步骤描述 (R-GC-01)
+  - 目标无法被独立验证 (R-GC-02)
+  - 目标互相冲突 (R-GC-03)
+```
+
+## Score Calculation
+
+```
+Score = 100 - Σ(Penalty Points)
+
+Penalty Points:
+- P1 反模式: -15/项
+- P2 反模式: -5/项
+- 缺少 Must Have 项: -10/项
+- 缺少 Should Have 项: -3/项
+```
+
+## Score Interpretation
+
+| Score | Interpretation | Action |
+|-------|---------------|--------|
+| 90-100 | 优秀 Goal | 可以直接执行 |
+| 85-89 | 合格 Goal | 有小问题，可执行 |
+| 70-84 | 需优化 Goal | 需要补充或修改 |
+| < 70 | 不合格 Goal | 必须重新定义 |

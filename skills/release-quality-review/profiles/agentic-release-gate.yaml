@@ -1,0 +1,214 @@
+# Agentic Release Gate Profile - Agentic 评审门禁
+
+> 用于 XLarge 规模变更的强制对抗性审查。专门检测 AI 执行者的伪完成、证据伪造、范围蔓延等问题。
+
+## 适用场景
+
+- 50+ 文件或 2000+ 行的重大变更
+- AI Agent 执行的自主任务
+- 架构重构
+- 多模块联动变更
+
+## 与 Full Profile 的区别
+
+| 特性 | Full Profile | Agentic Release Gate |
+|------|-------------|---------------------|
+| 目标 | 人工代码评审 | 检测 AI 伪完成 |
+| 额外审查器 | 可选 4 个 | 强制 4 个对抗性审查器 |
+| 证据要求 | 基本证据 | 完整证据链 + 时间戳验证 |
+| 目标合规 | 可选 | 强制检查 |
+| 交接完整性 | 可选 | 强制检查 |
+
+## 评审配置
+
+```yaml
+profile: agentic-release-gate
+description: Agentic 评审门禁 - XLarge 规模强制使用
+estimated_time: "~90 分钟"
+
+# 常驻 Reviewers (4 个核心角色)
+resident_reviewers:
+  - product-flow
+  - architecture-maintainer
+  - release-verifier
+  - destructive-qa
+
+# 条件触发 Reviewers (按变更类型)
+conditional_reviewers:
+  - native-designer      # 有 UI 变更时
+  - zero-doc-user       # 始终检查
+  - terminal-veteran    # 有 CLI/本地服务时
+  - data-security      # 有 token/auth 变更时
+
+# 对抗性审查器 (XLarge 规模强制启用)
+adversarial_reviewers:
+  - adversarial-completion    # 伪完成检测
+  - evidence-integrity        # 证据完整性
+  - goal-compliance          # Goal 合规性
+  - handoff-integrity        # 交接完整性
+
+# 通过条件
+gate:
+  min_score: 85              # 对抗性审查器最低 85 分
+  fail_on_redlines: true
+  fail_on_p0_p1_blockers: true
+  require_all_reviewers: true
+  require_adversarial: true   # 必须包含对抗性审查
+  max_rounds: 2              # 对抗性审查更严格
+
+# 证据要求
+evidence:
+  required_for_all:
+    - build_output
+    - test_output
+    - typecheck_output
+  required_for_adversarial:
+    - git_diff
+    - timestamp_verification
+    - cross_round_consistency
+  min_evidence_per_reviewer: 3
+
+# 输出
+output:
+  verbose: true
+  include_evidence: true
+  include_detailed_analysis: true
+  include_adversarial_report: true
+  generate_final_report: true
+  generate_recommendations: true
+  include_timeline: true
+```
+
+## 对抗性审查器详解
+
+### 1. adversarial-completion (对抗性完成度)
+
+**职责**: 检测 AI 执行者的伪完成
+
+**检测内容**:
+- Happy Path Only: 只修复正常流程，忽略边界/异常
+- Selective Testing: 只测"改了什么"，不测"可能影响什么"
+- Documentation Skipped: 改了功能但没更新文档
+- Scope Creep: 交付范围与原始目标偏离
+
+**必须证据**:
+- git diff 完整输出
+- 新增代码的错误处理覆盖率
+- 回归测试存在证明
+
+### 2. evidence-integrity (证据完整性)
+
+**职责**: 验证证据真实性
+
+**检测内容**:
+- Evidence Presence: 是否提供了必要证据
+- Evidence Authenticity: 证据是否真实可验证
+- Timestamp Consistency: 证据时间戳是否一致
+- Cross-Round Consistency: 多轮评审证据是否一致
+
+**必须证据**:
+- 各证据文件的实际内容
+- 命令执行的实际输出（非截断）
+- 证据与声明的匹配度
+
+### 3. goal-compliance (Goal 合规性)
+
+**职责**: 验证 Goal 定义质量
+
+**检测内容**:
+- Goal Definition Quality: goal 是否正确定义目标状态
+- Anti-Pattern Detection: 是否包含常见反模式
+- Verifiability: goal 是否可独立验证
+
+**必须证据**:
+- 原始 goal 文件内容
+- goal 与实际交付的对比
+
+### 4. handoff-integrity (交接完整性)
+
+**职责**: 验证交接给下一个 Agent 的完整性
+
+**检测内容**:
+- Artifact Completeness: 交付物是否完整
+- Context Preservation: 上下文是否完整传递
+- Next-Step Clarity: 下一步是否清晰
+
+**必须证据**:
+- 交付物清单
+- 上下文文件完整性
+
+## 通过条件
+
+### 必须全部满足
+
+1. **基本门禁** (所有 Profile)
+   - [ ] 所有常驻 reviewers >= 85
+   - [ ] 无 P0 redlines
+
+2. **对抗性门禁** (Agentic 独有)
+   - [ ] adversarial-completion >= 85
+   - [ ] evidence-integrity >= 85
+   - [ ] goal-compliance >= 85
+   - [ ] handoff-integrity >= 85
+
+3. **证据链门禁**
+   - [ ] 每个 reviewer 至少 3 个证据文件
+   - [ ] 证据时间戳在评审时间范围内
+   - [ ] 跨轮次证据一致
+
+4. **时间门禁**
+   - [ ] 总评审时间 <= 90 分钟
+   - [ ] 单轮时间 <= 45 分钟
+
+## 降级条件
+
+如果以下条件全部满足，可以降级为 release-gate:
+
+- [ ] 变更规模为 Large (而非 XLarge)
+- [ ] 变更由人工发起（非 AI Agent）
+- [ ] 变更不涉及核心架构
+- [ ] 有明确的 goal 定义
+
+## 使用方法
+
+```bash
+# 显式使用 agentic-release-gate
+node review-gate.mjs --profile agentic-release-gate
+
+# 或通过规模检测自动选择
+node review-gate.mjs --detect-scale
+# 输出: Scale: xlarge → Suggested Profile: agentic-release-gate
+
+# 强制使用 (即使规模不够)
+node review-gate.mjs --profile agentic-release-gate --force
+```
+
+## 输出文件
+
+```
+quality-reports/round-001/
+├── summary.md                    # 汇总报告
+├── metadata.json                 # 元数据（含规模信息）
+├── phase-1-plan.md              # 阶段计划
+├── phase-1-result.md            # 阶段结果
+├── adversarial-completion/
+│   ├── score.md
+│   ├── blockers.md
+│   ├── improvement-list.md
+│   └── result.yaml
+├── evidence-integrity/
+│   ├── score.md
+│   ├── blockers.md
+│   ├── improvement-list.md
+│   └── result.yaml
+├── goal-compliance/
+│   ├── score.md
+│   ├── blockers.md
+│   ├── improvement-list.md
+│   └── result.yaml
+└── handoff-integrity/
+    ├── score.md
+    ├── blockers.md
+    ├── improvement-list.md
+    └── result.yaml
+```

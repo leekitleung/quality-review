@@ -1,0 +1,113 @@
+# Project Quality Optimization Profile
+
+Used for optimizing overall project quality after passing release-quality-review gate.
+
+## Optimization Dimensions
+
+These dimensions can be targeted in experiments:
+
+| Dimension | Description | Metrics |
+|-----------|-------------|---------|
+| test-coverage | Unit and integration test coverage | % coverage, test count |
+| lint-errors | Code linting issues | error count |
+| type-errors | TypeScript type errors | error count |
+| documentation-coverage | README, API docs, guides | doc file count, coverage % |
+| cli-usability | CLI help text, error messages | user test results |
+| security-posture | Security measures and policies | security check score |
+| architecture-score | Code organization, separation of concerns | structure metrics |
+| build-quality | Build process, CI/CD | build time, success rate |
+
+## Common Experiments
+
+### 1. Increase Test Coverage
+```
+Hypothesis: Adding tests for error handling paths will improve robustness
+Baseline: Current coverage %
+Change: Add unit tests for error paths
+Test: Run coverage report
+Keep threshold: Coverage improved by > 5%
+```
+
+### 2. Improve CLI Help Text
+```
+Hypothesis: Better error messages will improve developer experience
+Baseline: Current help text quality score
+Change: Review and enhance help text
+Test: User evaluation of help text clarity
+Keep threshold: Score improved by > 10%
+```
+
+### 3. Reduce Lint Errors
+```
+Hypothesis: Fixing lint errors will improve code quality
+Baseline: Current lint error count
+Change: Fix all lint errors
+Test: Run linter
+Keep threshold: Error count = 0
+```
+
+### 4. Strengthen Security
+```
+Hypothesis: Adding security headers will improve security posture
+Baseline: Current security check score
+Change: Add security headers, input validation
+Test: Run security audit
+Keep threshold: Score improved by > 15%
+```
+
+### 5. Improve Architecture
+```
+Hypothesis: Better separation of concerns will improve maintainability
+Baseline: Current architecture score
+Change: Refactor file organization
+Test: Architecture evaluation
+Keep threshold: Score improved by > 10%
+```
+
+## Experiment Templates
+
+### Template: Single Variable Experiment
+```markdown
+## Hypothesis
+[Clear statement of what you expect to improve]
+
+## Baseline
+- Metric before change: [value]
+- How measured: [method]
+
+## Change
+- What you're changing: [specific file/component]
+- Why this should help: [reasoning]
+
+## Evaluation
+- How to measure: [test method]
+- Test prompt: [evaluation criteria]
+
+## Decision Criteria
+- Keep if: [specific improvement threshold]
+- Revert if: [no improvement or negative]
+```
+
+## Integration with release-quality-review
+
+The typical flow is:
+
+```
+1. Complete feature development
+2. Run release-quality-review --profile release-gate
+3. If gate passes (all >= 90):
+   - Run baseline-collector.mjs
+   - Run optimization experiments
+4. If gate fails:
+   - Fix issues first
+   - Don't start optimization until gate passes
+```
+
+## Success Metrics
+
+An optimization sprint is successful if:
+1. At least 3 experiments completed
+2. At least 1 experiment resulted in KEEP
+3. Overall project quality score improved
+4. No new regressions introduced
+5. All decisions logged with evidence

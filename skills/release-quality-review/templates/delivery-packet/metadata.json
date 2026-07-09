@@ -1,0 +1,11 @@
+{
+  "task_id": "",
+  "executor": "",
+  "profile": "",
+  "created_at": "",
+  "updated_at": "",
+  "packet_mode": "assisted",
+  "source_goal_ref": "",
+  "diff_ref": "",
+  "reviewer_profile_used": ""
+}

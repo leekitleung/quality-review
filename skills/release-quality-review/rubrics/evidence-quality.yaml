@@ -1,0 +1,196 @@
+# Evidence Quality Rubric (证据质量标准)
+
+## Purpose
+
+定义什么样的证据是可接受的，用于审查交付中的证据真实性和充分性。
+
+## Evidence Tiers
+
+### L1: Code Reference (代码引用)
+
+**适用**: 简单代码审查、轻量级变更
+
+**要求**:
+- 具体文件名
+- 具体行号
+- 代码片段
+
+**示例**:
+```yaml
+evidence:
+  type: code-reference
+  file: "apps/bridge/src/handler.ts"
+  line: 42
+  content: "export const bridgeHandler = async (req) => { ..."
+```
+
+**局限性**: 不能证明功能正确运行
+
+### L2: Command Output (命令输出)
+
+**适用**: 标准变更审查
+
+**要求**:
+- 完整命令（包括参数）
+- 命令输出（可截断但关键信息完整）
+- 退出码或成功/失败标识
+
+**示例**:
+```yaml
+evidence:
+  type: command-output
+  command: "pnpm test 2>&1"
+  output: |
+    Test Suites: 12 passed, 12 total
+    Tests:       48 passed, 48 total
+  exit_code: 0
+```
+
+**局限性**: 不能证明用户实际体验
+
+### L3: Screenshot/Demo (截图/演示)
+
+**适用**: UI/UX 变更
+
+**要求**:
+- 带时间戳的截图
+- 标注功能点
+- 包含正常和异常状态
+
+**示例**:
+```yaml
+evidence:
+  type: screenshot
+  path: "evidence/screenshot-login-success.png"
+  timestamp: "2026-07-08T10:30:00Z"
+  annotation: "登录成功后显示用户头像"
+```
+
+**局限性**: 需要人工解读
+
+### L4: E2E Test (端到端测试)
+
+**适用**: 关键路径、发布门禁
+
+**要求**:
+- 自动化测试脚本
+- 测试结果
+- 覆盖率报告
+
+**示例**:
+```yaml
+evidence:
+  type: e2e-test
+  script: "tests/e2e/bridge-flow.spec.ts"
+  result: "PASSED"
+  coverage: "user-path: 100%, error-path: 95%"
+```
+
+## Required Evidence by Profile
+
+```yaml
+evidence_requirements:
+  quick:
+    min_tier: L1
+    required:
+      - code_reference
+
+  default:
+    min_tier: L2
+    required:
+      - build_command
+      - lint_command
+      - typecheck_command
+
+  release-gate:
+    min_tier: L2
+    required:
+      - build_command
+      - test_command
+      - typecheck_command
+      - lint_command
+
+  agentic-release-gate:
+    min_tier: L2
+    required:
+      - build_command
+      - test_command
+      - typecheck_command
+      - lint_command
+      - security_scan
+      - coverage_report
+
+  full:
+    min_tier: L3
+    required:
+      - all above
+      - e2e_tests
+      - screenshot
+```
+
+## Evidence Quality Checklist
+
+### Must Have
+
+- [ ] 证据文件存在于预期路径
+- [ ] 证据有时间戳
+- [ ] 证据可被独立验证
+- [ ] 命令/文件引用具体
+
+### Should Have
+
+- [ ] 证据与目标直接相关
+- [ ] 证据覆盖关键路径
+- [ ] 证据格式标准化
+
+### Cannot Have
+
+- [ ] Placeholder 证据 ("...", "TODO")
+- [ ] 过时证据 (> 1 hour)
+- [ ] 截断关键信息
+- [ ] 无法验证的声明
+
+## Anti-Patterns
+
+### Fake Evidence (伪证据)
+
+```yaml
+fake_patterns:
+  - name: "Placeholder"
+    detection: "内容 < 50 字符"
+    penalty: -25
+
+  - name: "Truncated"
+    detection: "成功命令但无 output"
+    penalty: -20
+
+  - name: "Stale"
+    detection: "时间戳 > 1 hour"
+    penalty: -10
+
+  - name: "Self-Claimed"
+    detection: "执行者声称但无独立证据"
+    penalty: -25
+```
+
+## Score Calculation
+
+```
+Score = 100 - Σ(Penalty Points)
+
+Penalty Points:
+- Missing required evidence: -15/项
+- Wrong tier (below min): -10/项
+- Fake evidence: -25/项
+- Stale evidence: -10/项
+- Placeholder evidence: -15/项
+```
+
+## Score Interpretation
+
+| Score | Interpretation | Action |
+|-------|---------------|--------|
+| 90-100 | 证据充分 | 可以发布 |
+| 85-89 | 证据基本充分 | 可补充后发布 |
+| 70-84 | 证据不足 | 需要补充 |
+| < 70 | 证据严重缺失 | 重新收集证据 |

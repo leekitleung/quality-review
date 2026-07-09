@@ -1,0 +1,90 @@
+# Full Profile - 完整评审
+
+## 适用场景
+- 重大版本发布
+- 架构重构完成
+- 外部审计
+- 开源项目发布
+
+## 评审配置
+
+```yaml
+profile: full
+description: 完整评审 - 所有 8 个 Reviewer
+estimated_time: "~60 分钟"
+
+# 常驻 Reviewers (4 个核心角色)
+resident_reviewers:
+  - product-flow
+  - architecture-maintainer
+  - release-verifier
+  - destructive-qa
+
+# 条件触发 Reviewers (全部启用)
+conditional_reviewers:
+  - native-designer
+  - zero-doc-user
+  - terminal-veteran
+  - data-security
+
+# 通过条件
+gate:
+  min_score: 90
+  fail_on_redlines: true
+  fail_on_p0_p1_blockers: true
+  require_all_reviewers: true
+  max_rounds: 3  # 完整评审更严格
+
+# 输出
+output:
+  verbose: true
+  include_evidence: true
+  include_detailed_analysis: true
+  generate_final_report: true
+  generate_recommendations: true
+```
+
+## Reviewers 详情
+
+### 常驻 Reviewers (4 个)
+
+| Reviewer | 权重 | 必须证据 |
+|----------|------|----------|
+| product-flow | 25% | 运行截图、日志 |
+| architecture-maintainer | 25% | 代码结构分析 |
+| release-verifier | 25% | 测试输出、构建日志 |
+| destructive-qa | 25% | 安全扫描、漏洞分析 |
+
+### 条件触发 Reviewers (4 个)
+
+| Reviewer | 触发条件 | 权重 |
+|----------|----------|------|
+| native-designer | 有 UI 变更 | 20% |
+| zero-doc-user | 面向新用户/有文档变更 | 20% |
+| terminal-veteran | 有 CLI/本地服务 | 20% |
+| data-security | 有 token/auth 变更 | 20% |
+
+## 完整评审检查清单
+
+### 必检项
+- [ ] 功能完整性 (product-flow >= 90)
+- [ ] 架构合理性 (architecture-maintainer >= 90)
+- [ ] 测试覆盖率 (release-verifier >= 90)
+- [ ] 安全性 (destructive-qa >= 90)
+
+### 条件触发项
+- [ ] UI 质量 (native-designer >= 90, 如有 UI)
+- [ ] 文档完整性 (zero-doc-user >= 90, 始终检查)
+- [ ] CLI 健壮性 (terminal-veteran >= 90, 如有 CLI)
+- [ ] 数据安全 (data-security >= 90, 如有敏感数据)
+
+### 发布准备
+- [ ] `pnpm test` 通过
+- [ ] `pnpm build` 通过
+- [ ] `pnpm typecheck` 通过
+- [ ] `pnpm lint` 通过
+- [ ] `npm audit` 无高危漏洞
+- [ ] 变更日志已更新
+- [ ] 版本号已更新
+- [ ] README 已更新 (如有必要)
+- [ ] CHANGELOG 已生成

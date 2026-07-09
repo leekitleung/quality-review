@@ -1,0 +1,186 @@
+# Handoff Integrity Rubric
+
+交接完整性检测规则。
+
+## Overview
+
+验证 AI Agent 交付包的交接完整性。包括：
+1. Claim 到 Diff 的可追溯性
+2. 未完成项的透明披露
+3. 后续跟进的明确性
+4. 回滚方案的可行性
+
+## Core Principle
+
+```
+Handoff 是 Executor 对 Reviewer 的承诺。
+承诺必须可验证，可执行。
+不透明的 handoff 是未来的事故隐患。
+```
+
+## Detection Dimensions
+
+### 1. Claim-to-Diff Traceability
+
+**检查**: 每个声称的能力是否可追溯到实际 diff
+
+**规则**:
+```yaml
+required_mapping:
+  claim: "声称的能力"
+  diff_files: ["对应的文件列表"]
+  evidence_ref: "evidence.md 中的引用"
+
+verification:
+  - claim 中的关键词在 diff 中出现
+  - 声称新增的文件存在
+  - 声称修改的文件有实际变更
+
+signal:
+  - claim 有但 diff 无 → INCOMPLETE
+  - claim 有但 evidence 无 → UNVERIFIED
+  - 三者都齐全 → TRACEABLE
+```
+
+**门禁**: 无 claim-diff 映射的声明必须删除或补充
+
+---
+
+### 2. Incomplete Item Transparency
+
+**检查**: 未完成项是否被透明披露
+
+**规则**:
+```yaml
+required_fields:
+  - item: "未完成的具体内容"
+  - reason: "为什么未完成"
+  - deferred_to: "计划何时完成"
+  - tracked_in: "issue/ticket 链接"
+
+forbidden_patterns:
+  - "基本完成" (模糊)
+  - "后续处理" (无期限)
+  - "应该没问题" (无跟踪)
+
+signal:
+  - 有未完成项但不在 handoff.md → HIDDEN
+  - 未完成项无 reason → OPAQUE
+  - 未完成项无跟踪链接 → UNTRACKED
+```
+
+**门禁**: 遗漏的未完成项必须补充或说明原因
+
+---
+
+### 3. Follow-up Clarity
+
+**检查**: 后续跟进是否明确
+
+**规则**:
+```yaml
+required_for_each_follow_up:
+  - item: "需要做什么"
+  - owner: "谁负责"
+  - deadline: "截止日期"
+  - verification: "如何验证完成"
+
+signal:
+  - 有 owner 无 deadline → AMBIGUOUS
+  - 有 deadline 无 owner → UNOWNED
+  - 无 verification 方法 → UNVERIFIABLE
+```
+
+**门禁**: 模糊的后续跟进必须明确
+
+---
+
+### 4. Rollback Plan Completeness
+
+**检查**: 回滚方案是否完整可执行
+
+**规则**:
+```yaml
+required_fields:
+  - steps: ["具体的回滚步骤"]
+  - verification: "如何验证回滚成功"
+  - estimated_time: "预计耗时"
+  - scope: "影响范围"
+
+verification_checklist:
+  - 步骤是否具体到命令级别
+  - 是否说明了回滚后的验证方法
+  - 是否有 estimate_time 防止超时
+  - 是否说明了影响范围
+
+signal:
+  - "回滚 git commit" (太模糊)
+  - 无 verification 方法 → UNVERIFIABLE
+  - 无 estimated_time → UNBOUNDED
+```
+
+**门禁**: 不完整的回滚方案必须补充
+
+---
+
+### 5. Risk Acknowledgment
+
+**检查**: 风险是否被正确披露
+
+**规则**:
+```yaml
+required_for_each_risk:
+  - risk: "具体风险描述"
+  - probability: "HIGH|MEDIUM|LOW"
+  - impact: "HIGH|MEDIUM|LOW"
+  - mitigation: "缓解措施"
+
+forbidden_patterns:
+  - "应该不会有问题"
+  - "风险可控"
+  - "概率很低"
+
+signal:
+  - HIGH impact risk 无 mitigation → UNMITIGATED
+  - breaking_change 无 rollback_plan → NO_ROLLBACK
+```
+
+**门禁**: 未缓解的 HIGH impact 风险必须处理
+
+---
+
+## Red Lines (Immediate Fail)
+
+```yaml
+immediate_fail:
+  - claim_without_diff_mapping          # claim 无 diff 映射
+  - hidden_incomplete_item              # 隐藏的未完成项
+  - unmitigated_high_impact_risk        # 未缓解的高影响风险
+  - no_rollback_plan_for_breaking       # 破坏性变更无回滚方案
+  - incomplete_follow_up_blocking       # 阻塞性后续项无 owner
+  - rollback_plan_not_executable        # 回滚方案不可执行
+```
+
+---
+
+## Scoring
+
+```
+Score = 100 - Σ(Penalty Points)
+
+Penalty Points:
+- Claim-Diff Trace: -15 (无映射), -5 (部分映射)
+- Incomplete Transparency: -10 (隐藏), -5 (模糊)
+- Follow-up Clarity: -10 (模糊), -5 (不完整)
+- Rollback Completeness: -15 (缺失), -5 (不完整)
+- Risk Acknowledgment: -10 (未缓解), -5 (模糊)
+```
+
+---
+
+## Integration
+
+此 rubric 配合:
+- `ai-false-completion.yaml` - 伪完成检测
+- `evidence-integrity.md` - 证据验证
+- `delivery-packet.schema.yaml` - 基础结构验证

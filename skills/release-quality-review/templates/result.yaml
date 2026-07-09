@@ -1,0 +1,67 @@
+# Result YAML Template
+# Each reviewer MUST output this file to quality-review/round-XXX/<reviewer>/result.yaml
+
+reviewer: <reviewer-name>
+profile: <product-polish|release-gate|security-audit>
+round: <round-number>
+
+# Overall score (0-100)
+score: <0-100>
+
+# Dimension scores for weighted calculation
+dimension_scores:
+  completeness: <0-100>      # 25% - Does it actually work end-to-end?
+  correctness: <0-100>       # 25% - Are there bugs or logic errors?
+  maintainability: <0-100>   # 20% - Will future developers understand it?
+  robustness: <0-100>        # 15% - Does it handle edge cases?
+  polish: <0-100>            # 15% - Does it feel production-ready?
+
+# Blocking issues that must be fixed
+blockers:
+  - id: BLOCKER-001
+    severity: P0|P1|P2|P3
+    category: <security|auth|performance|memory|dx|docs|testing|architecture>
+    description: <clear description of the issue>
+    files:
+      - <file-path>
+    evidence:
+      lines: <line-numbers>
+      type: <code|config|test|doc|api>
+    fix_effort: <low|medium|high>
+
+# Redlines - non-negotiable failures that block release
+# Any redline item blocks release regardless of overall score
+redlines:
+  - id: RL-001
+    description: <critical quality issue that MUST be fixed>
+    severity: P0|P1
+    files:
+      - <file-path>
+
+# Reviewer recommendation (advisory only)
+recommendation: pass|fail|conditional
+
+# Notes for next round
+notes: |
+  <optional human notes, markdown format>
+  - What was verified as fixed
+  - Remaining concerns
+  - Recommendations for next round
+
+# Verification evidence
+verified_fixes:
+  - id: FIX-001
+    from_round: <previous-round>
+    description: <what was fixed>
+    verification_command: <command used to verify>
+    verification_result: <pass|fail>
+
+# Metadata
+reviewed_at: <ISO-8601-timestamp>
+reviewer_type: <constant|conditional>
+triggered_by: <condition-that-activated-this-reviewer>
+
+# NOTE: Final pass/fail is determined by review-gate.mjs based on:
+# 1. All scores >= threshold (80 for product-polish, 90 for release-gate)
+# 2. No P0/P1 blockers remain (unless explicitly waived)
+# 3. No redline items present

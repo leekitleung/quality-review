@@ -1,0 +1,50 @@
+# Quick Profile - 开发中快速检查
+
+## 适用场景
+- 开发过程中快速检查
+- 单个文件或小改动
+- 需要快速反馈
+
+## 评审配置
+
+```yaml
+profile: quick
+description: 开发中快速检查
+estimated_time: "~5 分钟"
+
+# 常驻 Reviewers
+resident_reviewers:
+  - product-flow
+  - architecture-maintainer
+
+# 条件触发 Reviewers (本 profile 不启用)
+conditional_reviewers: []
+
+# 通过条件
+gate:
+  min_score: 85  # 快速检查略宽松
+  fail_on_redlines: true
+  fail_on_p0_only: true  # 只阻塞 P0
+
+# 输出
+output:
+  verbose: false
+  include_evidence: false
+```
+
+## Reviewers 详情
+
+### product-flow
+- **权重**: 60%
+- **重点**: 功能是否可用，路径是否通
+- **证据要求**: 降低，只需代码检查
+
+### architecture-maintainer
+- **权重**: 40%
+- **重点**: 模块边界、明显架构问题
+- **证据要求**: 降低，只需代码结构检查
+
+## 不包含
+- release-verifier (测试/构建验证)
+- destructive-qa (安全深度检查)
+- 条件触发 reviewers

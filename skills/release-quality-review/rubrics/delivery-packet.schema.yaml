@@ -1,0 +1,373 @@
+# Delivery Packet Schema
+
+AI Agent 交付包的标准化结构定义。
+
+## Overview
+
+Delivery Packet 是 AI Agent 交付仲裁的核心输入对象。它必须由执行 Agent 生成，Reviewer 只能验证，不能替 Agent 补齐证据。
+
+## Packet Modes
+
+```yaml
+packet_mode:
+  strict:
+    # Release gate 使用
+    require_delivery_packet: true
+    missing_packet_verdict: FAIL
+
+  assisted:
+    # 开发审查使用 (MVP default)
+    require_delivery_packet: true
+    allow_forensic_reconstruction: true
+    missing_packet_verdict: INCOMPLETE
+
+  legacy:
+    # 无 packet 时降级
+    require_delivery_packet: false
+    allow_forensic_reconstruction: true
+    max_verdict: CONDITIONAL_PASS
+```
+
+## Canonical Path
+
+```
+.agent-deliveries/<task-id>/
+├── goal.md           # 原始目标
+├── scope.md           # 允许/禁止修改范围
+├── changes.md         # 本次实际变更
+├── diff-summary.md    # diff 摘要
+├── evidence.md        # 证据包
+├── risk.md           # 风险说明
+├── blockers.md       # 问题追踪
+├── handoff.md        # 交接说明
+└── metadata.json     # 元数据
+```
+
+## Progressive Packet Lifecycle
+
+```
+Pre-flight Packet (执行前):
+  ├── goal.md
+  ├── scope.md
+  └── metadata.json (partial)
+
+Execution Packet (执行后):
+  ├── changes.md
+  ├── diff-summary.md
+  ├── evidence.md
+  ├── risk.md
+  └── blockers.md
+
+Handoff Packet (评审时):
+  ├── handoff.md
+  └── metadata.json (updated with review refs)
+```
+
+---
+
+## Field Definitions
+
+### metadata.json (Required)
+
+```yaml
+required:
+  task_id: string          # 任务唯一标识
+  executor: string          # 执行 Agent 标识
+  profile: string           # 使用的评审 profile
+  created_at: ISO8601       # Packet 创建时间
+  updated_at: ISO8601       # Packet 更新时间
+  packet_mode: strict|assisted|legacy
+  source_goal_ref: string   # 原始 goal 引用
+  diff_ref: string         # 本次 diff commit/branch
+  reviewer_profile_used: string  # 评审 profile
+
+optional:
+  previous_task_id: string  # 前置任务（如果有）
+  next_task_id: string      # 后置任务（如果有）
+```
+
+### goal.md (Required)
+
+```yaml
+required:
+  original_goal: string     # 原始 goal 文本
+  acceptance_criteria:       # 验收标准列表
+    - criterion: string
+      verifiable: boolean  # 是否可验证
+      evidence_required: string[]  # 需要的证据类型
+  completion_verdict: PASS|FAIL|PARTIAL
+
+  # 如果 PARTIAL，必须包含：
+  partial_reason: string
+  completed_items: string[]
+  incomplete_items: string[]
+
+forbidden:
+  - "第一步" / "然后" / "接下来"  # 流程词
+  - "我" / "我们要"              # 主语
+  - 无法量化的描述词
+```
+
+### scope.md (Required)
+
+```yaml
+required:
+  allowed_files:           # 允许修改的文件/目录
+    - path: string
+      reason: string
+  modified_files:          # 本次实际修改的文件
+    - path: string
+      change_type: ADD|MODIFY|DELETE
+      lines_added: number
+      lines_deleted: number
+
+  forbidden_files:         # 禁止修改的文件
+    - path: string
+      reason: string
+
+  # 如果动了 forbidden_files，必须说明：
+  forbidden_deviation:
+    - file: string
+      reason: string
+      approved_by: string?
+```
+
+### changes.md (Required)
+
+```yaml
+required:
+  summary: string          # 一句话变更总结
+  detailed_changes:         # 详细变更说明
+    - area: string        # 变更区域
+      before: string       # 变更前状态
+      after: string       # 变更后状态
+      rationale: string   # 变更理由
+  claimed_capabilities:     # 声称具备的能力
+    - capability: string
+      supported_by: string # 由哪个文件/测试支撑
+
+  # 禁止：
+  # - 大量解释 "为什么" 但不说明 "实际改了什么"
+  # - 把既有能力归到本次交付
+```
+
+### diff-summary.md (Required)
+
+```yaml
+required:
+  total_files_changed: number
+  total_lines_added: number
+  total_lines_deleted: number
+  breaking_changes: boolean
+
+  file_summary:           # 文件级摘要
+    - path: string
+      change_type: ADD|MODIFY|DELETE|RENAME
+      impact: LOW|MEDIUM|HIGH
+
+  new_dependencies:       # 新增依赖
+    - package: string
+      version: string
+      reason: string
+
+  removed_dependencies:    # 移除依赖
+    - package: string
+      reason: string
+```
+
+### evidence.md (Required)
+
+```yaml
+required:
+  commands_executed:       # 执行的命令
+    - command: string     # 完整命令
+      working_dir: string
+      exit_code: number
+      output_summary: string  # 输出摘要
+      timestamp: ISO8601
+      evidence_file: string? # 输出文件路径
+
+  test_results:           # 测试结果
+    - suite: string
+      passed: number
+      failed: number
+      skipped: number
+      command: string     # 运行的命令
+      exit_code: number
+
+  build_results:          # 构建结果
+    - target: string
+      status: SUCCESS|FAIL|WARNING
+      command: string
+      exit_code: number
+
+  lint_results:          # Lint 结果
+    - tool: string
+      errors: number
+      warnings: number
+      command: string
+
+  manual_verification:   # 手工验证（如果有）
+    - step: string
+      expected: string
+      actual: string
+      passed: boolean
+      evidence: string?  # 截图/日志路径
+
+known_gaps:              # 已知缺口
+  - area: string
+    reason: string
+    impact: string
+    tracked_in: string    # 追踪链接
+```
+
+### risk.md (Required)
+
+```yaml
+required:
+  breaking_changes:       # 破坏性变更
+    - change: string
+      affected_areas: string[]
+      mitigation: string
+
+  regression_risks:       # 回归风险
+    - area: string
+      risk_level: LOW|MEDIUM|HIGH
+      test_coverage: string
+
+  security_considerations: # 安全考虑
+    - consideration: string
+      status: ADDRESSED|NEW_REVIEW_REQUIRED
+
+  compatibility_issues:   # 兼容性问题
+    - issue: string
+      affected_versions: string[]
+
+rollback_plan:           # 回滚方案
+  steps: string[]
+  verification: string
+  estimated_time: string
+```
+
+### blockers.md (Required)
+
+```yaml
+required:
+  p0_blockers:           # P0 - 必须修复
+    - id: string
+      description: string
+      status: OPEN|RESOLVED
+      resolution: string?
+      evidence: string?
+
+  p1_blockers:           # P1 - 本轮修复
+    - id: string
+      description: string
+      status: OPEN|RESOLVED
+      resolution: string?
+      deadline: string?
+
+  p2_blockers:           # P2 - 下个 milestone
+    - id: string
+      description: string
+      status: OPEN|DEFERRED
+      tracked_in: string?
+
+  # 状态说明
+  all_p0_closed: boolean
+  all_p1_closed: boolean
+  blocking_release: boolean
+```
+
+### handoff.md (Required for handoff-gate)
+
+```yaml
+required:
+  delivery_traceability:   # 交付链追溯
+    claims_to_diff_map:   # Claim 到 diff 的映射
+      - claim: string
+        diff_files: string[]
+        evidence_ref: string?
+
+  incomplete_items:        # 未完成项
+    - item: string
+      reason: string
+      deferred_to: string?
+      tracked_in: string?
+
+  follow_up_required:      # 需要后续跟进
+    - item: string
+      owner: string?
+      deadline: string?
+
+rollback_verified: boolean  # 回滚方案已验证
+```
+
+---
+
+## Validation Rules
+
+### Immediate Fail Conditions
+
+```yaml
+immediate_fail:
+  - missing_required_file
+  - forbidden_scope_modified_without_justification
+  - p0_unresolved
+  - claim_without_current_diff_mapping
+  - test_declaration_without_command_and_result
+  - circular_completion_self_justification
+```
+
+### Forensic Reconstruction Rules
+
+Reviewer 可以从 git/diff/history 重建以下内容用于**发现矛盾**，但**不能替 Executor 补齐证据后放行**：
+
+```yaml
+forensic_reconstruction:
+  allowed_for:
+    - 发现 claim 与实际 diff 不一致
+    - 发现 forbidden scope 被修改
+    - 发现 evidence 时间戳与声明不符
+    - 发现测试命令实际未执行
+
+  NOT_allowed_for:
+    - 替 Executor 补齐缺失的 evidence
+    - 假设测试通过了（如果没有输出）
+    - 假设功能正确（如果没测试）
+```
+
+---
+
+## Integration with Profiles
+
+### strict mode (release-gate)
+
+```yaml
+strict:
+  require_delivery_packet: true
+  missing_packet_verdict: FAIL
+  forensic_only_for_contradiction: true
+  min_required_score: 90
+```
+
+### assisted mode (default)
+
+```yaml
+assisted:
+  require_delivery_packet: true
+  missing_packet_verdict: INCOMPLETE
+  forensic_allowed: true
+  min_required_score: 85
+```
+
+### legacy mode (fallback)
+
+```yaml
+legacy:
+  require_delivery_packet: false
+  missing_packet_verdict: CONDITIONAL_PASS
+  forensic_allowed: true
+  max_verdict: CONDITIONAL_PASS
+  requires_manual_review: true
+```
