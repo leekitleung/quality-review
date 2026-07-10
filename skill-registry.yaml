@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "skills": {
+    "release-quality-review": {
+      "canonical": "skills/release-quality-review",
+      "claude_skill": ".claude/skills/release-quality-review/SKILL.md",
+      "claude_agents": ".claude/agents",
+      "codex_skill": ".agents/skills/release-quality-review/SKILL.md",
+      "reviewers": [
+        "product-flow",
+        "architecture-maintainer",
+        "release-verifier",
+        "destructive-qa",
+        "native-designer",
+        "terminal-veteran",
+        "data-security",
+        "zero-doc-user",
+        "adversarial-completion",
+        "evidence-integrity",
+        "goal-compliance",
+        "handoff-integrity"
+      ]
+    }
+  }
+}

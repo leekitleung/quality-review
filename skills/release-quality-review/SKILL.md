@@ -1,3 +1,8 @@
+---
+name: release-quality-review
+description: Run an evidence-backed multi-reviewer release quality gate with independent scoring, red-line enforcement, adversarial checks, and fail-closed verification. Use for release reviews, quality gates, delivery packet validation, or requests mentioning 评审、质量门禁、发布审查.
+---
+
 # Release Quality Review Skill
 
 跨 Agent 工具的质量评审框架。基于「4 个常驻 Reviewer + 条件触发 Reviewer」的设计，支持 Claude Code、Codex 和其他 Agent 工具。
@@ -239,17 +244,16 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 对于 release-gate profile，建议使用并行 subagent 加速评审：
 
 ```bash
-# 1. 使用 review-runner.mjs 的并行模式
-node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate --parallel
-
-# 2. 或在 Claude Code 对话中显式创建 subagent
+# 在 Claude Code 对话中由宿主显式创建 subagent
 # 主 agent:
 /review --profile release-gate --parallel
 ```
 
 ### Claude Code Subagent 编排流程
 
-当使用 `--parallel` 模式时，review-runner.mjs 会：
+并行 reviewer 必须由 Claude Code/Codex 宿主创建。独立 Node runner 无法启动宿主 Agent，直接传 `--parallel` 会 fail-fast（exit 5），避免把 gate 子进程伪装成 reviewer。
+
+宿主并行编排会：
 
 1. **收集证据** - 收集 git diff、测试输出、类型检查结果
 2. **并行启动 Reviewers** - 每个 reviewer 在独立 subagent 中运行
@@ -311,7 +315,7 @@ Codex 需要显式 spawn subagents。推荐做法：
 | 自动 subagent | 支持 | 需要显式 spawn |
 | Skill 命令 | `/review` | 不支持，需用 node 脚本 |
 | Hooks | 支持 | 不支持 |
-| 内置 parallel | `--parallel` flag | 需手动编排 |
+| 内置 parallel | 由宿主 subagent 编排 | 需手动编排 |
 
 ## 完整评审流程
 

@@ -3,17 +3,27 @@
  *
  * Run with: node --test skills/release-quality-review/__tests__/unit.test.mjs
  *
+ * Tests import production code from lib/review-utils.mjs - no simplified reimplementations.
+ *
  * Tests:
- * 1. parseYamlProfile - YAML profile parsing
- * 2. parseScore - Score extraction from markdown
- * 3. detectChangeScale - Change scale detection
+ * 1. parseYamlProfile - YAML profile parsing (from production code)
+ * 2. parseScore - Score extraction from markdown (from production code)
+ * 3. detectChangeScale - Change scale detection (from production code)
  * 4. Phase persistence functions
+ * 5. parseYamlResult - result.yaml parsing (from production code)
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import test from 'node:test';
+import {
+  parseScore,
+  parseBlockers,
+  parseYamlResult,
+  detectChangeScale,
+  parseYamlProfile,
+} from '../lib/review-utils.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -45,139 +55,7 @@ function assertTrue(condition, message) {
 }
 
 // ============================================================================
-// parseYamlProfile (simplified for testing)
-// ============================================================================
-
-function parseYamlProfile(content, name) {
-  const profile = {
-    name,
-    description: '',
-    estimated_time: '',
-    resident_reviewers: [],
-    conditional_reviewers: [],
-    gate: { min_score: 90, fail_on_redlines: true },
-    output: { verbose: false, include_evidence: false },
-  };
-
-  const lines = content.split('\n');
-  let currentSection = null;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    // Skip checkboxes
-    if (trimmed.startsWith('- [')) continue;
-
-    if (trimmed.includes(':')) {
-      const colonIdx = trimmed.indexOf(':');
-      const key = trimmed.slice(0, colonIdx).trim();
-      let value = trimmed.slice(colonIdx + 1).trim();
-
-      // Remove inline comments
-      value = value.split('#')[0].trim();
-
-      if (key === 'description') profile.description = value;
-      else if (key === 'estimated_time') profile.estimated_time = value;
-      else if (key === 'min_score') profile.gate.min_score = parseInt(value) || 90;
-      else if (key === 'fail_on_redlines') profile.gate.fail_on_redlines = value === 'true';
-      else if (key === 'resident_reviewers') {
-        currentSection = 'resident';
-        // If value is '[]' (empty array literal), reset to empty array
-        if (value === '[]') {
-          profile.resident_reviewers = [];
-        }
-      }
-      else if (key === 'conditional_reviewers') {
-        currentSection = 'conditional';
-        if (value === '[]') {
-          profile.conditional_reviewers = [];
-        }
-      }
-    } else if (trimmed.startsWith('- ')) {
-      if (currentSection === 'resident') {
-        const item = trimmed.slice(2).trim().split('#')[0].trim();
-        if (item && item !== '[]') profile.resident_reviewers.push(item);
-      } else if (currentSection === 'conditional') {
-        const item = trimmed.slice(2).trim().split('#')[0].trim();
-        if (item && item !== '[]') profile.conditional_reviewers.push(item);
-      }
-    }
-  }
-
-  return profile;
-}
-
-// ============================================================================
-// parseScore (simplified for testing)
-// ============================================================================
-
-function parseScore(content) {
-  if (!content || typeof content !== 'string') return null;
-
-  // More permissive patterns - only match after Score/Score header
-  const patterns = [
-    // Pattern 1: "Overall Score: **67/100**" or "Overall Score: 72/100"
-    /(?:总分|Overall Score|Total Score|Score)[^0-9]*(\d+)[^0-9]*\/?\s*100/i,
-    // Pattern 2: "**75/100**" (standalone bold)
-    /\*\*(\d+)\/100\*\*/,
-    // Pattern 3: "68 / 100" or "72/100" anywhere in text
-    /(\d+)\s*\/\s*100/,
-    // Pattern 4: "Score: 85" or "Overall Score: 92" (without /100) - must have Score header
-    /Score[^0-9]*:?\s*(\d+)(?!\s*\/)/i,
-    // Pattern 5: "## Score 88" at end of line or before newline
-    /(?:总分|Overall Score|Total Score|Score)[^0-9]*(\d+)$/gim,
-  ];
-
-  for (const pattern of patterns) {
-    const match = content.match(pattern);
-    if (match && match[1]) {
-      const score = parseInt(match[1], 10);
-      // Reject obviously invalid scores (single digits are not real scores)
-      if (!isNaN(score) && score >= 0 && score <= 100 && score >= 10) {
-        return score;
-      }
-    }
-  }
-  return null;
-}
-
-// ============================================================================
-// detectChangeScale (simplified for testing)
-// ============================================================================
-
-function detectChangeScaleInternal(execSyncMock, totalLines) {
-  const changedFiles = execSyncMock().split('\n').filter(f => f.trim());
-  const fileCount = changedFiles.length;
-
-  let scale = 'micro';
-  let suggestedProfile = 'quick';
-
-  if (fileCount === 0) {
-    scale = 'none';
-    suggestedProfile = 'quick';
-  } else if (fileCount <= 2 && totalLines < 100) {
-    scale = 'micro';
-    suggestedProfile = 'quick';
-  } else if (fileCount <= 5 && totalLines < 500) {
-    scale = 'small';
-    suggestedProfile = 'quick';
-  } else if (fileCount <= 20 && totalLines < 2000) {
-    scale = 'medium';
-    suggestedProfile = 'default';
-  } else if (fileCount <= 50 && totalLines < 5000) {
-    scale = 'large';
-    suggestedProfile = 'release-gate';
-  } else {
-    scale = 'xlarge';
-    suggestedProfile = 'full';
-  }
-
-  return { scale, files: fileCount, total: totalLines, suggestedProfile };
-}
-
-// ============================================================================
-// persistPhasePlan (simplified for testing)
+// persistPhasePlan (test helper)
 // ============================================================================
 
 function persistPhasePlanTest(roundDir, phase, reviewers, evidence, profileConfig) {
@@ -218,7 +96,7 @@ ${reviewers.map(r => `- ${r}`).join('\n')}
 }
 
 // ============================================================================
-// persistPhaseResult (simplified for testing)
+// persistPhaseResult (test helper)
 // ============================================================================
 
 function persistPhaseResultTest(roundDir, phase, scores, gatePassed, failedReviewers) {
@@ -274,10 +152,16 @@ ${failedList}
 }
 
 // ============================================================================
-// TESTS
+// TESTS - parseYamlProfile (imported from production)
 // ============================================================================
 
-test.describe('parseYamlProfile', () => {
+test.describe('parseYamlProfile (production)', () => {
+  test('loads required adversarial reviewers from the real agentic profile', () => {
+    const content = readFileSync(join(SKILL_DIR, 'profiles', 'agentic-release-gate.yaml'), 'utf-8');
+    const profile = parseYamlProfile(content, 'agentic-release-gate');
+    assertEqual(profile.gate.require_adversarial, true);
+    assertEqual(profile.adversarial_reviewers.length, 4);
+  });
   test('parses basic profile correctly', () => {
     const content = `
 profile: test-profile
@@ -296,8 +180,8 @@ gate:
     const profile = parseYamlProfile(readFileSync(mockPath, 'utf-8'), 'test-profile');
 
     assertEqual(profile.name, 'test-profile');
-    assertEqual(profile.resident_reviewers.includes('product-flow'), true);
-    assertEqual(profile.resident_reviewers.includes('architecture-maintainer'), true);
+    assertTrue(profile.resident_reviewers.includes('product-flow'), 'Should contain product-flow');
+    assertTrue(profile.resident_reviewers.includes('architecture-maintainer'), 'Should contain architecture-maintainer');
     assertEqual(profile.gate.min_score, 90);
     assertEqual(profile.gate.fail_on_redlines, true);
   });
@@ -320,19 +204,22 @@ profile: checkbox-test
 ## Checklist
 - [x] Done item
 - [ ] Pending item
-- - actual list item
 
 resident_reviewers:
   - product-flow
 `;
     const mockPath = createMockFs('test-checkbox', content);
     const profile = parseYamlProfile(readFileSync(mockPath, 'utf-8'), 'checkbox-test');
-    assertEqual(profile.resident_reviewers.includes('product-flow'), true);
+    assertTrue(profile.resident_reviewers.includes('product-flow'), 'Should contain product-flow');
     assertEqual(profile.resident_reviewers.length, 1);
   });
 });
 
-test.describe('parseScore', () => {
+// ============================================================================
+// TESTS - parseScore (imported from production)
+// ============================================================================
+
+test.describe('parseScore (production)', () => {
   test('extracts score from "Overall Score: **XX/100**"', () => {
     const content = '## Overall Score: **85/100**';
     assertEqual(parseScore(content), 85);
@@ -344,7 +231,6 @@ test.describe('parseScore', () => {
   });
 
   test('extracts score with Chinese "总分" + slash format', () => {
-    // "总分: 78/100" format (with slash)
     const content = '总分: 78/100';
     assertEqual(parseScore(content), 78);
   });
@@ -367,56 +253,141 @@ test.describe('parseScore', () => {
   });
 });
 
-test.describe('detectChangeScale', () => {
-  test('returns micro for 1-2 files with few lines', () => {
-    const mockExecSync = () => 'file1.ts';
-    const scale = detectChangeScaleInternal(mockExecSync, 50);
+// ============================================================================
+// TESTS - detectChangeScale (imported from production)
+// ============================================================================
+
+test.describe('detectChangeScale (production)', () => {
+  test('returns micro for 1-2 files with very few lines', () => {
+    const scale = detectChangeScale(['file1.ts'], 20, 20);
     assertEqual(scale.scale, 'micro');
     assertEqual(scale.files, 1);
   });
 
-  test('returns small for 3-5 files', () => {
-    const mockExecSync = () => 'file1.ts\nfile2.ts\nfile3.ts\nfile4.ts';
-    const scale = detectChangeScaleInternal(mockExecSync, 200);
+  test('returns small for 3-5 files or 50+ lines', () => {
+    const scale = detectChangeScale(['f1.ts', 'f2.ts', 'f3.ts', 'f4.ts'], 30, 30);
     assertEqual(scale.scale, 'small');
     assertEqual(scale.files, 4);
   });
 
-  test('returns medium for 6-20 files', () => {
-    const mockExecSync = () => Array(10).fill('file.ts').join('\n');
-    const scale = detectChangeScaleInternal(mockExecSync, 500);
+  test('returns medium for 6-20 files or 100+ lines', () => {
+    const files = Array(10).fill('file.ts');
+    const scale = detectChangeScale(files, 50, 50);
     assertEqual(scale.scale, 'medium');
     assertEqual(scale.files, 10);
   });
 
-  test('returns large for 21-50 files', () => {
-    const mockExecSync = () => Array(30).fill('file.ts').join('\n');
-    const scale = detectChangeScaleInternal(mockExecSync, 1500);
+  test('returns large for 21-50 files or 500+ lines', () => {
+    const files = Array(30).fill('file.ts');
+    const scale = detectChangeScale(files, 300, 200);
     assertEqual(scale.scale, 'large');
     assertEqual(scale.files, 30);
   });
 
   test('returns xlarge for 50+ files', () => {
-    const mockExecSync = () => Array(60).fill('file.ts').join('\n');
-    const scale = detectChangeScaleInternal(mockExecSync, 3000);
+    const files = Array(60).fill('file.ts');
+    const scale = detectChangeScale(files, 1500, 1500);
     assertEqual(scale.scale, 'xlarge');
     assertEqual(scale.files, 60);
   });
 
-  test('considers lines for scale determination', () => {
-    // Few files but many lines -> large
-    const mockExecSync = () => 'file1.ts\nfile2.ts';
-    const scale = detectChangeScaleInternal(mockExecSync, 3000);
-    assertEqual(scale.scale, 'large');
+  test('considers lines for scale determination (OR logic)', () => {
+    // Few files but many lines → upgraded by line count (OR logic)
+    const scale = detectChangeScale(['f1.ts', 'f2.ts'], 2000, 500);
+    assertEqual(scale.scale, 'xlarge');
   });
 
   test('handles no changes gracefully', () => {
-    const mockExecSync = () => '';
-    const scale = detectChangeScaleInternal(mockExecSync, 0);
+    const scale = detectChangeScale([], 0, 0);
     assertEqual(scale.scale, 'none');
     assertEqual(scale.files, 0);
   });
 });
+
+// ============================================================================
+// TESTS - parseYamlResult (imported from production)
+// ============================================================================
+
+test.describe('parseYamlResult (production)', () => {
+  test('parses the canonical nested result template without throwing', () => {
+    const content = readFileSync(join(SKILL_DIR, 'templates', 'result.yaml'), 'utf-8');
+    const result = parseYamlResult(content);
+    assertTrue(Array.isArray(result.blockers), 'blockers should be an array');
+    assertTrue(Array.isArray(result.redlines), 'redlines should be an array');
+    assertTrue(result.redlines.length > 0, 'canonical redline should be retained');
+  });
+  test('parses inline blocker format', () => {
+    const content = `reviewer: destructive-qa
+score: 85/100
+status: fail
+blockers:
+  - P0: Critical security vulnerability
+  - P1: Missing error handling
+`;
+    const result = parseYamlResult(content);
+    assertEqual(result.reviewer, 'destructive-qa');
+    assertEqual(result.score, 85);
+    assertEqual(result.status, 'fail');
+    assertEqual(result.blockers.length, 2);
+    assertEqual(result.blockers[0].priority, 'P0');
+    assertEqual(result.blockers[1].priority, 'P1');
+  });
+
+  test('parses nested severity blocker format', () => {
+    const content = `reviewer: destructive-qa
+score: 72/100
+status: fail
+blockers:
+  - priority: P0
+    description: Cross-site scripting in user input
+  - severity: P1
+    description: Missing rate limiting
+`;
+    const result = parseYamlResult(content);
+    assertEqual(result.score, 72);
+    assertEqual(result.blockers.length, 2);
+    // Nested format should produce objects with priority/severity fields
+    assertTrue(typeof result.blockers[0] === 'object', 'First blocker should be object');
+    assertTrue(
+      result.blockers[0].priority === 'P0' || result.blockers[0].severity === 'P1',
+      'Should have priority or severity'
+    );
+  });
+
+  test('parses redlines separately from blockers', () => {
+    const content = `reviewer: release-verifier
+score: 45/100
+status: fail
+blockers:
+  - P1: Missing test coverage
+redlines:
+  - P0: Build is broken
+  - P0: TypeScript errors in core
+`;
+    const result = parseYamlResult(content);
+    assertEqual(result.blockers.length, 1);
+    assertEqual(result.redlines.length, 2);
+    assertEqual(result.redlines[0].priority, 'P0');
+  });
+
+  test('parses dimensions', () => {
+    const content = `reviewer: product-flow
+score: 92/100
+status: pass
+dimensions:
+  product-closure: 45/50
+  edge-case-handling: 47/50
+`;
+    const result = parseYamlResult(content);
+    assertEqual(Object.keys(result.dimensions).length, 2);
+    assertEqual(result.dimensions['product-closure'].score, 45);
+    assertEqual(result.dimensions['edge-case-handling'].score, 47);
+  });
+});
+
+// ============================================================================
+// TESTS - persistPhasePlan
+// ============================================================================
 
 test.describe('persistPhasePlan', () => {
   test('creates plan file with correct structure', () => {
@@ -433,6 +404,10 @@ test.describe('persistPhasePlan', () => {
     assertTrue(content.includes('small'), 'Should include scale info');
   });
 });
+
+// ============================================================================
+// TESTS - persistPhaseResult
+// ============================================================================
 
 test.describe('persistPhaseResult', () => {
   test('creates result file with scores', () => {
@@ -462,8 +437,11 @@ test.describe('persistPhaseResult', () => {
   });
 });
 
+// ============================================================================
+// TESTS - Adversarial Review Detection
+// ============================================================================
+
 test.describe('adversarial review detection', () => {
-  // Helper function to detect self-reference patterns
   function detectSelfReference(content) {
     const patterns = [
       { pattern: /我们添加|我们修改|我们实现/g, desc: '使用"我们"' },
@@ -482,7 +460,6 @@ test.describe('adversarial review detection', () => {
     return violations;
   }
 
-  // Helper function to check evidence completeness
   function checkEvidenceCompleteness(content) {
     const claims = [
       { pattern: /测试通过|tests? passed|test.*success/g, need: 'pnpm test 输出' },
@@ -518,12 +495,9 @@ test.describe('adversarial review detection', () => {
   });
 
   test('detects "上面的代码" reference', () => {
-    // Note: "上面的代码" matches two patterns
     const content = '按照上面的代码实现，这个功能正确';
     const violations = detectSelfReference(content);
-    // Should detect at least 2 violations because "上面的代码" contains "上面"
     assertTrue(violations.length >= 1, `Expected >= 1 violations, got ${violations.length}`);
-    // Should have one about '上面的代码' or '按照上面'
     const hasRelevantViolation = violations.some(v =>
       v.desc === '引用刚写的代码' || v.desc === '引用实现过程'
     );
@@ -533,7 +507,6 @@ test.describe('adversarial review detection', () => {
   test('detects multiple self-reference patterns', () => {
     const content = '我们添加了测试，我写的代码按照上面的实现';
     const violations = detectSelfReference(content);
-    // 3 patterns matched: "我们添加", "我写的", "按照上面"
     assertTrue(violations.length >= 2, `Expected >= 2 violations, got ${violations.length}`);
   });
 
@@ -564,7 +537,7 @@ test.describe('adversarial review detection', () => {
   });
 });
 
-// Cleanup after all tests (manual call since afterAll is not available)
+// Cleanup after all tests
 process.on('exit', () => {
   try {
     rmSync(TEST_DIR, { recursive: true });

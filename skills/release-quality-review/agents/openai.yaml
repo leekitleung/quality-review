@@ -1,0 +1,6 @@
+interface:
+  display_name: "Release Quality Review"
+  short_description: "Evidence-backed adversarial release quality gate"
+  default_prompt: "Use $release-quality-review to assess this change for release readiness."
+policy:
+  allow_implicit_invocation: true

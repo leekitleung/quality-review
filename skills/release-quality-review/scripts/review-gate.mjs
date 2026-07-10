@@ -20,8 +20,14 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { readFile } from 'fs/promises';
+import {
+  parseScore as parseScoreShared,
+  parseBlockers as parseBlockersShared,
+  parseYamlResult as parseYamlResultShared,
+  parseYamlProfile as parseYamlProfileShared,
+} from '../lib/review-utils.mjs';
 
 // Use process.cwd() as the reliable project root
 const PROJECT_ROOT = process.cwd();
@@ -64,6 +70,7 @@ let detectScale = false;
 let userSpecifiedProfile = false;
 let validateEvidence = true; // 对抗性审查：验证证据来源是否合规
 let checkGoalMode = false; // Goal 模式约束：强制描述最终状态而非实现步骤
+let diffBase = 'HEAD'; // Git diff base for change detection (default: working tree vs HEAD)
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -102,9 +109,28 @@ for (let i = 0; i < args.length; i++) {
     validateEvidence = true;
   } else if (arg === '--no-validate-evidence') {
     validateEvidence = false;
+  } else if (arg === '--base' && args[i + 1]) {
+    diffBase = args[i + 1];
+    i++;
   } else if (arg === '--help' || arg === '-h') {
     printHelp();
     process.exit(0);
+  }
+}
+
+let resolvedDiffBase = 'HEAD';
+if (diffBase !== 'HEAD') {
+  if (!/^[A-Za-z0-9._/@-]+$/.test(diffBase)) {
+    log.error(`Invalid --base ref: ${diffBase}`);
+    process.exit(4);
+  }
+  try {
+    resolvedDiffBase = execFileSync('git', ['merge-base', diffBase, 'HEAD'], {
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000,
+    }).trim();
+  } catch {
+    log.error(`Unable to resolve --base ref: ${diffBase}`);
+    process.exit(4);
   }
 }
 
@@ -118,7 +144,9 @@ for (let i = 0; i < args.length; i++) {
  */
 function detectChangeScale() {
   try {
-    const diff = execSync('git diff --stat --numstat HEAD 2>/dev/null', {
+    // Use diffBase to compare against a specific commit range
+    // Default: git diff HEAD (working tree). Use --base origin/main to compare branches.
+    const diff = execFileSync('git', ['diff', '--numstat', resolvedDiffBase], {
       encoding: 'utf-8',
       cwd: PROJECT_ROOT,
       timeout: 10000,
@@ -136,6 +164,10 @@ function detectChangeScale() {
         totalDeletions += parseInt(match[2]) || 0;
       }
     }
+    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000,
+    }).trim().split('\n').filter(Boolean);
+    totalFiles += untracked.length;
 
     const totalChanges = totalAdditions + totalDeletions;
 
@@ -259,6 +291,7 @@ Options:
   --detect-scale         Detect change scale and suggest profile
   --validate-evidence   Enable evidence source validation (default: true)
   --no-validate-evidence Skip evidence source validation (对抗性审查)
+  --base <ref>          Git diff base for change detection (default: HEAD, use "origin/main" for branch comparison)
   --dry-run             Validate configuration without running
   --help, -h            Show this help
 
@@ -338,6 +371,8 @@ function loadYamlProfile(profileName) {
 
   try {
     const content = readFileSync(profilePath, 'utf-8');
+    return parseYamlProfileShared(content, profileName);
+    /* legacy parser retained below for compatibility reference */
     const profile = {
       name: profileName,
       description: '',
@@ -536,12 +571,15 @@ function detectConditionalReviewers(profile) {
 
   try {
     // Get changed files
-    const gitOutput = execSync('git diff --name-only HEAD 2>/dev/null || echo ""', {
+    const gitOutput = execFileSync('git', ['diff', '--name-only', resolvedDiffBase], {
       encoding: 'utf-8',
       cwd: PROJECT_ROOT,
       timeout: 10000,
     });
-    const changedFiles = gitOutput.split('\n').filter(f => f.trim());
+    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000,
+    });
+    const changedFiles = [...new Set(`${gitOutput}\n${untracked}`.split('\n').filter(f => f.trim()))];
 
     for (const reviewer of profile.conditional_reviewers) {
       const conditions = triggerConditions[reviewer];
@@ -650,7 +688,7 @@ function parseScore(scoreContent) {
     // Pattern 3: "68 / 100" or "72/100" anywhere in text
     /(\d+)\s*\/\s*100/,
     // Pattern 4: "Score: 85" (without /100) - less preferred
-    /(?:总分|Overall Score|Total Score|Score)[^0-9]*(\d+)$/gim,
+    /(?:总分|Overall Score|Total Score|Score)[^0-9]*(\d+)$/im,
   ];
 
   for (const pattern of patterns) {
@@ -660,9 +698,13 @@ function parseScore(scoreContent) {
       const scoreStr = match[1];
       if (scoreStr) {
         const score = parseInt(scoreStr, 10);
-        // Validate range (0-100)
+        // Validate range (0-100) and reject negative-looking inputs
         if (!isNaN(score) && score >= 0 && score <= 100) {
-          return score;
+          // Guard: reject if the match includes a preceding minus sign
+          const fullMatch = match[0];
+          if (!fullMatch.includes('-' + scoreStr)) {
+            return score;
+          }
         }
       }
     }
@@ -734,7 +776,7 @@ function collectEvidence_(config) {
       branch: execSync('git branch --show-current 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim(),
       commit: execSync('git rev-parse HEAD 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim().substring(0, 8),
       status: execSync('git status --short 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim(),
-      diff: execSync('git diff --stat 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim(),
+      diff: execFileSync('git', ['diff', '--stat', resolvedDiffBase], { encoding: 'utf-8' }).trim(),
     };
   } catch (e) {
     log.warn('Could not collect git evidence');
@@ -769,6 +811,7 @@ function runAutomatedChecks(config) {
     secrets: { status: 'pass', issues: [] },
     testGate: { status: 'unknown', output: '' },
     typecheckGate: { status: 'unknown', output: '' },
+    buildGate: { status: 'unknown', output: '' },
   };
 
   // Get commands from config or use defaults
@@ -868,6 +911,16 @@ function runAutomatedChecks(config) {
     checks.typecheckGate.output = e.message.substring(0, 500);
   }
 
+  log.info(`Running build gate: ${buildCmd}`);
+  try {
+    execSync(`${buildCmd} 2>&1`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 120000 });
+    checks.buildGate.status = 'pass';
+    checks.buildGate.output = 'Build passed';
+  } catch (e) {
+    checks.buildGate.status = 'fail';
+    checks.buildGate.output = e.message.substring(0, 500);
+  }
+
   return checks;
 }
 
@@ -905,6 +958,8 @@ function parseYamlResult(yamlContent) {
   let currentKey = null;
   let currentArray = null;
   let inArray = false;
+  let currentNestedObj = null; // Track nested object within an array item
+  let arrayStack = []; // Stack for nested arrays (e.g., blockers > sub-blockers)
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -915,12 +970,27 @@ function parseYamlResult(yamlContent) {
     // Check for array items
     if (trimmed.startsWith('- ')) {
       const item = trimmed.substring(2).trim();
+
+      // Flush previous nested object if we're starting a new array item
+      if (currentNestedObj && currentArray) {
+        result[currentArray].push(currentNestedObj);
+        currentNestedObj = null;
+      }
+
       if (currentArray && item) {
         if (currentArray === 'blockers' || currentArray === 'redlines') {
-          // Parse blockers like "P1: Description" or "- P2: Description"
+          // Try inline format: "P1: Description"
           const blockerMatch = item.match(/^(P[0-3]):\s*(.+)$/i);
           if (blockerMatch) {
             result[currentArray].push({ priority: blockerMatch[1].toUpperCase(), text: blockerMatch[2] });
+          } else if (item.includes(':')) {
+            // Nested object format: "priority: P0" or "severity: P1"
+            const nestedKv = item.match(/^(\w+):\s*(.+)$/);
+            if (nestedKv) {
+              currentNestedObj = { [nestedKv[1].trim().toLowerCase()]: nestedKv[2].trim() };
+            } else {
+              result[currentArray].push(item);
+            }
           } else {
             result[currentArray].push(item);
           }
@@ -931,6 +1001,17 @@ function parseYamlResult(yamlContent) {
       continue;
     }
 
+    // Check for continuation of nested object (indented key: value after array item)
+    if (currentNestedObj && trimmed.includes(':')) {
+      const colonIndex = trimmed.indexOf(':');
+      const key = trimmed.substring(0, colonIndex).trim().toLowerCase();
+      const value = trimmed.substring(colonIndex + 1).trim();
+      if (key && value) {
+        currentNestedObj[key] = value;
+        continue;
+      }
+    }
+
     // Check for key: value
     const colonIndex = trimmed.indexOf(':');
     if (colonIndex > 0) {
@@ -939,6 +1020,11 @@ function parseYamlResult(yamlContent) {
 
       // Handle array markers
       if (value === '' || value === '[]') {
+        // Flush pending nested object
+        if (currentNestedObj && currentArray) {
+          result[currentArray].push(currentNestedObj);
+          currentNestedObj = null;
+        }
         currentKey = key;
         currentArray = key;
         inArray = true;
@@ -977,6 +1063,11 @@ function parseYamlResult(yamlContent) {
       inArray = false;
       currentArray = null;
     }
+  }
+
+  // Flush remaining nested object
+  if (currentNestedObj && currentArray) {
+    result[currentArray].push(currentNestedObj);
   }
 
   return result;
@@ -1026,17 +1117,29 @@ function loadExistingScores(roundDir, reviewers) {
     if (existsSync(resultYamlPath)) {
       try {
         const yamlContent = readFileSync(resultYamlPath, 'utf-8');
-        const yamlResult = parseYamlResult(yamlContent);
+        const yamlResult = parseYamlResultShared(yamlContent);
 
         if (yamlResult.score !== null) {
           score = yamlResult.score;
           scoreSource = 'result.yaml';
         }
 
-        if (yamlResult.blockers.length > 0) {
-          blockers = yamlResult.blockers.map(b =>
-            typeof b === 'string' ? b : `${b.priority}: ${b.text}`
+        // Merge blockers from result.yaml (includes nested severity objects)
+        const resultBlockers = yamlResult.blockers.map(b =>
+          typeof b === 'string' ? b : `${b.priority || b.severity || 'P?'}: ${b.text || b.description || b}`
+        );
+        if (resultBlockers.length > 0) {
+          blockers = resultBlockers;
+        }
+
+        // SECURITY: redlines are mandatory P0/P1 blockers that MUST enter veto
+        // parseYamlResult separates them from blockers, but loadExistingScores must re-merge
+        if (yamlResult.redlines.length > 0) {
+          const redlineBlockers = yamlResult.redlines.map(b =>
+            typeof b === 'string' ? b : `${b.priority || b.severity || 'P0'}: ${b.text || b.description || b}`
           );
+          // Merge redlines into blockers - they carry veto power
+          blockers = [...blockers, ...redlineBlockers];
         }
 
         hasReport = true;
@@ -1049,7 +1152,7 @@ function loadExistingScores(roundDir, reviewers) {
     if (score === null && existsSync(scorePath)) {
       try {
         const content = readFileSync(scorePath, 'utf-8');
-        const parsedScore = parseScore(content);
+        const parsedScore = parseScoreShared(content);
         if (parsedScore !== null) {
           score = parsedScore;
           scoreSource = 'score.md';
@@ -1061,7 +1164,7 @@ function loadExistingScores(roundDir, reviewers) {
           const blockerMatch = content.match(/(?:##\s+)?Blockers?\s*\n([\s\S]*?)(?:\n##|\n#|$)/i);
           if (blockerMatch) {
             const blockerSection = blockerMatch[1];
-            blockers = parseBlockers(blockerSection);
+            blockers = parseBlockersShared(blockerSection);
           }
         }
 
@@ -1075,7 +1178,7 @@ function loadExistingScores(roundDir, reviewers) {
     if (blockers.length === 0 && existsSync(blockerPath)) {
       try {
         const blockerContent = readFileSync(blockerPath, 'utf-8');
-        blockers = parseBlockers(blockerContent);
+        blockers = parseBlockersShared(blockerContent);
         hasReport = true;
       } catch (e) {
         // Ignore
@@ -1133,6 +1236,9 @@ function generateSummary(roundDir, profile, scores, allPassed, evidence = null) 
 
     const typeIcon = ac.typecheckGate.status === 'pass' ? '✅' : '❌';
     content += `| pnpm typecheck | ${typeIcon} ${ac.typecheckGate.status} | ${ac.typecheckGate.output.substring(0, 50)} |\n`;
+
+    const buildIcon = ac.buildGate?.status === 'pass' ? '✅' : '❌';
+    content += `| pnpm build | ${buildIcon} ${ac.buildGate?.status || 'unknown'} | ${(ac.buildGate?.output || '').substring(0, 50)} |\n`;
 
     const sizeIcon = ac.oversizedFiles.status === 'pass' ? '✅' : '⚠️';
     content += `| File sizes | ${sizeIcon} ${ac.oversizedFiles.issues.length} oversized | ${ac.oversizedFiles.issues.slice(0, 2).map(i => `${i.lines}L ${i.path.split('/').pop()}`).join(', ') || 'OK'} |\n`;
@@ -1696,7 +1802,18 @@ async function runGate() {
   // SECURITY: Evidence must pass source validation (对抗性审查)
   // SECURITY: Goal mode constraint must be satisfied (if enabled)
   // SECURITY: Goal instruction must be valid (goal 指令生成器)
+  // SECURITY: Automated checks (test/typecheck) are mandatory gates, not just advisory
   const allPassed = allHaveScores && reviewers.every(r => existingScores[r].score >= 90);
+
+  // Automated checks must pass - test and typecheck are mandatory release gates
+  const autoChecks = evidence?.automatedChecks;
+  const strictProfile = ['release-gate', 'full', 'agentic-release-gate'].includes(profile);
+  const testGateFailed = autoChecks?.testGate?.status !== 'pass';
+  const typecheckGateFailed = autoChecks?.typecheckGate?.status !== 'pass';
+  const buildGateFailed = autoChecks?.buildGate?.status !== 'pass';
+  const automatedChecksPassed = strictProfile
+    ? Boolean(autoChecks) && !testGateFailed && !typecheckGateFailed && !buildGateFailed && validateEvidence
+    : !autoChecks || (!testGateFailed && !typecheckGateFailed);
 
   // Only P0/P1 blockers are true "redlines" - P2/P3 are suggestions, not blockers
   const hasRedlines = Object.values(existingScores).some(r =>
@@ -1710,7 +1827,7 @@ async function runGate() {
   const goalInstructionValid = !goalInstructionResult || goalInstructionResult.passed;
   const gatePassed = allPassed && !hasRedlines && evidenceValidationPassed &&
                      (!checkGoalMode || goalModeViolations.length === 0) &&
-                     goalInstructionValid;
+                     goalInstructionValid && automatedChecksPassed;
 
   // Summary
   log.title('GATE STATUS');
@@ -1747,6 +1864,15 @@ async function runGate() {
       return true;
     } else {
       log.error('GATE FAILED');
+      if (testGateFailed) {
+        log.error(`Automated test gate FAILED: ${autoChecks?.testGate?.output || 'tests failing'}`);
+      }
+      if (typecheckGateFailed) {
+        log.error(`Automated typecheck gate FAILED: ${autoChecks?.typecheckGate?.output || 'type errors'}`);
+      }
+      if (buildGateFailed) {
+        log.error(`Automated build gate FAILED: ${autoChecks?.buildGate?.output || 'build evidence missing'}`);
+      }
       if (hasRedlines) {
         log.error('Redlines detected - blocking release');
       }

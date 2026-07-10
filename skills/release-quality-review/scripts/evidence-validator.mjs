@@ -372,7 +372,14 @@ function validateReviewer(roundDir, reviewer, diffFiles) {
   const scorePath = join(reviewerDir, 'score.md');
 
   if (!existsSync(scorePath)) {
-    return { reviewer, status: 'no_report', violations: [], warnings: [] };
+    return {
+      reviewer,
+      status: 'violations',
+      violations: [{ type: 'missing_score_report', desc: '缺少必需的 score.md，不能验证 reviewer 证据' }],
+      warnings: [],
+      totalViolations: 1,
+      totalWarnings: 0,
+    };
   }
 
   const content = readFileSync(scorePath, 'utf-8');
@@ -562,6 +569,36 @@ function main() {
 
   // Validate each reviewer
   const results = reviewers.map(r => validateReviewer(roundDir, r, diffFiles));
+
+  // SECURITY: Require minimum reviewer count for gate integrity
+  // A delivery packet with 0 reviewers is an incomplete review
+  const MIN_REVIEWERS = 2;
+  if (reviewers.length < MIN_REVIEWERS) {
+    const emptyResult = {
+      reviewer: '__GATE__',
+      status: 'violations',
+      violations: [{
+        type: 'insufficient_reviewers',
+        desc: `仅 ${reviewers.length} 个 reviewer（至少需要 ${MIN_REVIEWERS} 个）。缺少 score.md 和 result.yaml。`,
+      }],
+      warnings: [],
+      quality: {
+        fileLineRefs: 0,
+        commandOutputs: 0,
+        testOutputs: 0,
+        issues: [],
+        violations: [],
+        hasMinimumEvidence: false,
+        claimedScore: null,
+        evidenceCount: 0,
+      },
+      totalViolations: 1,
+      totalWarnings: 0,
+      fileRefCheck: { totalRefs: 0, violations: [], warnings: [] },
+    };
+    results.push(emptyResult);
+    log.fail(`Insufficient reviewers: ${reviewers.length}/${MIN_REVIEWERS} minimum`);
+  }
 
   // Generate and print report
   const report = generateReport(results);

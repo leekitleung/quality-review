@@ -20,7 +20,8 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync, spawn } from 'child_process';
+import { parseYamlProfile as parseYamlProfileShared } from '../lib/review-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
@@ -61,6 +62,7 @@ let autoGenerate = false; // Auto-generate review files (for self-review)
 let autoLoop = false; // Auto-loop until gate passes
 let maxLoops = 10; // Maximum iterations before giving up
 let checkGoalMode = false; // Goal 模式约束：强制描述最终状态而非实现步骤
+let diffBase = 'HEAD'; // Git diff base for change detection
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -79,9 +81,26 @@ for (let i = 0; i < args.length; i++) {
   else if (arg === '--auto-loop') autoLoop = true;
   else if (arg === '--max-loops' && args[i + 1]) maxLoops = parseInt(args[++i], 10);
   else if (arg === '--check-goal-mode') checkGoalMode = true;
+  else if (arg === '--base' && args[i + 1]) diffBase = args[++i];
   else if (arg === '--help' || arg === '-h') {
     printHelp();
     process.exit(0);
+  }
+}
+
+let resolvedDiffBase = 'HEAD';
+if (diffBase !== 'HEAD') {
+  if (!/^[A-Za-z0-9._/@-]+$/.test(diffBase)) {
+    console.error(`Invalid --base ref: ${diffBase}`);
+    process.exit(4);
+  }
+  try {
+    resolvedDiffBase = execFileSync('git', ['merge-base', diffBase, 'HEAD'], {
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000,
+    }).trim();
+  } catch {
+    console.error(`Unable to resolve --base ref: ${diffBase}`);
+    process.exit(4);
   }
 }
 
@@ -107,6 +126,7 @@ Options:
   --skip-evidence    Skip automatic evidence collection
   --dry-run          Validate configuration without running
   --check-goal-mode  Enable goal mode constraint check
+  --base <ref>       Git diff base for change detection (default: HEAD)
   --help, -h         Show this help
 
 Examples:
@@ -129,7 +149,7 @@ function loadProfile(profileName) {
 
   try {
     const content = readFileSync(profilePath, 'utf-8');
-    return parseYamlProfile(content, profileName);
+    return parseYamlProfileShared(content, profileName);
   } catch (e) {
     log.error(`Failed to load profile: ${e.message}`);
     return null;
@@ -254,24 +274,28 @@ function collectEvidence(config) {
     evidence.git = {
       branch: execSync('git branch --show-current 2>/dev/null', { encoding: 'utf-8' }).trim(),
       commit: execSync('git rev-parse --short HEAD 2>/dev/null', { encoding: 'utf-8' }).trim(),
-      diffStats: execSync('git diff --stat 2>/dev/null', { encoding: 'utf-8' }).trim(),
+      diffStats: execSync(`git diff --stat ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8' }).trim(),
     };
 
     // For self-review, only show changes in the skill directory
     if (isSelfReview) {
       evidence.git.changedFiles = execSync(
-        `git diff --name-only 2>/dev/null | grep "^skills/release-quality-review/" || true`,
+        `git diff --name-only ${resolvedDiffBase} 2>/dev/null | grep "^skills/release-quality-review/" || true`,
         { encoding: 'utf-8' }
       ).trim().split('\n').filter(Boolean);
       evidence.git.diff = execSync(
-        `git diff 2>/dev/null -- "skills/release-quality-review/" || true`,
+        `git diff ${resolvedDiffBase} 2>/dev/null -- "skills/release-quality-review/" || true`,
         { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
       ).trim();
     } else {
-      evidence.git.changedFiles = execSync('git diff --name-only 2>/dev/null', { encoding: 'utf-8' })
+      evidence.git.changedFiles = execSync(`git diff --name-only ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8' })
         .trim().split('\n').filter(Boolean);
-      evidence.git.diff = execSync('git diff 2>/dev/null', { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();
+      evidence.git.diff = execSync(`git diff ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }).trim();
     }
+    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000,
+    }).trim().split('\n').filter(Boolean);
+    evidence.git.changedFiles = [...new Set([...(evidence.git.changedFiles || []), ...untracked])];
   } catch (e) {
     log.warn('Could not collect git info');
   }
@@ -1366,7 +1390,8 @@ function runGateCheck(roundDir, profileName, round) {
     if (existsSync(gateScript)) {
       const roundName = `round-${String(round).padStart(3, '0')}`;
       const goalModeFlag = checkGoalMode ? '--check-goal-mode' : '';
-      const cmd = `node "${gateScript}" --profile ${profileName} --round ${roundName} ${goalModeFlag}`.trim();
+      const baseFlag = diffBase !== 'HEAD' ? `--base ${diffBase}` : '';
+      const cmd = `node "${gateScript}" --profile ${profileName} --round ${roundName} ${goalModeFlag} ${baseFlag}`.trim();
       execSync(cmd, {
         stdio: 'inherit',
         cwd: PROJECT_ROOT,
@@ -1546,7 +1571,6 @@ ${failedList}
 // Run single review iteration
 async function runSingleReviewIteration(profileConfig, currentRound, onReviewComplete) {
   const roundDir = join(REPORT_DIR, `round-${String(currentRound).padStart(3, '0')}`);
-  mkdirSync(roundDir, { recursive: true });
 
   console.log(`\n${c.blue}ℹ${c.reset} Round: ${currentRound}`);
   console.log(`${c.blue}ℹ${c.reset} Report: ${roundDir}`);
@@ -1563,6 +1587,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     console.log(`\n${c.green}Dry run complete${c.reset}`);
     return { roundDir, evidence: {}, allReviewers: [], results: [] };
   }
+
+  mkdirSync(roundDir, { recursive: true });
 
   // Collect evidence with config
   const config = loadConfig();
@@ -1583,7 +1609,11 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   const triggeredConditional = detectConditionalReviewers(profileConfig, evidence);
   const allReviewers = reviewerOverride
     ? [reviewerOverride]
-    : [...profileConfig.resident_reviewers, ...triggeredConditional];
+    : [
+        ...profileConfig.resident_reviewers,
+        ...triggeredConditional,
+        ...(profileConfig.gate?.require_adversarial ? profileConfig.adversarial_reviewers : []),
+      ];
 
   // Persist phase plan BEFORE running reviews
   persistPhasePlan(roundDir, currentRound, allReviewers, evidence, profileConfig);
@@ -1601,29 +1631,95 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   console.log(`\n${c.cyan}═══ Running Reviews ═══${c.reset}\n`);
 
   const results = [];
-  for (const reviewer of allReviewers) {
-    const reviewerDir = join(roundDir, reviewer);
-    mkdirSync(reviewerDir, { recursive: true });
 
-    const prompt = generateReviewerPrompt(reviewer);
-    if (prompt) {
-      writeFileSync(join(reviewerDir, 'prompt.md'), prompt);
+  if (parallel && !autoGenerate) {
+    log.error('Parallel reviewer execution requires host-agent orchestration; this Node runner cannot start Codex/Claude reviewers.');
+    process.exit(5);
+    // === PARALLEL MODE: Spawn each reviewer as a subprocess ===
+    log.info(`Parallel mode: spawning ${allReviewers.length} reviewers...`);
+    const gateScript = join(SKILL_DIR, 'scripts', 'review-gate.mjs');
+    const roundName = `round-${String(currentRound).padStart(3, '0')}`;
 
-      // Auto-generate review files if --auto flag is set
-      if (autoGenerate) {
-        const autoResult = autoGenerateReview(reviewer, reviewerDir, evidence);
-        console.log(`  ${c.green}✓${c.reset} ${reviewer}: ${autoResult}`);
-      } else {
-        console.log(`  ${c.green}✓${c.reset} ${reviewer}: prompt written`);
-      }
-    } else {
-      console.log(`  ${c.red}✗${c.reset} ${reviewer}: definition not found`);
+    const spawnPromises = allReviewers.map((reviewer) => {
+      return new Promise((resolve) => {
+        const reviewerDir = join(roundDir, reviewer);
+        mkdirSync(reviewerDir, { recursive: true });
+
+        const prompt = generateReviewerPrompt(reviewer);
+        if (!prompt) {
+          console.log(`  ${c.red}✗${c.reset} ${reviewer}: definition not found`);
+          resolve({ name: reviewer, status: 'failed' });
+          return;
+        }
+
+        writeFileSync(join(reviewerDir, 'prompt.md'), prompt);
+
+        // Spawn review-gate.mjs for this reviewer
+        const proc = spawn('node', [
+          gateScript,
+          '--reviewer', reviewer,
+          '--round', roundName,
+          '--collect-evidence',
+        ], {
+          cwd: PROJECT_ROOT,
+          stdio: 'pipe',
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        proc.stdout.on('data', (data) => { stdout += data.toString(); });
+        proc.stderr.on('data', (data) => { stderr += data.toString(); });
+
+        proc.on('close', (code) => {
+          if (code === 0) {
+            console.log(`  ${c.green}✓${c.reset} ${reviewer}: completed`);
+            resolve({ name: reviewer, status: 'completed' });
+          } else {
+            console.log(`  ${c.yellow}⚠${c.reset} ${reviewer}: exit ${code}`);
+            resolve({ name: reviewer, status: 'failed' });
+          }
+        });
+
+        proc.on('error', (err) => {
+          console.log(`  ${c.red}✗${c.reset} ${reviewer}: ${err.message}`);
+          resolve({ name: reviewer, status: 'error' });
+        });
+      });
+    });
+
+    const parallelResults = await Promise.all(spawnPromises);
+    results.push(...parallelResults);
+  } else {
+    // === SEQUENTIAL MODE: Process reviewers one by one ===
+    if (parallel && autoGenerate) {
+      log.info('Parallel mode: auto-generating reviews concurrently');
     }
 
-    results.push({ name: reviewer, status: 'pending' });
+    for (const reviewer of allReviewers) {
+      const reviewerDir = join(roundDir, reviewer);
+      mkdirSync(reviewerDir, { recursive: true });
 
-    // Callback for auto-loop mode
-    if (onReviewComplete) onReviewComplete(reviewer, reviewerDir, evidence);
+      const prompt = generateReviewerPrompt(reviewer);
+      if (prompt) {
+        writeFileSync(join(reviewerDir, 'prompt.md'), prompt);
+
+        // Auto-generate review files if --auto flag is set
+        if (autoGenerate) {
+          const autoResult = autoGenerateReview(reviewer, reviewerDir, evidence);
+          console.log(`  ${c.green}✓${c.reset} ${reviewer}: ${autoResult}`);
+        } else {
+          console.log(`  ${c.green}✓${c.reset} ${reviewer}: prompt written`);
+        }
+      } else {
+        console.log(`  ${c.red}✗${c.reset} ${reviewer}: definition not found`);
+      }
+
+      results.push({ name: reviewer, status: 'pending' });
+
+      // Callback for auto-loop mode
+      if (onReviewComplete) onReviewComplete(reviewer, reviewerDir, evidence);
+    }
   }
 
   // Write metadata
@@ -1734,7 +1830,7 @@ async function main() {
         const scoresObj = {};
         scores.forEach(s => { scoresObj[s.reviewer] = s.score; });
         persistPhaseResult(result.roundDir, currentRound, scoresObj, false, lastFailed);
-        break;
+        process.exit(1);
       }
 
       console.log(`\n${c.yellow}⚠ Gate not passed${c.reset}`);
@@ -1780,6 +1876,7 @@ async function main() {
   console.log(`${c.blue}ℹ${c.reset} Running round: ${effectiveRound}`);
 
   await runSingleReviewIteration(profileConfig, effectiveRound, () => {});
+  if (dryRun) return;
 
   // Determine round directory for gate check (same as iteration)
   const roundDir = join(REPORT_DIR, `round-${String(effectiveRound).padStart(3, '0')}`);
@@ -1797,13 +1894,14 @@ async function main() {
 
   console.log(`\n${c.cyan}═══ Summary ═══${c.reset}\n`);
   console.log(`  Round: ${effectiveRound}`);
-  console.log(`  Gate: ${gateResult.passed ? c.green + 'PASSED' : c.red + 'FAILED'}`);
+  console.log(`  Gate: ${gateResult.passed ? c.green + 'PASSED' : c.red + 'FAILED'}${c.reset}`);
 
   if (!gateResult.passed) {
     console.log(`\n${c.yellow}Next steps:${c.reset}`);
     console.log(`  1. Fix issues identified by failed reviewers`);
     console.log(`  2. Run again: node review-runner.mjs --auto-loop --profile ${profile}`);
     console.log(`  3. Or manually re-run: node review-runner.mjs --auto`);
+    process.exit(1);
   }
 }
 
