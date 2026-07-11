@@ -759,11 +759,13 @@ test.describe('CLI fail-closed integration', () => {
         command, started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
         status: statusValue, exit_code: exitCode, output, output_bytes: Buffer.byteLength(output), truncated: false,
       });
-      const passedCheck = commandRecord('test command', 'pass', 0, 'passed');
-      const failedOptionalCheck = commandRecord('optional command', 'fail', 1, 'optional failure');
+      const testCheck = commandRecord('npm test', 'pass', 0, 'passed');
+      const typecheckCheck = commandRecord('npm run typecheck', 'pass', 0, 'passed');
       const automatedContent = JSON.stringify({
-        testGate: passedCheck, typecheckGate: passedCheck, buildGate: failedOptionalCheck,
-        lintGate: failedOptionalCheck, auditGate: failedOptionalCheck,
+        testGate: testCheck, typecheckGate: typecheckCheck,
+        buildGate: commandRecord('npm run build', 'fail', 1, 'optional failure'),
+        lintGate: commandRecord('npm run lint', 'fail', 1, 'optional failure'),
+        auditGate: commandRecord('npm audit --audit-level=high', 'fail', 1, 'optional failure'),
         secrets: { status: 'fail', issues: ['optional scan failure'] }, oversizedFiles: { status: 'pass', issues: [] },
         circularDeps: { status: 'pass', issues: [] },
       });
@@ -791,6 +793,20 @@ test.describe('CLI fail-closed integration', () => {
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(substituted.status, 1);
       assertTrue(substituted.stdout.includes('Persisted evidence is invalid'), 'Expected evidence digest mismatch to fail closed');
+
+      const contradictory = JSON.parse(automatedContent);
+      contradictory.testGate.exit_code = 1;
+      const contradictoryContent = JSON.stringify(contradictory);
+      writeFileSync(join(round, 'evidence', 'automated-checks.json'), contradictoryContent);
+      const reboundMetadata = JSON.parse(readFileSync(join(round, 'metadata.json'), 'utf8'));
+      reboundMetadata.automated_checks_sha256 = createHash('sha256').update(contradictoryContent).digest('hex');
+      writeFileSync(join(round, 'metadata.json'), JSON.stringify(reboundMetadata));
+      const contradictoryResult = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '996',
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(contradictoryResult.status, 1);
+      assertTrue(contradictoryResult.stdout.includes('invalid testGate command evidence'), 'Expected pass/nonzero contradiction to fail closed');
     } finally {
       rmSync(round, { recursive: true, force: true });
       if (previousFinal === null) rmSync(finalReport, { force: true });

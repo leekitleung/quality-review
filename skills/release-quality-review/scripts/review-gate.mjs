@@ -571,12 +571,18 @@ async function persistEvidence(roundDir, evidence, profileName, reviewers) {
   await writeContainedFile(PROJECT_ROOT, join(roundDir, 'metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`);
 }
 
-function validCommandEvidence(record) {
-  return record && typeof record.command === 'string' && record.command.length > 0 &&
+function validCommandEvidence(record, expectedCommand) {
+  const started = Date.parse(record?.started_at);
+  const finished = Date.parse(record?.finished_at);
+  const retainedBytes = Buffer.byteLength(record?.output || '');
+  return record && record.command === expectedCommand &&
     typeof record.started_at === 'string' && typeof record.finished_at === 'string' &&
-    Number.isInteger(record.exit_code) && typeof record.status === 'string' &&
+    Number.isFinite(started) && Number.isFinite(finished) && finished >= started &&
+    Number.isInteger(record.exit_code) && ['pass', 'fail'].includes(record.status) &&
+    (record.status === 'pass') === (record.exit_code === 0) &&
     typeof record.output === 'string' && Number.isInteger(record.output_bytes) &&
-    typeof record.truncated === 'boolean';
+    record.output_bytes >= retainedBytes && typeof record.truncated === 'boolean' &&
+    (record.truncated || record.output_bytes === retainedBytes);
 }
 
 function persistFinalArbitration(roundDir, passed, reason) {
@@ -1276,8 +1282,17 @@ async function runGate() {
             metadata.automated_checks_sha256 !== digest) {
           throw new Error('persisted evidence does not match the current commit and working-tree status');
         }
-        for (const name of ['testGate', 'typecheckGate', 'buildGate', 'lintGate', 'auditGate']) {
-          if (!validCommandEvidence(automatedChecks[name])) throw new Error(`invalid ${name} command evidence`);
+        const expectedCommands = {
+          testGate: config?.verification?.test || 'pnpm test',
+          typecheckGate: config?.verification?.typecheck || 'pnpm typecheck',
+          buildGate: config?.verification?.build || 'pnpm build',
+          lintGate: config?.verification?.lint || 'pnpm lint',
+          auditGate: config?.verification?.audit || 'npm audit --audit-level=high',
+        };
+        for (const [name, expectedCommand] of Object.entries(expectedCommands)) {
+          if (!validCommandEvidence(automatedChecks[name], expectedCommand)) {
+            throw new Error(`invalid ${name} command evidence`);
+          }
         }
         evidence = {
           timestamp: metadata.collected_at,
