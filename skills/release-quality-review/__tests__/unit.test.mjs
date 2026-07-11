@@ -17,6 +17,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, symlinkSync
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import test from 'node:test';
 import {
   parseScore,
@@ -741,6 +742,8 @@ test.describe('CLI fail-closed integration', () => {
     const finalReport = join(PROJECT_ROOT, 'quality-reports', 'final-report.md');
     const previousFinal = existsSync(finalReport) ? readFileSync(finalReport, 'utf8') : null;
     const commit = spawnSync('git', ['rev-parse', '--short=8', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+    const fullCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+    const tree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
     const status = spawnSync('git', ['status', '--short'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
     try {
       for (const reviewer of ['product-flow', 'architecture-maintainer']) {
@@ -752,16 +755,23 @@ test.describe('CLI fail-closed integration', () => {
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
       }
       mkdirSync(join(round, 'evidence'), { recursive: true });
-      writeFileSync(join(round, 'metadata.json'), JSON.stringify({
-        collected_at: new Date().toISOString(), git: { commit, status, branch: 'test' }, files: {},
-      }));
-      const passedCheck = { status: 'pass', exit_code: 0, output: '' };
-      const failedOptionalCheck = { status: 'fail', exit_code: 1, output: 'optional failure' };
-      writeFileSync(join(round, 'evidence', 'automated-checks.json'), JSON.stringify({
+      const commandRecord = (command, statusValue, exitCode, output) => ({
+        command, started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
+        status: statusValue, exit_code: exitCode, output, output_bytes: Buffer.byteLength(output), truncated: false,
+      });
+      const passedCheck = commandRecord('test command', 'pass', 0, 'passed');
+      const failedOptionalCheck = commandRecord('optional command', 'fail', 1, 'optional failure');
+      const automatedContent = JSON.stringify({
         testGate: passedCheck, typecheckGate: passedCheck, buildGate: failedOptionalCheck,
         lintGate: failedOptionalCheck, auditGate: failedOptionalCheck,
         secrets: { status: 'fail', issues: ['optional scan failure'] }, oversizedFiles: { status: 'pass', issues: [] },
         circularDeps: { status: 'pass', issues: [] },
+      });
+      writeFileSync(join(round, 'evidence', 'automated-checks.json'), automatedContent);
+      writeFileSync(join(round, 'metadata.json'), JSON.stringify({
+        profile: 'quick', round: 996, collected_at: new Date().toISOString(),
+        git: { commit, status, branch: 'test' }, files: {}, candidate_commit: fullCommit, candidate_tree: tree,
+        automated_checks_sha256: createHash('sha256').update(automatedContent).digest('hex'),
       }));
       const result = spawnSync('node', [
         join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '996',
@@ -773,6 +783,14 @@ test.describe('CLI fail-closed integration', () => {
       assertEqual(report.includes('Clean-candidate verification passed'), false);
       assertEqual(report.includes('Goal instruction validation passed'), false);
       assertEqual(report.includes('Build, lint, audit'), false);
+
+      writeFileSync(join(round, 'evidence', 'automated-checks.json'), `${automatedContent} `);
+      const substituted = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '996',
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(substituted.status, 1);
+      assertTrue(substituted.stdout.includes('Persisted evidence is invalid'), 'Expected evidence digest mismatch to fail closed');
     } finally {
       rmSync(round, { recursive: true, force: true });
       if (previousFinal === null) rmSync(finalReport, { force: true });

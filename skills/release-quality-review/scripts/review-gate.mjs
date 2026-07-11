@@ -21,6 +21,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync, execFileSync } from 'child_process';
 import { readFile } from 'fs/promises';
+import { createHash } from 'node:crypto';
 import {
   parseScore as parseScoreShared,
   parseBlockers as parseBlockersShared,
@@ -28,7 +29,7 @@ import {
   parseYamlProfile as parseYamlProfileShared,
   matchesTriggerConditions,
 } from '../lib/review-utils.mjs';
-import { containsSensitiveText, redactSensitiveText } from '../lib/security-utils.mjs';
+import { containsSensitiveText, redactSensitiveText, writeContainedFile } from '../lib/security-utils.mjs';
 
 // Use process.cwd() as the reliable project root
 const PROJECT_ROOT = process.cwd();
@@ -551,18 +552,31 @@ function redactEvidence(value) {
   return redactSensitiveText(value);
 }
 
-function persistEvidence(roundDir, evidence, profileName, reviewers) {
+async function persistEvidence(roundDir, evidence, profileName, reviewers) {
   const evidenceDir = join(roundDir, 'evidence');
   mkdirSync(evidenceDir, { recursive: true });
+  const automatedContent = `${JSON.stringify(evidence.automatedChecks, null, 2)}\n`;
   const metadata = {
     profile: profileName,
+    round: roundNumber,
     reviewers,
     collected_at: evidence.timestamp,
     git: evidence.git,
     files: evidence.files,
+    candidate_commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(),
+    candidate_tree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(),
+    automated_checks_sha256: createHash('sha256').update(automatedContent).digest('hex'),
   };
-  writeFileSync(join(roundDir, 'metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`);
-  writeFileSync(join(evidenceDir, 'automated-checks.json'), `${JSON.stringify(evidence.automatedChecks, null, 2)}\n`);
+  await writeContainedFile(PROJECT_ROOT, join(evidenceDir, 'automated-checks.json'), automatedContent);
+  await writeContainedFile(PROJECT_ROOT, join(roundDir, 'metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`);
+}
+
+function validCommandEvidence(record) {
+  return record && typeof record.command === 'string' && record.command.length > 0 &&
+    typeof record.started_at === 'string' && typeof record.finished_at === 'string' &&
+    Number.isInteger(record.exit_code) && typeof record.status === 'string' &&
+    typeof record.output === 'string' && Number.isInteger(record.output_bytes) &&
+    typeof record.truncated === 'boolean';
 }
 
 function persistFinalArbitration(roundDir, passed, reason) {
@@ -1233,7 +1247,7 @@ async function runGate() {
   if (collectEvidence) {
     try {
       evidence = collectEvidence_(config);
-      persistEvidence(roundDir, evidence, profile, reviewers);
+      await persistEvidence(roundDir, evidence, profile, reviewers);
       log.success(`Evidence collected`);
     } catch (e) {
       log.error(`Evidence collection failed: ${e.message}`);
@@ -1245,20 +1259,31 @@ async function runGate() {
     if (existsSync(metadataPath) && existsSync(automatedPath)) {
       try {
         const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+        const automatedContent = readFileSync(automatedPath, 'utf8');
+        const automatedChecks = JSON.parse(automatedContent);
         const currentCommit = execFileSync('git', ['rev-parse', '--short=8', 'HEAD'], {
           cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
         }).trim();
         const currentStatus = execFileSync('git', ['status', '--short'], {
           cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
         }).trim();
-        if (metadata.git?.commit !== currentCommit || metadata.git?.status !== currentStatus) {
+        const fullCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+        const currentTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+        const digest = createHash('sha256').update(automatedContent).digest('hex');
+        if (metadata.profile !== profile || metadata.round !== roundNumber ||
+            metadata.git?.commit !== currentCommit || metadata.git?.status !== currentStatus ||
+            metadata.candidate_commit !== fullCommit || metadata.candidate_tree !== currentTree ||
+            metadata.automated_checks_sha256 !== digest) {
           throw new Error('persisted evidence does not match the current commit and working-tree status');
+        }
+        for (const name of ['testGate', 'typecheckGate', 'buildGate', 'lintGate', 'auditGate']) {
+          if (!validCommandEvidence(automatedChecks[name])) throw new Error(`invalid ${name} command evidence`);
         }
         evidence = {
           timestamp: metadata.collected_at,
           git: metadata.git,
           files: metadata.files,
-          automatedChecks: JSON.parse(readFileSync(automatedPath, 'utf8')),
+          automatedChecks,
         };
         log.info('Loaded persisted automated evidence for the current candidate');
       } catch (error) {
