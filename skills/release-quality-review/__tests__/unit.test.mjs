@@ -13,11 +13,11 @@
  * 5. parseYamlResult - result.yaml parsing (from production code)
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, symlinkSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import {
   parseScore,
@@ -38,7 +38,16 @@ import {
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
 const PROJECT_ROOT = join(SKILL_DIR, '..', '..');
-const TEST_DIR = join(__dirname, '__test_output__');
+const TEST_ROOT = join(__dirname, '__test_output__');
+const TEST_DIR = join(TEST_ROOT, `${process.pid}-${randomUUID()}`);
+const ROUND_BASE = process.pid * 10;
+const TEST_ROUNDS = {
+  veto: ROUND_BASE + 1,
+  runner: ROUND_BASE + 2,
+  rehydrate: ROUND_BASE + 3,
+  missingEvidence: ROUND_BASE + 4,
+};
+const reportRound = round => join(PROJECT_ROOT, 'quality-reports', `round-${String(round).padStart(3, '0')}`);
 
 // Create test directory at module load time
 mkdirSync(TEST_DIR, { recursive: true });
@@ -696,11 +705,12 @@ test.describe('CLI fail-closed integration', () => {
   });
 
   test('keeps blockers.md veto even when result.yaml claims pass', () => {
-    const round = join(PROJECT_ROOT, 'quality-reports', 'round-998');
+    const roundNumber = TEST_ROUNDS.veto;
+    const round = reportRound(roundNumber);
     for (const reviewer of ['product-flow', 'architecture-maintainer']) {
       const dir = join(round, reviewer);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: 998\nscore: 100\nstatus: pass\nblockers: []\nredlines: []\n`);
+      writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\nscore: 100\nstatus: pass\nblockers: []\nredlines: []\n`);
       writeFileSync(join(dir, 'score.md'), `# ${reviewer}\n\n## Overall Score: 100/100\n`);
       writeFileSync(join(dir, 'blockers.md'), reviewer === 'product-flow'
         ? '# Blockers\n\n## P1 — veto must survive\n\nEvidence: reproducible\n'
@@ -709,7 +719,7 @@ test.describe('CLI fail-closed integration', () => {
     }
     try {
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '998',
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
         '--no-collect', '--no-validate-evidence',
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(result.status, 1);
@@ -722,10 +732,11 @@ test.describe('CLI fail-closed integration', () => {
   });
 
   test('normal runner workflow writes every prompt and metadata without crashing', () => {
-    const round = join(PROJECT_ROOT, 'quality-reports', 'round-997');
+    const roundNumber = TEST_ROUNDS.runner;
+    const round = reportRound(roundNumber);
     try {
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--round', '997', '--skip-evidence',
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--round', String(roundNumber), '--skip-evidence',
       ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000 });
       assertEqual(result.status, 1);
       assertEqual(result.stderr.includes('results is not defined'), false);
@@ -738,7 +749,8 @@ test.describe('CLI fail-closed integration', () => {
   });
 
   test('no-collect rehydrates matching evidence and quick final report avoids agentic claims', () => {
-    const round = join(PROJECT_ROOT, 'quality-reports', 'round-996');
+    const roundNumber = TEST_ROUNDS.rehydrate;
+    const round = reportRound(roundNumber);
     const finalReport = join(PROJECT_ROOT, 'quality-reports', 'final-report.md');
     const previousFinal = existsSync(finalReport) ? readFileSync(finalReport, 'utf8') : null;
     const commit = spawnSync('git', ['rev-parse', '--short=8', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
@@ -749,7 +761,7 @@ test.describe('CLI fail-closed integration', () => {
       for (const reviewer of ['product-flow', 'architecture-maintainer']) {
         const dir = join(round, reviewer);
         mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: 996\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
         writeFileSync(join(dir, 'score.md'), `# ${reviewer}\n\n## Overall Score: 95/100\n`);
         writeFileSync(join(dir, 'blockers.md'), '# Blockers\n\nNo P0/P1 blockers.\n');
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
@@ -771,12 +783,12 @@ test.describe('CLI fail-closed integration', () => {
       });
       writeFileSync(join(round, 'evidence', 'automated-checks.json'), automatedContent);
       writeFileSync(join(round, 'metadata.json'), JSON.stringify({
-        profile: 'quick', round: 996, collected_at: new Date().toISOString(),
+        profile: 'quick', round: roundNumber, collected_at: new Date().toISOString(),
         git: { commit, status, branch: 'test' }, files: {}, candidate_commit: fullCommit, candidate_tree: tree,
         automated_checks_sha256: createHash('sha256').update(automatedContent).digest('hex'),
       }));
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '996',
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
         '--no-collect', '--no-validate-evidence',
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(result.status, 0);
@@ -788,7 +800,7 @@ test.describe('CLI fail-closed integration', () => {
 
       writeFileSync(join(round, 'evidence', 'automated-checks.json'), `${automatedContent} `);
       const substituted = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '996',
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
         '--no-collect', '--no-validate-evidence',
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(substituted.status, 1);
@@ -802,7 +814,7 @@ test.describe('CLI fail-closed integration', () => {
       reboundMetadata.automated_checks_sha256 = createHash('sha256').update(contradictoryContent).digest('hex');
       writeFileSync(join(round, 'metadata.json'), JSON.stringify(reboundMetadata));
       const contradictoryResult = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '996',
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
         '--no-collect', '--no-validate-evidence',
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(contradictoryResult.status, 1);
@@ -815,18 +827,19 @@ test.describe('CLI fail-closed integration', () => {
   });
 
   test('quick profile cannot approve without automated test and typecheck evidence', () => {
-    const round = join(PROJECT_ROOT, 'quality-reports', 'round-995');
+    const roundNumber = TEST_ROUNDS.missingEvidence;
+    const round = reportRound(roundNumber);
     try {
       for (const reviewer of ['product-flow', 'architecture-maintainer']) {
         const dir = join(round, reviewer);
         mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: 995\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
         writeFileSync(join(dir, 'score.md'), `## Overall Score: 95/100\n`);
         writeFileSync(join(dir, 'blockers.md'), 'No P0/P1 blockers.\n');
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
       }
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '995',
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
         '--no-collect', '--no-validate-evidence',
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(result.status, 1);
@@ -841,6 +854,7 @@ test.describe('CLI fail-closed integration', () => {
 process.on('exit', () => {
   try {
     rmSync(TEST_DIR, { recursive: true });
+    rmdirSync(TEST_ROOT);
   } catch (e) {
     // Ignore
   }
