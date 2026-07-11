@@ -735,6 +735,48 @@ test.describe('CLI fail-closed integration', () => {
       rmSync(round, { recursive: true, force: true });
     }
   });
+
+  test('no-collect rehydrates matching evidence and quick final report avoids agentic claims', () => {
+    const round = join(PROJECT_ROOT, 'quality-reports', 'round-996');
+    const finalReport = join(PROJECT_ROOT, 'quality-reports', 'final-report.md');
+    const previousFinal = existsSync(finalReport) ? readFileSync(finalReport, 'utf8') : null;
+    const commit = spawnSync('git', ['rev-parse', '--short=8', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+    const status = spawnSync('git', ['status', '--short'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+    try {
+      for (const reviewer of ['product-flow', 'architecture-maintainer']) {
+        const dir = join(round, reviewer);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: 996\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+        writeFileSync(join(dir, 'score.md'), `# ${reviewer}\n\n## Overall Score: 95/100\n`);
+        writeFileSync(join(dir, 'blockers.md'), '# Blockers\n\nNo P0/P1 blockers.\n');
+        writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
+      }
+      mkdirSync(join(round, 'evidence'), { recursive: true });
+      writeFileSync(join(round, 'metadata.json'), JSON.stringify({
+        collected_at: new Date().toISOString(), git: { commit, status, branch: 'test' }, files: {},
+      }));
+      const passedCheck = { status: 'pass', exit_code: 0, output: '' };
+      writeFileSync(join(round, 'evidence', 'automated-checks.json'), JSON.stringify({
+        testGate: passedCheck, typecheckGate: passedCheck, buildGate: passedCheck,
+        lintGate: passedCheck, auditGate: passedCheck,
+        secrets: { status: 'pass', issues: [] }, oversizedFiles: { status: 'pass', issues: [] },
+        circularDeps: { status: 'pass', issues: [] },
+      }));
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '996',
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(result.status, 0);
+      assertTrue(result.stdout.includes('Loaded persisted automated evidence'), 'Expected persisted evidence rehydration');
+      const report = readFileSync(finalReport, 'utf8');
+      assertEqual(report.includes('Clean-candidate verification passed'), false);
+      assertEqual(report.includes('Goal instruction validation passed'), false);
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+      if (previousFinal === null) rmSync(finalReport, { force: true });
+      else writeFileSync(finalReport, previousFinal);
+    }
+  });
 });
 
 // Cleanup after all tests
