@@ -1082,7 +1082,11 @@ function generateFinalReport(scores, evidence = null) {
   content += `## Release Checklist\n\n`;
   content += `- [x] All reviewers >= 90/100\n`;
   content += `- [x] No P0/P1 redlines\n`;
-  content += `- [x] Tests, typecheck, build, lint, audit and source-secret scan passed\n`;
+  content += `- [x] Tests passed\n`;
+  content += `- [x] Typecheck passed\n`;
+  if (['release-gate', 'full', 'agentic-release-gate'].includes(profile)) {
+    content += `- [x] Build, lint, audit and source-secret scan passed\n`;
+  }
   if (profile === 'agentic-release-gate') {
     content += `- [x] Clean-candidate verification passed for the exact commit/tree\n`;
     content += `- [x] Evidence and Goal instruction validation passed\n`;
@@ -1542,7 +1546,7 @@ async function runGate() {
   const automatedChecksPassed = strictProfile
     ? Boolean(autoChecks) && !testGateFailed && !typecheckGateFailed && !buildGateFailed &&
       !lintGateFailed && !auditGateFailed && !secretsGateFailed && validateEvidence
-    : !autoChecks || (!testGateFailed && !typecheckGateFailed);
+    : Boolean(autoChecks) && !testGateFailed && !typecheckGateFailed;
 
   // Only P0/P1 blockers are true "redlines" - P2/P3 are suggestions, not blockers
   const vetoFindingsPresent = Object.values(existingScores).some(r =>

@@ -756,10 +756,11 @@ test.describe('CLI fail-closed integration', () => {
         collected_at: new Date().toISOString(), git: { commit, status, branch: 'test' }, files: {},
       }));
       const passedCheck = { status: 'pass', exit_code: 0, output: '' };
+      const failedOptionalCheck = { status: 'fail', exit_code: 1, output: 'optional failure' };
       writeFileSync(join(round, 'evidence', 'automated-checks.json'), JSON.stringify({
-        testGate: passedCheck, typecheckGate: passedCheck, buildGate: passedCheck,
-        lintGate: passedCheck, auditGate: passedCheck,
-        secrets: { status: 'pass', issues: [] }, oversizedFiles: { status: 'pass', issues: [] },
+        testGate: passedCheck, typecheckGate: passedCheck, buildGate: failedOptionalCheck,
+        lintGate: failedOptionalCheck, auditGate: failedOptionalCheck,
+        secrets: { status: 'fail', issues: ['optional scan failure'] }, oversizedFiles: { status: 'pass', issues: [] },
         circularDeps: { status: 'pass', issues: [] },
       }));
       const result = spawnSync('node', [
@@ -771,10 +772,33 @@ test.describe('CLI fail-closed integration', () => {
       const report = readFileSync(finalReport, 'utf8');
       assertEqual(report.includes('Clean-candidate verification passed'), false);
       assertEqual(report.includes('Goal instruction validation passed'), false);
+      assertEqual(report.includes('Build, lint, audit'), false);
     } finally {
       rmSync(round, { recursive: true, force: true });
       if (previousFinal === null) rmSync(finalReport, { force: true });
       else writeFileSync(finalReport, previousFinal);
+    }
+  });
+
+  test('quick profile cannot approve without automated test and typecheck evidence', () => {
+    const round = join(PROJECT_ROOT, 'quality-reports', 'round-995');
+    try {
+      for (const reviewer of ['product-flow', 'architecture-maintainer']) {
+        const dir = join(round, reviewer);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: 995\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+        writeFileSync(join(dir, 'score.md'), `## Overall Score: 95/100\n`);
+        writeFileSync(join(dir, 'blockers.md'), 'No P0/P1 blockers.\n');
+        writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
+      }
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '995',
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(result.status, 1);
+      assertTrue(result.stdout.includes('Automated test gate FAILED'), 'Expected absent automated evidence to fail closed');
+    } finally {
+      rmSync(round, { recursive: true, force: true });
     }
   });
 });
