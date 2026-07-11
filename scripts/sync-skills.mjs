@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { readFile, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-import { isPathWithin, resolveWithinRoot, shouldIncludeCanonicalFile } from '../skills/release-quality-review/lib/security-utils.mjs';
+import { isPathWithin, resolveWithinRoot, shouldIncludeCanonicalFile, writeContainedFile } from '../skills/release-quality-review/lib/security-utils.mjs';
 
 const root = process.cwd();
 const registryPath = path.join(root, 'skill-registry.yaml');
@@ -55,35 +55,6 @@ function agent(name, canonical) {
   return `---\nname: ${name}\ndescription: Independent ${name} reviewer for the release quality gate.\n---\n\nRead and follow \`${canonical}/reviewers/${name}.md\`. Return only the canonical result template required by the skill.\n`;
 }
 
-async function writeRepositoryFile(file, content, rootReal) {
-  await mkdir(path.dirname(file), { recursive: true });
-  const parentReal = await realpath(path.dirname(file));
-  if (!isPathWithin(rootReal, parentReal)) throw new Error(`output parent resolves outside repository: ${file}`);
-  const parentIdentity = await stat(parentReal);
-  const destination = path.join(parentReal, path.basename(file));
-  const temporary = path.join(parentReal, `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
-  try {
-    const handle = await open(temporary, 'wx', 0o600);
-    try {
-      await handle.writeFile(content);
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    const currentParentReal = await realpath(path.dirname(file));
-    const currentParentIdentity = await stat(currentParentReal);
-    if (currentParentReal !== parentReal ||
-        currentParentIdentity.dev !== parentIdentity.dev ||
-        currentParentIdentity.ino !== parentIdentity.ino ||
-        !isPathWithin(rootReal, currentParentReal)) {
-      throw new Error(`output parent changed during write: ${file}`);
-    }
-    await rename(temporary, destination);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
-
 async function expectedState(config) {
   const canonical = config.canonical;
   const canonicalDir = resolveWithinRoot(root, canonical, 'canonical skill path');
@@ -131,9 +102,9 @@ async function main() {
     const rootReal = await realpath(root);
     for (const [relative, content] of generated) {
       const file = resolveWithinRoot(root, relative, 'adapter path');
-      await writeRepositoryFile(file, content, rootReal);
+      await writeContainedFile(rootReal, file, content);
     }
-    await writeRepositoryFile(lockPath, `${JSON.stringify(lock, null, 2)}\n`, rootReal);
+    await writeContainedFile(rootReal, lockPath, `${JSON.stringify(lock, null, 2)}\n`);
     console.log(`Synced ${generated.size} adapters and skills.lock.yaml`);
     return;
   }

@@ -13,7 +13,7 @@
  * 5. parseYamlResult - result.yaml parsing (from production code)
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, symlinkSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'node:child_process';
@@ -31,6 +31,7 @@ import {
   shouldIncludeCanonicalFile,
   containsSensitiveText,
   redactSensitiveText,
+  writeContainedFile,
 } from '../lib/security-utils.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -603,6 +604,18 @@ test.describe('security boundaries', () => {
       assertEqual(redacted.includes(secret), false, `Expected ${secret} to be redacted`);
     }
   });
+
+  test('rejects a repository output parent symlinked outside the repository', async () => {
+    const link = join(TEST_DIR, 'outside-link');
+    symlinkSync('/tmp', link, 'dir');
+    let rejected = false;
+    try {
+      await writeContainedFile(PROJECT_ROOT, join(link, 'must-not-write.txt'), 'blocked');
+    } catch {
+      rejected = true;
+    }
+    assertEqual(rejected, true);
+  });
 });
 
 test.describe('fail-closed result parsing', () => {
@@ -702,6 +715,22 @@ test.describe('CLI fail-closed integration', () => {
       assertTrue(result.stdout.includes('GATE FAILED'), 'Expected a failed gate verdict');
       const summary = readFileSync(join(round, 'summary.md'), 'utf8');
       assertTrue(summary.includes('| product-flow | 100/100 | ❌ FAIL |'), 'Summary must not convert a blocker-bearing score into PASS');
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
+  });
+
+  test('normal runner workflow writes every prompt and metadata without crashing', () => {
+    const round = join(PROJECT_ROOT, 'quality-reports', 'round-997');
+    try {
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--round', '997', '--skip-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000 });
+      assertEqual(result.status, 1);
+      assertEqual(result.stderr.includes('results is not defined'), false);
+      assertEqual(existsSync(join(round, 'metadata.json')), true);
+      assertEqual(existsSync(join(round, 'product-flow', 'prompt.md')), true);
+      assertEqual(existsSync(join(round, 'architecture-maintainer', 'prompt.md')), true);
     } finally {
       rmSync(round, { recursive: true, force: true });
     }

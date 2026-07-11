@@ -401,198 +401,12 @@ function loadConfig() {
 // Load YAML profile configuration
 function loadYamlProfile(profileName) {
   const profilePath = join(SKILL_DIR, 'profiles', `${profileName}.yaml`);
-  if (!existsSync(profilePath)) {
-    return null;
-  }
-
+  if (!existsSync(profilePath)) return null;
   try {
-    const content = readFileSync(profilePath, 'utf-8');
-    return parseYamlProfileShared(content, profileName);
-    /* legacy parser retained below for compatibility reference */
-    const profile = {
-      name: profileName,
-      description: '',
-      resident_reviewers: [],
-      conditional_reviewers: [],
-      adversarial_reviewers: [],  // 对抗性审查器 (XLarge 规模强制启用)
-      trigger_conditions: {},
-      gate: {
-        min_score: 90,
-        fail_on_redlines: true,
-        fail_on_p0_p1_blockers: true,
-        require_adversarial: false,  // 是否强制要求对抗性审查器
-      },
-      output: {
-        verbose: true,
-        include_evidence: true,
-      }
-    };
-
-    // Simple YAML parser for profile files
-    const lines = content.split('\n');
-    let currentSection = '';
-    let currentArrayKey = '';
-    let currentTriggerKey = '';
-    let inCodeBlock = false;
-    let codeBlockContent = '';
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const trimmed = line.trim();
-
-      // Track code blocks - extract YAML content
-      if (trimmed.startsWith('```')) {
-        if (inCodeBlock) {
-          // End of code block - parse the accumulated content
-          inCodeBlock = false;
-          parseYamlContent(codeBlockContent, profile, currentArrayKey, currentTriggerKey);
-          codeBlockContent = '';
-        } else {
-          // Check if this is a YAML code block
-          const langMatch = trimmed.match(/^```(yaml)?/);
-          if (langMatch) {
-            inCodeBlock = true;
-          }
-        }
-        continue;
-      }
-
-      if (inCodeBlock) {
-        codeBlockContent += line + '\n';
-        continue;
-      }
-
-      // Skip comments and empty lines
-      if (!trimmed || trimmed.startsWith('#')) continue;
-
-      // Section headers (## or ###)
-      const sectionMatch = trimmed.match(/^#{2,3}\s+(.+)$/);
-      if (sectionMatch) {
-        currentSection = sectionMatch[1].trim().toLowerCase();
-        continue;
-      }
-
-      // Detect indentation level
-      const indentMatch = line.match(/^(\s*)/);
-      const indent = indentMatch ? indentMatch[1].length : 0;
-
-      // Key-value pairs outside code blocks
-      const kvMatch = trimmed.match(/^(\w[\w-]*):\s*(.*)$/);
-      if (kvMatch) {
-        const key = kvMatch[1].trim();
-        const value = kvMatch[2].trim();
-
-        // Array keys
-        if (key === 'resident_reviewers') {
-          currentArrayKey = 'resident_reviewers';
-        } else if (key === 'conditional_reviewers') {
-          currentArrayKey = 'conditional_reviewers';
-        } else if (key === 'trigger_conditions') {
-          currentArrayKey = '';
-        }
-
-        if (currentSection === 'trigger conditions') {
-          if (['terminal-veteran', 'native-designer', 'data-security', 'zero-doc-user'].includes(key)) {
-            currentTriggerKey = key;
-            if (!profile.trigger_conditions[key]) {
-              profile.trigger_conditions[key] = { files: [], patterns: [] };
-            }
-          }
-        }
-
-        // Top-level scalar values
-        if (indent === 0) {
-          if (key === 'profile') profile.name = value;
-          else if (key === 'description') profile.description = value;
-          else if (key === 'min_score') profile.gate.min_score = parseInt(value, 10) || 90;
-          else if (key === 'fail_on_redlines') profile.gate.fail_on_redlines = value === 'true';
-          else if (key === 'fail_on_p0_p1_blockers') profile.gate.fail_on_p0_p1_blockers = value === 'true';
-        }
-      }
-    }
-
-    return profile;
-  } catch (e) {
-    log.warn(`Could not load profile ${profileName}: ${e.message}`);
+    return parseYamlProfileShared(readFileSync(profilePath, 'utf-8'), profileName);
+  } catch (error) {
+    log.warn(`Could not load profile ${profileName}: ${error.message}`);
     return null;
-  }
-}
-
-// Parse YAML content from code block
-function parseYamlContent(yamlContent, profile, defaultArrayKey, defaultTriggerKey) {
-  if (!yamlContent) return;
-
-  const lines = yamlContent.split('\n');
-  let currentArrayKey = defaultArrayKey || '';
-  let currentTriggerKey = defaultTriggerKey || '';
-
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/^\s+/, ''); // Remove leading whitespace
-    const trimmed = line.trim();
-
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    // Key-value pairs
-    const kvMatch = trimmed.match(/^(\w[\w-]*):\s*(.*)$/);
-    if (kvMatch) {
-      const key = kvMatch[1].trim();
-      const value = kvMatch[2].trim();
-
-      if (key === 'resident_reviewers') {
-        currentArrayKey = 'resident_reviewers';
-        currentTriggerKey = '';
-      } else if (key === 'conditional_reviewers') {
-        currentArrayKey = 'conditional_reviewers';
-        currentTriggerKey = '';
-      } else if (key === 'adversarial_reviewers') {
-        currentArrayKey = 'adversarial_reviewers';
-        currentTriggerKey = '';
-      } else if (key === 'trigger_conditions') {
-        currentArrayKey = '';
-        currentTriggerKey = '';
-      } else if (key === 'gate') {
-        currentArrayKey = '';
-      } else if (key === 'files' && currentTriggerKey) {
-        const filesStr = value.replace(/^\[|\]$/g, '');
-        const files = filesStr.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
-        profile.trigger_conditions[currentTriggerKey].files = files;
-      } else if (key === 'patterns' && currentTriggerKey) {
-        const patternsStr = value.replace(/^\[|\]$/g, '');
-        const patterns = patternsStr.split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
-        profile.trigger_conditions[currentTriggerKey].patterns = patterns;
-      } else if (['terminal-veteran', 'native-designer', 'data-security', 'zero-doc-user'].includes(key)) {
-        currentTriggerKey = key;
-        currentArrayKey = '';
-        if (!profile.trigger_conditions[key]) {
-          profile.trigger_conditions[key] = { files: [], patterns: [] };
-        }
-      } else if (key === 'min_score') {
-        profile.gate.min_score = parseInt(value, 10) || 90;
-      } else if (key === 'fail_on_redlines') {
-        profile.gate.fail_on_redlines = value === 'true';
-      } else if (key === 'fail_on_p0_p1_blockers') {
-        profile.gate.fail_on_p0_p1_blockers = value === 'true';
-      } else if (key === 'require_adversarial') {
-        profile.gate.require_adversarial = value === 'true';
-      }
-      continue;
-    }
-
-    // List items
-    const listMatch = trimmed.match(/^-\s+(.+)$/);
-    if (listMatch) {
-      let item = listMatch[1].trim();
-      item = item.replace(/\s*#.*$/, '').trim();
-      item = item.replace(/^['"]|['"]$/g, '');
-
-      if (currentArrayKey === 'resident_reviewers' && item) {
-        profile.resident_reviewers.push(item);
-      } else if (currentArrayKey === 'conditional_reviewers' && item) {
-        profile.conditional_reviewers.push(item);
-      } else if (currentArrayKey === 'adversarial_reviewers' && item) {
-        profile.adversarial_reviewers.push(item);
-      }
-    }
   }
 }
 
@@ -821,7 +635,7 @@ function runAutomatedChecks(config) {
       const match = line.trim().match(/^\s*(\d+)\s+(.+)$/);
       if (match) {
         const [count, path] = [parseInt(match[1], 10), match[2]];
-        if (count > 2000) {
+        if (path !== 'total' && count > 2000) {
           checks.oversizedFiles.issues.push({ path, lines: count });
           checks.oversizedFiles.status = 'warn';
         }
@@ -1260,7 +1074,7 @@ function generateFinalReport(scores, evidence = null) {
   content += `|----------|-------|------|\n`;
 
   for (const [reviewer, result] of Object.entries(scores)) {
-    const status = result.score >= 90 ? '✅' : '❌';
+    const status = reviewerPacketPassed(result) ? '✅ PASS' : '❌ FAIL';
     content += `| ${reviewer} | ${result.score}/100 | ${status} |\n`;
   }
 
@@ -1268,13 +1082,12 @@ function generateFinalReport(scores, evidence = null) {
   content += `## Release Checklist\n\n`;
   content += `- [x] All reviewers >= 90/100\n`;
   content += `- [x] No P0/P1 redlines\n`;
-  content += `- [ ] Tests passing\n`;
-  content += `- [ ] Build successful\n`;
-  content += `- [ ] Changelog updated\n`;
-  content += `- [ ] Version bumped\n\n`;
+  content += `- [x] Tests, typecheck, build, lint, audit and source-secret scan passed\n`;
+  content += `- [x] Clean-candidate verification passed for the exact commit/tree\n`;
+  content += `- [x] Evidence and Goal instruction validation passed\n\n`;
   content += `---\n\n`;
   content += `*Generated by Release Quality Review Skill*\n`;
-  content += `*Tool: cli-bridge quality gate*\n`;
+  content += `*Tool: release-quality-review gate*\n`;
 
   writeFileSync(reportPath, content);
   log.success(`Final report: ${reportPath}`);

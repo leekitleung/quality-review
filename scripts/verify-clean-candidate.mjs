@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
-import { redactSensitiveText, resolveWithinRoot } from '../skills/release-quality-review/lib/security-utils.mjs';
+import { redactSensitiveText, resolveWithinRoot, writeContainedFile } from '../skills/release-quality-review/lib/security-utils.mjs';
 
 const root = process.cwd();
 const outputIndex = process.argv.indexOf('--output');
@@ -73,8 +73,7 @@ try {
     exit_code: passed ? 0 : 1,
     commands: records,
   };
-  await mkdir(path.dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+  await writeContainedFile(root, outputPath, `${JSON.stringify(report, null, 2)}\n`);
   console.log(`Clean candidate verification ${report.status}: ${outputPath}`);
   process.exitCode = report.exit_code;
 } finally {

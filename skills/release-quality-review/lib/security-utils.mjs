@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises';
 
 export function isPathWithin(root, candidate) {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
@@ -18,6 +20,34 @@ export function resolveWithinRoot(root, relative, label = 'path') {
 
 export function shouldIncludeCanonicalFile(name) {
   return name !== '.DS_Store';
+}
+
+export async function writeContainedFile(root, file, content) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const rootReal = await realpath(root);
+  const parentReal = await realpath(path.dirname(file));
+  if (!isPathWithin(rootReal, parentReal)) throw new Error(`output parent resolves outside repository: ${file}`);
+  const parentIdentity = await stat(parentReal);
+  const destination = path.join(parentReal, path.basename(file));
+  const temporary = path.join(parentReal, `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    const handle = await open(temporary, 'wx', 0o600);
+    try {
+      await handle.writeFile(content);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const currentParentReal = await realpath(path.dirname(file));
+    const currentIdentity = await stat(currentParentReal);
+    if (currentParentReal !== parentReal || currentIdentity.dev !== parentIdentity.dev ||
+        currentIdentity.ino !== parentIdentity.ino || !isPathWithin(rootReal, currentParentReal)) {
+      throw new Error(`output parent changed during write: ${file}`);
+    }
+    await rename(temporary, destination);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
 export function containsSensitiveText(value) {

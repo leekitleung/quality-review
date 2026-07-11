@@ -858,6 +858,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
   // Run reviewers
   console.log(`\n${c.cyan}═══ Running Reviews ═══${c.reset}\n`);
+  const results = [];
   if (parallel) {
     log.info(`Parallel mode: launching ${allReviewers.length} independent Codex reviewers...`);
     try {
