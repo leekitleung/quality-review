@@ -12,6 +12,7 @@ docs/参考/
 
 # Test/playwright/CDP runtime output — never tracked
 output/
+quality-reports/
 
 # Kiro spec files — local design scratchpad, not part of the repo
 .kiro/

@@ -49,7 +49,7 @@ adversarial_reviewers:
 
 # 通过条件
 gate:
-  min_score: 85              # 对抗性审查器最低 85 分
+  min_score: 90              # 所有审查器最低 90 分
   fail_on_redlines: true
   fail_on_p0_p1_blockers: true
   require_all_reviewers: true
@@ -142,14 +142,14 @@ output:
 ### 必须全部满足
 
 1. **基本门禁** (所有 Profile)
-   - [ ] 所有常驻 reviewers >= 85
-   - [ ] 无 P0 redlines
+   - [ ] 所有常驻 reviewers >= 90
+   - [ ] 无 P0/P1 blockers 或 redlines
 
 2. **对抗性门禁** (Agentic 独有)
-   - [ ] adversarial-completion >= 85
-   - [ ] evidence-integrity >= 85
-   - [ ] goal-compliance >= 85
-   - [ ] handoff-integrity >= 85
+   - [ ] adversarial-completion >= 90
+   - [ ] evidence-integrity >= 90
+   - [ ] goal-compliance >= 90
+   - [ ] handoff-integrity >= 90
 
 3. **证据链门禁**
    - [ ] 每个 reviewer 至少 3 个证据文件
@@ -173,14 +173,14 @@ output:
 
 ```bash
 # 显式使用 agentic-release-gate
-node review-gate.mjs --profile agentic-release-gate
+node skills/release-quality-review/scripts/review-gate.mjs --profile agentic-release-gate
 
 # 或通过规模检测自动选择
-node review-gate.mjs --detect-scale
+node skills/release-quality-review/scripts/review-gate.mjs --detect-scale
 # 输出: Scale: xlarge → Suggested Profile: agentic-release-gate
 
 # 强制使用 (即使规模不够)
-node review-gate.mjs --profile agentic-release-gate --force
+node skills/release-quality-review/scripts/review-gate.mjs --profile agentic-release-gate
 ```
 
 ## 输出文件

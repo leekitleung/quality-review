@@ -21,7 +21,7 @@
 
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 const PROJECT_ROOT = process.cwd();
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
@@ -30,13 +30,23 @@ const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const args = process.argv.slice(2);
 let targetRound = null;
 let targetReviewer = null;
+let diffBase = 'HEAD';
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--round' && args[i + 1]) {
     targetRound = args[++i];
   } else if (args[i] === '--reviewer' && args[i + 1]) {
     targetReviewer = args[++i];
+  } else if (args[i] === '--base' && args[i + 1]) {
+    diffBase = args[++i];
+  } else {
+    console.error(`Unknown or incomplete option: ${args[i]}`);
+    process.exit(4);
   }
+}
+if (!/^[A-Za-z0-9._/@-]+$/.test(diffBase)) {
+  console.error(`Invalid --base ref: ${diffBase}`);
+  process.exit(4);
 }
 
 // ANSI colors
@@ -59,7 +69,9 @@ const log = {
 // Get git diff files (newly added/changed)
 function getGitDiffFiles() {
   try {
-    const output = execSync('git diff --name-only HEAD 2>/dev/null', { encoding: 'utf-8' });
+    const output = execFileSync('git', ['diff', '--name-only', diffBase], {
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000,
+    });
     return output.trim().split('\n').filter(Boolean);
   } catch {
     return [];
@@ -277,7 +289,7 @@ function checkEvidenceQuality(content) {
     { pattern: /Self Assessment(?!.*evidence)/i, desc: '自我评估模式（应使用独立审查）', onlyIfNoEvidence: true },
     { pattern: /需要人工补充|人工评审(?!.*自动化)/i, desc: '需要人工介入（应自动完成）', onlyIfNoEvidence: true },
     { pattern: /需要进一步检查|需确认|further check(?!.*已完成)/i, desc: '未完成审查', onlyIfNoEvidence: true },
-    { pattern: /\*\*(N\/A|n\/a)\*\*/i, desc: 'N/A 占位符（缺乏具体评分）', onlyIfNoEvidence: false },
+    { pattern: /\*\*(N\/A|n\/a)\*\*/i, desc: 'N/A 未提供适用性证据', onlyIfNoEvidence: true },
   ];
 
   for (const { pattern, desc, onlyIfNoEvidence } of hollowPatterns) {
@@ -388,7 +400,8 @@ function validateReviewer(roundDir, reviewer, diffFiles) {
 
   // Run all checks
   allViolations.push(...checkSelfReferencePatterns(content, reviewer));
-  allViolations.push(...checkDiffFileReferences(content, diffFiles, reviewer));
+  // Independent reviewers must cite the changed code they inspected. Diff citations
+  // are valid evidence; self-authored claims are handled by self-reference checks.
   allViolations.push(...checkMissingEvidenceOutput(content, reviewer));
 
   // === NEW: Cross-file reference verification ===
@@ -572,7 +585,7 @@ function main() {
 
   // SECURITY: Require minimum reviewer count for gate integrity
   // A delivery packet with 0 reviewers is an incomplete review
-  const MIN_REVIEWERS = 2;
+  const MIN_REVIEWERS = targetReviewer ? 1 : 2;
   if (reviewers.length < MIN_REVIEWERS) {
     const emptyResult = {
       reviewer: '__GATE__',

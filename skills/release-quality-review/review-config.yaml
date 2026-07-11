@@ -96,12 +96,12 @@ gate:
 # 验证命令 (用于 release-verifier)
 # ============================================================
 verification:
-  test: "pnpm test"
-  build: "pnpm build"
-  lint: "pnpm lint"
-  typecheck: "pnpm typecheck"
-  e2e: "pnpm test:e2e"
-  audit: "npm audit --production 2>/dev/null || true"
+  test: "npm test"
+  build: "npm run build"
+  lint: "npm run lint"
+  typecheck: "npm run typecheck"
+  e2e: "npm run test:e2e"
+  audit: "npm audit --audit-level=high"
 
 # ============================================================
 # 证据收集 (自动收集的证据)

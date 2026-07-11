@@ -2,8 +2,8 @@
 # Each reviewer MUST output this file to quality-review/round-XXX/<reviewer>/result.yaml
 
 reviewer: <reviewer-name>
-profile: <product-polish|release-gate|security-audit>
-round: <round-number>
+profile: <quick|default|release-gate|full|agentic-release-gate>
+round: <positive-round-number>
 
 # Overall score (0-100)
 score: <0-100>

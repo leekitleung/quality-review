@@ -63,16 +63,16 @@ description: Run an evidence-backed multi-reviewer release quality gate with ind
 ## 快速开始
 
 ```bash
-# 1. 运行完整评审 (推荐)
+# 1. 收集证据并生成独立 Reviewer prompts
 node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate
 
 # 2. 查看结果
 cat quality-reports/round-001/summary.md
 
-# 3. 修复问题后继续评审
+# 3. 由宿主启动独立 Reviewer，修复问题后继续评审
 node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate --round 2
 
-# 4. 单独运行某个 Reviewer
+# 4. 聚合某个 Reviewer 已写入的报告（诊断模式，不产生发布批准）
 node skills/release-quality-review/scripts/review-gate.mjs --reviewer destructive-qa
 ```
 
@@ -156,7 +156,7 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 
 ### 通过条件
 1. **所有 Reviewer >= 90/100**
-2. **无 P0 红线**
+2. **无 P0/P1 blocker 或 redline**
 3. **有实际证据支撑评分**
 
 ## 目录结构
@@ -200,10 +200,8 @@ skills/release-quality-review/
 
 .claude/                           # Claude Code 适配层
 ├── REVIEW-ORCHESTRATOR.md         # 评审编排器
-└── reviewers/                     # Claude Code subagent 定义
-    ├── product-flow.md
-    ├── destructive-qa.md
-    └── ...
+├── skills/release-quality-review/ # Skill 发现入口
+└── agents/                        # 生成的 Claude Code subagent 适配器
 
 quality-reports/                   # 评审输出
 ├── round-001/
@@ -251,7 +249,7 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 
 ### Claude Code Subagent 编排流程
 
-并行 reviewer 必须由 Claude Code/Codex 宿主创建。独立 Node runner 无法启动宿主 Agent，直接传 `--parallel` 会 fail-fast（exit 5），避免把 gate 子进程伪装成 reviewer。
+`review-runner.mjs --parallel` 使用本机 Codex CLI 同时启动独立、临时 reviewer 会话；启动前验证 CLI 可用性，任一进程未生成完整四文件包即保持失败。宿主也可直接创建独立 subagent 并写入相同目录。
 
 宿主并行编排会：
 
@@ -260,6 +258,12 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 3. **收集结果** - 等待所有 reviewer 完成
 4. **汇总评分** - 生成 summary.md 和各 reviewer 的 score.md
 5. **判断门禁** - 所有 >= 90 且无红线则通过
+
+Agentic 发布前，先提交候选并持久化隔离检出证据：
+
+```bash
+npm run skill:verify-clean -- --output quality-reports/round-NNN/evidence/clean-candidate.json
+```
 
 ```mermaid
 graph TD
@@ -457,7 +461,7 @@ node skills/release-quality-review/scripts/review-gate.mjs --dry-run
 A: 检查该 Reviewer 的 blockers.md，优先修复 P0/P1 问题。每轮只聚焦 2-3 个最高优先级问题。
 
 **Q: 可以跳过某些 Reviewer 吗？**
-A: 可以用 `--exclude-reviewer` 排除，但强烈不推荐。发布前必须通过 release-gate profile。
+A: quick/default 诊断可按范围选择；release-gate、full、agentic-release-gate 禁止排除必需 Reviewer。
 
 **Q: 评分有争议怎么办？**
 A: 以实际证据为准。要求 Reviewer 引用具体代码/截图/测试结果。争议点记录到 improvement-list.md。

@@ -16,6 +16,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'fs';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import {
   parseScore,
@@ -23,10 +24,18 @@ import {
   parseYamlResult,
   detectChangeScale,
   parseYamlProfile,
+  matchesTriggerConditions,
 } from '../lib/review-utils.mjs';
+import {
+  resolveWithinRoot,
+  shouldIncludeCanonicalFile,
+  containsSensitiveText,
+  redactSensitiveText,
+} from '../lib/security-utils.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
+const PROJECT_ROOT = join(SKILL_DIR, '..', '..');
 const TEST_DIR = join(__dirname, '__test_output__');
 
 // Create test directory at module load time
@@ -534,6 +543,168 @@ test.describe('adversarial review detection', () => {
     const violations = checkEvidenceCompleteness(content);
     assertEqual(violations.length, 1);
     assertEqual(violations[0].need, 'pnpm build 输出');
+  });
+});
+
+test.describe('security boundaries', () => {
+  test('rejects paths that escape the repository', () => {
+    let rejected = false;
+    try {
+      resolveWithinRoot('/tmp/repository', '../escaped.md', 'adapter');
+    } catch {
+      rejected = true;
+    }
+    assertTrue(rejected, 'Expected path traversal to be rejected');
+  });
+
+  test('accepts paths contained by the repository', () => {
+    assertEqual(
+      resolveWithinRoot('/tmp/repository', '.claude/agents/reviewer.md', 'adapter'),
+      '/tmp/repository/.claude/agents/reviewer.md'
+    );
+  });
+
+  test('excludes platform metadata from canonical hashes', () => {
+    assertEqual(shouldIncludeCanonicalFile('.DS_Store'), false);
+    assertEqual(shouldIncludeCanonicalFile('SKILL.md'), true);
+  });
+
+  test('redacts common credential formats', () => {
+    const input = [
+      'Authorization: Bearer provider-token',
+      '{"token":"json-token"}',
+      'https://user:password@example.com/path',
+      'Cookie: session=secret-value',
+      '-----BEGIN RSA PRIVATE KEY-----\nabc123\n-----END RSA PRIVATE KEY-----',
+    ].join('\n');
+    const redacted = redactSensitiveText(input);
+    for (const secret of ['provider-token', 'json-token', 'user:password', 'secret-value', 'abc123']) {
+      assertEqual(redacted.includes(secret), false, `Expected ${secret} to be redacted`);
+    }
+  });
+
+  test('redacts standalone provider tokens and JWT-shaped values', () => {
+    const secrets = [
+      'ghp_abcdefghijklmnopqrstuvwxyz1234567890',
+      'github_pat_abcdefghijklmnopqrstuvwxyz1234567890',
+      'glpat-abcdefghijklmnopqrstuvwxyz1234567890',
+      'npm_abcdefghijklmnopqrstuvwxyz1234567890',
+      'slack-token-test-placeholder-abcdefghijklmnopqrstuvwxyz',
+      'AIzaabcdefghijklmnopqrstuvwxyz1234567890',
+      'sk_live_abcdefghijklmnopqrstuvwxyz1234567890',
+      'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
+      'AKIAIOSFODNN7EXAMPLE',
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signaturevalue',
+      'Bearer standalone-provider-token',
+    ];
+    const redacted = redactSensitiveText(secrets.join('\n'));
+    for (const secret of secrets) {
+      assertEqual(containsSensitiveText(secret), true, `Expected ${secret} to be detected`);
+      assertEqual(redacted.includes(secret), false, `Expected ${secret} to be redacted`);
+    }
+  });
+});
+
+test.describe('fail-closed result parsing', () => {
+  test('parses inline blocker and redline arrays', () => {
+    const parsed = parseYamlResult(`reviewer: destructive-qa\nscore: 100\nstatus: fail\nblockers: [P1]\nredlines: [P0]\n`);
+    assertEqual(parsed.status, 'fail');
+    assertEqual(parsed.blockers.length, 1);
+    assertEqual(parsed.redlines.length, 1);
+  });
+
+  test('parses and retains packet profile and round identity', () => {
+    const parsed = parseYamlResult(`reviewer: destructive-qa\nprofile: agentic-release-gate\nround: 5\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+    assertEqual(parsed.profile, 'agentic-release-gate');
+    assertEqual(parsed.round, 5);
+  });
+});
+
+test.describe('no-blocker parsing', () => {
+  test('does not treat canonical empty P0/P1 sections as vetoes', () => {
+    assertEqual(parseBlockers('# Blockers\n\n## P0\nNone.\n\n## P1\nNone.\n').length, 0);
+  });
+
+  test('accepts case-insensitive no-blocker sentences', () => {
+    assertEqual(parseBlockers('No P0/P1 blockers.').length, 0);
+    assertEqual(parseBlockers('NO P0 OR P1 BLOCKERS.').length, 0);
+  });
+
+  test('retains titled P0/P1 headings and ignores unrelated checklists', () => {
+    for (const heading of ['## P0 — Hidden veto', '## P1 - Hidden veto', '## P0: Hidden veto', '## P1 (Hidden veto)']) {
+      const parsed = parseBlockers(`${heading}\nEvidence: reproducible\n`);
+      assertEqual(parsed.length, 1, `Expected titled severity heading to be retained: ${heading}`);
+    }
+    assertEqual(parseBlockers('- [ ] Overall score >= 90\n- [x] No P0/P1 blocker\n').length, 0);
+  });
+});
+
+test.describe('conditional reviewer triggers', () => {
+  test('triggers from diff content patterns when file globs do not match', () => {
+    assertEqual(matchesTriggerConditions(
+      ['README.md'],
+      '+ const credential = input;',
+      { files: ['**/auth/**'], patterns: ['credential'] }
+    ), true);
+  });
+
+  test('anchors glob patterns to the full path', () => {
+    assertEqual(matchesTriggerConditions(
+      ['not-components/file.ts'],
+      '',
+      { files: ['**/components/**'], patterns: [] }
+    ), false);
+  });
+
+  test('matches globstar directories at the repository root', () => {
+    assertEqual(matchesTriggerConditions(
+      ['scripts/sync-skills.mjs'],
+      '',
+      { files: ['**/scripts/**'], patterns: [] }
+    ), true);
+  });
+});
+
+test.describe('CLI fail-closed integration', () => {
+  test('rejects synthetic auto review', () => {
+    const result = spawnSync('node', [
+      join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--auto', '--dry-run',
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+    assertEqual(result.status, 4);
+  });
+
+  test('rejects review targets outside the repository', () => {
+    const result = spawnSync('node', [
+      join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--target', '../escaped;touch marker', '--dry-run',
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+    assertEqual(result.status, 4);
+    assertEqual(existsSync(join(PROJECT_ROOT, 'marker')), false);
+  });
+
+  test('keeps blockers.md veto even when result.yaml claims pass', () => {
+    const round = join(PROJECT_ROOT, 'quality-reports', 'round-998');
+    for (const reviewer of ['product-flow', 'architecture-maintainer']) {
+      const dir = join(round, reviewer);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: 998\nscore: 100\nstatus: pass\nblockers: []\nredlines: []\n`);
+      writeFileSync(join(dir, 'score.md'), `# ${reviewer}\n\n## Overall Score: 100/100\n`);
+      writeFileSync(join(dir, 'blockers.md'), reviewer === 'product-flow'
+        ? '# Blockers\n\n## P1 — veto must survive\n\nEvidence: reproducible\n'
+        : '# Blockers\n\nNo P0/P1 blockers.\n');
+      writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
+    }
+    try {
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '998',
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(result.status, 1);
+      assertTrue(result.stdout.includes('GATE FAILED'), 'Expected a failed gate verdict');
+      const summary = readFileSync(join(round, 'summary.md'), 'utf8');
+      assertTrue(summary.includes('| product-flow | 100/100 | ❌ FAIL |'), 'Summary must not convert a blocker-bearing score into PASS');
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
   });
 });
 

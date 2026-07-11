@@ -294,7 +294,7 @@ Dimension Penalties:
 - Rollback Completeness: -15 (missing), -5 (unexecutable)
 - Risk Acknowledgment: -10 (unmitigated), -5 (vague)
 
-Pass: >= 85 (无 P0)
+Pass: >= 90 (无 P0/P1)
 ```
 
 ## Reviewer Persona

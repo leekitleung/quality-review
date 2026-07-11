@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, open, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { isPathWithin, resolveWithinRoot, shouldIncludeCanonicalFile } from '../skills/release-quality-review/lib/security-utils.mjs';
 
 const root = process.cwd();
 const registryPath = path.join(root, 'skill-registry.yaml');
@@ -17,7 +18,7 @@ async function filesUnder(dir) {
   const entries = await readdir(dir, { withFileTypes: true });
   const files = [];
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (entry.name === '__tests__') continue;
+    if (entry.name === '__tests__' || !shouldIncludeCanonicalFile(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) files.push(...await filesUnder(full));
     else files.push(full);
@@ -54,9 +55,45 @@ function agent(name, canonical) {
   return `---\nname: ${name}\ndescription: Independent ${name} reviewer for the release quality gate.\n---\n\nRead and follow \`${canonical}/reviewers/${name}.md\`. Return only the canonical result template required by the skill.\n`;
 }
 
+async function writeRepositoryFile(file, content, rootReal) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const parentReal = await realpath(path.dirname(file));
+  if (!isPathWithin(rootReal, parentReal)) throw new Error(`output parent resolves outside repository: ${file}`);
+  const parentIdentity = await stat(parentReal);
+  const destination = path.join(parentReal, path.basename(file));
+  const temporary = path.join(parentReal, `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    const handle = await open(temporary, 'wx', 0o600);
+    try {
+      await handle.writeFile(content);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    const currentParentReal = await realpath(path.dirname(file));
+    const currentParentIdentity = await stat(currentParentReal);
+    if (currentParentReal !== parentReal ||
+        currentParentIdentity.dev !== parentIdentity.dev ||
+        currentParentIdentity.ino !== parentIdentity.ino ||
+        !isPathWithin(rootReal, currentParentReal)) {
+      throw new Error(`output parent changed during write: ${file}`);
+    }
+    await rename(temporary, destination);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
 async function expectedState(config) {
   const canonical = config.canonical;
-  const canonicalDir = path.join(root, canonical);
+  const canonicalDir = resolveWithinRoot(root, canonical, 'canonical skill path');
+  const rootReal = await realpath(root);
+  const canonicalReal = await realpath(canonicalDir);
+  if (!isPathWithin(rootReal, canonicalReal)) throw new Error('canonical skill path resolves outside the repository');
+  if (!Array.isArray(config.reviewers) || config.reviewers.length === 0) throw new Error('registry must define at least one reviewer');
+  for (const reviewer of config.reviewers) {
+    if (!/^[a-z0-9-]+$/.test(reviewer)) throw new Error(`invalid reviewer name: ${reviewer}`);
+  }
   const required = [path.join(canonicalDir, 'SKILL.md'), path.join(canonicalDir, 'agents/openai.yaml')];
   for (const reviewer of config.reviewers) required.push(path.join(canonicalDir, `reviewers/${reviewer}.md`));
   await Promise.all(required.map(file => readFile(file)));
@@ -69,6 +106,7 @@ async function expectedState(config) {
   for (const reviewer of config.reviewers) {
     generated.set(path.posix.join(config.claude_agents, `${reviewer}.md`), agent(reviewer, canonical));
   }
+  for (const relative of generated.keys()) resolveWithinRoot(root, relative, 'adapter path');
   return {
     generated,
     lock: {
@@ -90,12 +128,12 @@ async function main() {
   const { generated, lock } = await expectedState(config);
 
   if (mode === 'sync') {
+    const rootReal = await realpath(root);
     for (const [relative, content] of generated) {
-      const file = path.join(root, relative);
-      await mkdir(path.dirname(file), { recursive: true });
-      await writeFile(file, content);
+      const file = resolveWithinRoot(root, relative, 'adapter path');
+      await writeRepositoryFile(file, content, rootReal);
     }
-    await writeFile(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+    await writeRepositoryFile(lockPath, `${JSON.stringify(lock, null, 2)}\n`, rootReal);
     console.log(`Synced ${generated.size} adapters and skills.lock.yaml`);
     return;
   }
@@ -103,7 +141,7 @@ async function main() {
   const drift = [];
   for (const [relative, expected] of generated) {
     try {
-      if (await readFile(path.join(root, relative), 'utf8') !== expected) drift.push(relative);
+      if (await readFile(resolveWithinRoot(root, relative, 'adapter path'), 'utf8') !== expected) drift.push(relative);
     } catch {
       drift.push(relative);
     }

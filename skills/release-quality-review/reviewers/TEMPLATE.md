@@ -117,7 +117,7 @@ node scripts/evidence-validator.mjs --round round-001
 | R-XX-02 | [Rule description] | P1 | [What evidence needed] |
 
 **P0 = 必须立即修复，否则绝对不能发布**
-**P1 = 强烈建议修复，可以有条件发布但需要明确说明风险**
+**P1 = 发布前必须修复，修复后重新评审**
 
 ## Evidence Requirements
 

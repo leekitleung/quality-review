@@ -22,7 +22,7 @@ conditional_reviewers: []
 
 # 通过条件
 gate:
-  min_score: 85  # 快速检查略宽松
+  min_score: 90
   fail_on_redlines: true
   fail_on_p0_only: true  # 只阻塞 P0
 

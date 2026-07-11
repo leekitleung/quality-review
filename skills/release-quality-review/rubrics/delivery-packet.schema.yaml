@@ -358,7 +358,7 @@ assisted:
   require_delivery_packet: true
   missing_packet_verdict: INCOMPLETE
   forensic_allowed: true
-  min_required_score: 85
+  min_required_score: 90
 ```
 
 ### legacy mode (fallback)

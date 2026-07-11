@@ -242,7 +242,7 @@ Dimension Penalties:
 - Evidence Validity: -15 (no command), -10 (placeholder)
 - Scope Compliance: -15 (omission), -10 (partial)
 
-Pass: >= 85 (无 P0)
+Pass: >= 90 (无 P0/P1)
 ```
 
 ## Reviewer Persona

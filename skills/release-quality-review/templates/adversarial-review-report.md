@@ -157,7 +157,7 @@ reviewer: adversarial-completion
 ```yaml
 verdict:
   overall_score: XX/100
-  pass_threshold: 85
+  pass_threshold: 90
   status: PASS/FAIL
   pseudo_completion: DETECTED/CLEAR
   

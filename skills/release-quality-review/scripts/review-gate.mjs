@@ -12,7 +12,6 @@
  *   node review-gate.mjs --reviewer destructive-qa  # Single reviewer
  *   node review-gate.mjs --check-redlines         # Only check redlines
  *   node review-gate.mjs --round 3                # Continue from round 3
- *   node review-gate.mjs --parallel               # Run reviewers in parallel
  *   node review-gate.mjs --collect-evidence        # Auto collect evidence
  *   node review-gate.mjs --dry-run               # Validate without running
  */
@@ -27,7 +26,9 @@ import {
   parseBlockers as parseBlockersShared,
   parseYamlResult as parseYamlResultShared,
   parseYamlProfile as parseYamlProfileShared,
+  matchesTriggerConditions,
 } from '../lib/review-utils.mjs';
+import { containsSensitiveText, redactSensitiveText } from '../lib/security-utils.mjs';
 
 // Use process.cwd() as the reliable project root
 const PROJECT_ROOT = process.cwd();
@@ -56,83 +57,117 @@ const log = {
   title: (msg) => console.log(`\n${colors.bright}${colors.cyan}═══ ${msg} ═══${colors.reset}\n`),
 };
 
-// Parse arguments
-const args = process.argv.slice(2);
-let profile = 'release-gate';
-let singleReviewer = null;
-let checkRedlinesOnly = false;
-let roundNumber = 1;
-let parallel = false;
-let collectEvidence = true;
-let dryRun = false;
-let excludeReviewers = [];
-let detectScale = false;
-let userSpecifiedProfile = false;
-let validateEvidence = true; // 对抗性审查：验证证据来源是否合规
-let checkGoalMode = false; // Goal 模式约束：强制描述最终状态而非实现步骤
-let diffBase = 'HEAD'; // Git diff base for change detection (default: working tree vs HEAD)
-
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
+function parseCliArgs(args) {
+  const options = {
+    profile: 'release-gate', singleReviewer: null, checkRedlinesOnly: false,
+    roundNumber: null, collectEvidence: true, dryRun: false,
+    excludeReviewers: [], detectScale: false, userSpecifiedProfile: false,
+    validateEvidence: true, checkGoalMode: false, diffBase: 'HEAD',
+  };
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
   if (arg === '--profile' && args[i + 1]) {
-    profile = args[i + 1];
-    userSpecifiedProfile = true;
+    options.profile = args[i + 1];
+    options.userSpecifiedProfile = true;
     i++;
   } else if (arg === '--reviewer' && args[i + 1]) {
-    singleReviewer = args[i + 1];
+    options.singleReviewer = args[i + 1];
     i++;
   } else if (arg === '--check-redlines') {
-    checkRedlinesOnly = true;
+    options.checkRedlinesOnly = true;
   } else if (arg === '--check-goal-mode') {
-    checkGoalMode = true;
+    options.checkGoalMode = true;
   } else if (arg === '--round' && args[i + 1]) {
     const roundArg = args[++i];
+    if (!/^\d+$/.test(roundArg) && !/^round-\d+$/i.test(roundArg)) {
+      log.error('Invalid --round: expected a positive integer or round-NNN');
+      process.exit(4);
+    }
     // Support both "3" and "round-003" formats
     const match = roundArg.match(/^round-(\d+)$/i);
     const parsed = match ? parseInt(match[1], 10) : parseInt(roundArg, 10);
     // Guard against NaN (e.g., "round-null" or invalid input)
-    roundNumber = isNaN(parsed) ? 1 : parsed;
-  } else if (arg === '--parallel') {
-    parallel = true;
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      log.error('Invalid --round: expected a positive integer');
+      process.exit(4);
+    }
+    options.roundNumber = parsed;
   } else if (arg === '--no-collect') {
-    collectEvidence = false;
+    options.collectEvidence = false;
   } else if (arg === '--collect-evidence') {
-    collectEvidence = true;
+    options.collectEvidence = true;
   } else if (arg === '--dry-run') {
-    dryRun = true;
+    options.dryRun = true;
   } else if (arg === '--exclude-reviewer' && args[i + 1]) {
-    excludeReviewers.push(args[i + 1]);
+    options.excludeReviewers.push(args[i + 1]);
     i++;
   } else if (arg === '--detect-scale') {
-    detectScale = true;
+    options.detectScale = true;
   } else if (arg === '--validate-evidence') {
-    validateEvidence = true;
+    options.validateEvidence = true;
   } else if (arg === '--no-validate-evidence') {
-    validateEvidence = false;
+    options.validateEvidence = false;
   } else if (arg === '--base' && args[i + 1]) {
-    diffBase = args[i + 1];
+    options.diffBase = args[i + 1];
     i++;
   } else if (arg === '--help' || arg === '-h') {
     printHelp();
     process.exit(0);
+  } else {
+    log.error(`Unknown or incomplete option: ${arg}`);
+    process.exit(4);
   }
+  }
+  options.excludeReviewers = Object.freeze([...options.excludeReviewers]);
+  return Object.freeze(options);
 }
 
-let resolvedDiffBase = 'HEAD';
-if (diffBase !== 'HEAD') {
-  if (!/^[A-Za-z0-9._/@-]+$/.test(diffBase)) {
-    log.error(`Invalid --base ref: ${diffBase}`);
+const {
+  profile, singleReviewer, checkRedlinesOnly, roundNumber: requestedRoundNumber,
+  collectEvidence, dryRun, excludeReviewers, detectScale, userSpecifiedProfile,
+  validateEvidence, checkGoalMode, diffBase,
+} = parseCliArgs(process.argv.slice(2));
+
+function latestExistingRound() {
+  if (!existsSync(REPORT_DIR)) return 1;
+  const rounds = readdirSync(REPORT_DIR)
+    .map(name => name.match(/^round-(\d+)$/)?.[1])
+    .filter(Boolean)
+    .map(Number);
+  return rounds.length ? Math.max(...rounds) : 1;
+}
+
+const roundNumber = requestedRoundNumber ?? latestExistingRound();
+
+if (!/^[a-z0-9-]+$/.test(profile) || (singleReviewer && !/^[a-z0-9-]+$/.test(singleReviewer))) {
+  log.error('Invalid profile or reviewer name');
+  process.exit(4);
+}
+if (excludeReviewers.some(name => !/^[a-z0-9-]+$/.test(name))) {
+  log.error('Invalid excluded reviewer name');
+  process.exit(4);
+}
+if (!validateEvidence && ['release-gate', 'full', 'agentic-release-gate'].includes(profile)) {
+  log.error('--no-validate-evidence is not allowed for strict profiles');
+  process.exit(4);
+}
+
+function resolveDiffBase(ref) {
+  if (ref === 'HEAD') return 'HEAD';
+  if (!/^[A-Za-z0-9._/@-]+$/.test(ref)) {
+    log.error(`Invalid --base ref: ${ref}`);
     process.exit(4);
   }
   try {
-    resolvedDiffBase = execFileSync('git', ['merge-base', diffBase, 'HEAD'], {
+    return execFileSync('git', ['merge-base', ref, 'HEAD'], {
       encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000,
     }).trim();
   } catch {
-    log.error(`Unable to resolve --base ref: ${diffBase}`);
+    log.error(`Unable to resolve --base ref: ${ref}`);
     process.exit(4);
   }
 }
+const resolvedDiffBase = resolveDiffBase(diffBase);
 
 // ============================================================================
 // Right-size Throttle: Change Scale Detection
@@ -279,12 +314,11 @@ Usage:
   node review-gate.mjs [options]
 
 Options:
-  --profile <name>       Review profile: quick, default, release-gate, full (default: release-gate)
+  --profile <name>       Profile: quick, default, release-gate, full, agentic-release-gate
   --reviewer <name>     Run only this reviewer
   --round <N>           Round number (auto-detected if not specified)
   --check-redlines      Only check for redlines (P0/P1 blockers)
   --check-goal-mode     Enable goal mode constraint (describe final state, not steps)
-  --parallel            Run reviewers in parallel (experimental)
   --no-collect          Skip automatic evidence collection
   --collect-evidence    Force evidence collection (default)
   --exclude-reviewer N  Exclude reviewer N from this run
@@ -300,17 +334,19 @@ Profiles:
   default       Standard PR review (product-flow, destructive-qa, terminal-veteran)
   release-gate  Full release gate (all residents + terminal-veteran)
   full          Complete review (all 8 reviewers)
+  agentic-release-gate  Full independent and adversarial release arbitration
 
 Exit Codes:
   0 = All gates passed
   1 = Gates failed
-  2 = Configuration error
+  2 = Unexpected runtime error
+  4 = Configuration or invalid CLI input
 
 Examples:
-  node review-gate.mjs --profile release-gate
-  node review-gate.mjs --detect-scale
-  node review-gate.mjs --round 2 --profile default
-  node review-gate.mjs --reviewer destructive-qa --dry-run
+  npm run skill:gate -- --profile release-gate
+  npm run skill:gate -- --detect-scale
+  npm run skill:gate -- --round 2 --profile default
+  npm run skill:gate -- --reviewer destructive-qa --round 2
   `);
 }
 
@@ -580,6 +616,9 @@ function detectConditionalReviewers(profile) {
       encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000,
     });
     const changedFiles = [...new Set(`${gitOutput}\n${untracked}`.split('\n').filter(f => f.trim()))];
+    const diffContent = execFileSync('git', ['diff', resolvedDiffBase], {
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, maxBuffer: 10 * 1024 * 1024,
+    });
 
     for (const reviewer of profile.conditional_reviewers) {
       const conditions = triggerConditions[reviewer];
@@ -589,27 +628,7 @@ function detectConditionalReviewers(profile) {
         continue;
       }
 
-      const { files = [], patterns = [] } = conditions;
-
-      // Check file patterns
-      let matched = false;
-      for (const pattern of files) {
-        // Simple glob matching
-        const regex = new RegExp(
-          pattern
-            .replace(/\*\*/g, '.*')
-            .replace(/\*/g, '[^/]*')
-            .replace(/\?/g, '.')
-        );
-
-        for (const file of changedFiles) {
-          if (regex.test(file)) {
-            matched = true;
-            break;
-          }
-        }
-        if (matched) break;
-      }
+      const matched = matchesTriggerConditions(changedFiles, diffContent, conditions);
 
       if (matched) {
         triggered.push(reviewer);
@@ -670,95 +689,6 @@ function loadReviewer(name) {
   }
   return readFileSync(path, 'utf-8');
 }
-
-// Parse score from review report
-// SECURITY: This function is critical for gate integrity
-function parseScore(scoreContent) {
-  if (!scoreContent || typeof scoreContent !== 'string') {
-    return null;
-  }
-
-  // More permissive patterns that match common formats
-  const patterns = [
-    // Pattern 1: "Overall Score: **67/100**" or "Overall Score: 72/100 (Good)"
-    // Handles: spaces around /, bold markers, trailing text
-    /(?:总分|Overall Score|Total Score|Score)[^0-9]*(\d+)[^0-9]*\/?\s*100/i,
-    // Pattern 2: "**75/100**" (standalone bold)
-    /\*\*(\d+)\/100\*\*/,
-    // Pattern 3: "68 / 100" or "72/100" anywhere in text
-    /(\d+)\s*\/\s*100/,
-    // Pattern 4: "Score: 85" (without /100) - less preferred
-    /(?:总分|Overall Score|Total Score|Score)[^0-9]*(\d+)$/im,
-  ];
-
-  for (const pattern of patterns) {
-    const match = scoreContent.match(pattern);
-    if (match) {
-      // Get the captured number - pattern 3 captures in match[1], others in match[1]
-      const scoreStr = match[1];
-      if (scoreStr) {
-        const score = parseInt(scoreStr, 10);
-        // Validate range (0-100) and reject negative-looking inputs
-        if (!isNaN(score) && score >= 0 && score <= 100) {
-          // Guard: reject if the match includes a preceding minus sign
-          const fullMatch = match[0];
-          if (!fullMatch.includes('-' + scoreStr)) {
-            return score;
-          }
-        }
-      }
-    }
-  }
-  return null;
-}
-
-// Parse blockers from review report
-function parseBlockers(blockerContent) {
-  if (!blockerContent || typeof blockerContent !== 'string') {
-    return [];
-  }
-
-  const lines = blockerContent.split('\n');
-  const blockers = [];
-  let currentBlocker = null;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      if (currentBlocker) {
-        blockers.push(currentBlocker);
-        currentBlocker = null;
-      }
-      continue;
-    }
-
-    // Skip lines that explicitly say no blockers
-    if (trimmed.includes('无 P0') || trimmed.includes('无 P1') ||
-        trimmed.includes('no P0') || trimmed.includes('no P1') ||
-        trimmed.includes('无 blockers') || trimmed.includes('no blockers') ||
-        trimmed.match(/^#\s+.*Blockers$/i)) {
-      continue;
-    }
-
-    if (trimmed.includes('P0') || trimmed.includes('P1') ||
-        trimmed.includes('❌') || trimmed.includes('红') ||
-        trimmed.includes('[ ]') || trimmed.match(/^[-*]\s+\[/)) {
-      if (currentBlocker) {
-        blockers.push(currentBlocker);
-      }
-      currentBlocker = trimmed;
-    } else if (currentBlocker) {
-      currentBlocker += ' ' + trimmed;
-    }
-  }
-
-  if (currentBlocker) {
-    blockers.push(currentBlocker);
-  }
-
-  return blockers;
-}
-
 // Collect evidence automatically
 function collectEvidence_(config) {
   log.info('Collecting evidence...');
@@ -803,27 +733,87 @@ function collectEvidence_(config) {
   return evidence;
 }
 
+function redactEvidence(value) {
+  return redactSensitiveText(value);
+}
+
+function persistEvidence(roundDir, evidence, profileName, reviewers) {
+  const evidenceDir = join(roundDir, 'evidence');
+  mkdirSync(evidenceDir, { recursive: true });
+  const metadata = {
+    profile: profileName,
+    reviewers,
+    collected_at: evidence.timestamp,
+    git: evidence.git,
+    files: evidence.files,
+  };
+  writeFileSync(join(roundDir, 'metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`);
+  writeFileSync(join(evidenceDir, 'automated-checks.json'), `${JSON.stringify(evidence.automatedChecks, null, 2)}\n`);
+}
+
+function persistFinalArbitration(roundDir, passed, reason) {
+  const evidenceDir = join(roundDir, 'evidence');
+  mkdirSync(evidenceDir, { recursive: true });
+  const record = {
+    command: ['node', ...process.argv.slice(1)].join(' '),
+    recorded_at: new Date().toISOString(),
+    profile,
+    round: roundNumber,
+    status: passed ? 'pass' : 'fail',
+    exit_code: passed ? 0 : 1,
+    reason,
+  };
+  writeFileSync(join(evidenceDir, 'final-arbitration.json'), `${JSON.stringify(record, null, 2)}\n`);
+}
+
+function runEvidenceCommand(command) {
+  const startedAt = new Date().toISOString();
+  let rawOutput = '';
+  let exitCode = 0;
+  try {
+    rawOutput = execSync(`${command} 2>&1`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 120000 });
+  } catch (error) {
+    exitCode = Number.isInteger(error.status) ? error.status : 1;
+    rawOutput = String(error.stdout || error.stderr || error.message || 'command failed');
+  }
+  const redacted = redactEvidence(rawOutput);
+  return {
+    command: redactEvidence(command),
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    exit_code: exitCode,
+    status: exitCode === 0 ? 'pass' : 'fail',
+    output: redacted.slice(-8000),
+    output_bytes: Buffer.byteLength(redacted),
+    truncated: Buffer.byteLength(redacted) > Buffer.byteLength(redacted.slice(-8000)),
+  };
+}
+
 // Run automated gate checks
 function runAutomatedChecks(config) {
   const checks = {
     oversizedFiles: { status: 'pass', issues: [] },
     circularDeps: { status: 'pass', issues: [] },
     secrets: { status: 'pass', issues: [] },
-    testGate: { status: 'unknown', output: '' },
-    typecheckGate: { status: 'unknown', output: '' },
-    buildGate: { status: 'unknown', output: '' },
+    testGate: null,
+    typecheckGate: null,
+    buildGate: null,
+    lintGate: null,
+    auditGate: null,
   };
 
   // Get commands from config or use defaults
   const testCmd = config?.verification?.test || 'pnpm test';
   const typecheckCmd = config?.verification?.typecheck || 'pnpm typecheck';
   const buildCmd = config?.verification?.build || 'pnpm build';
+  const lintCmd = config?.verification?.lint || 'pnpm lint';
+  const auditCmd = config?.verification?.audit || 'npm audit --audit-level=high';
 
   // Check 1: Oversized files (>2000 lines)
   log.info('Checking for oversized files...');
   try {
     const output = execSync(
-      'find apps packages -name "*.ts" -type f -exec wc -l {} + 2>/dev/null | sort -rn | head -20',
+      'find skills scripts .claude .agents -type f \\( -name "*.ts" -o -name "*.js" -o -name "*.mjs" \\) -exec wc -l {} + 2>/dev/null | sort -rn | head -20',
       { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 30000 }
     );
     const lines = output.trim().split('\n');
@@ -846,7 +836,7 @@ function runAutomatedChecks(config) {
   try {
     // Try madge first
     const madgeOutput = execSync(
-      'npx madge --circular --extensions ts apps packages 2>&1 || echo ""',
+      'npx madge --circular --extensions js,mjs,ts skills scripts 2>&1 || echo ""',
       { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 30000 }
     );
     if (madgeOutput.includes('Circular dependencies found') || madgeOutput.includes('-->')) {
@@ -857,7 +847,7 @@ function runAutomatedChecks(config) {
     // madge might not be installed, try manual check
     try {
       const files = execSync(
-        'find apps packages -name "index.ts" -type f 2>/dev/null | head -10',
+        'find skills scripts -name "index.*" -type f 2>/dev/null | head -10',
         { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000 }
       ).trim().split('\n');
 
@@ -874,203 +864,44 @@ function runAutomatedChecks(config) {
   // Check 3: Secrets in source
   log.info('Checking for secrets in source...');
   try {
-    const secretsOutput = execSync(
-      'grep -rn "password\\|secret\\|api_key\\|private_key\\|aws_secret" ' +
-      '--include="*.ts" --include="*.tsx" --include="*.js" --include="*.json" ' +
-      'apps packages 2>/dev/null | grep -v "\\.d\\.ts\\|node_modules\\|_test\\|mock\\|example\\|test\\|spec" | head -10 || echo ""',
-      { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 30000 }
-    ).trim();
-
-    if (secretsOutput && secretsOutput.length > 0) {
-      checks.secrets.status = 'warn';
-      checks.secrets.issues = secretsOutput.split('\n').slice(0, 5);
+    const tracked = execFileSync('git', ['ls-files'], { encoding: 'utf-8', cwd: PROJECT_ROOT }).trim().split('\n');
+    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { encoding: 'utf-8', cwd: PROJECT_ROOT }).trim().split('\n');
+    const candidates = [...new Set([...tracked, ...untracked])].filter(file =>
+      file && !/(^|\/)(__tests__|fixtures|node_modules|quality-reports)(\/|$)/.test(file)
+    );
+    for (const file of candidates) {
+      const absolute = join(PROJECT_ROOT, file);
+      if (!existsSync(absolute) || statSync(absolute).isDirectory()) continue;
+      const content = readFileSync(absolute, 'utf8');
+      if (containsSensitiveText(content)) checks.secrets.issues.push(`${file}:[REDACTED]`);
+      if (checks.secrets.issues.length >= 10) break;
+    }
+    if (checks.secrets.issues.length > 0) {
+      checks.secrets.status = 'fail';
     }
   } catch (e) {
-    // No secrets found
+    checks.secrets.status = 'fail';
+    checks.secrets.issues = ['source scan failed closed'];
   }
 
   // Check 4: Test gate
   log.info(`Running test gate: ${testCmd}`);
-  try {
-    const testOutput = execSync(`${testCmd} 2>&1`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 120000 });
-    checks.testGate.status = 'pass';
-    checks.testGate.output = 'Tests passed';
-  } catch (e) {
-    checks.testGate.status = 'fail';
-    checks.testGate.output = e.message.substring(0, 500);
-  }
+  checks.testGate = runEvidenceCommand(testCmd);
 
   // Check 5: Typecheck gate
   log.info(`Running typecheck gate: ${typecheckCmd}`);
-  try {
-    const typeOutput = execSync(`${typecheckCmd} 2>&1`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 120000 });
-    checks.typecheckGate.status = 'pass';
-    checks.typecheckGate.output = 'Typecheck passed';
-  } catch (e) {
-    checks.typecheckGate.status = 'fail';
-    checks.typecheckGate.output = e.message.substring(0, 500);
-  }
+  checks.typecheckGate = runEvidenceCommand(typecheckCmd);
 
   log.info(`Running build gate: ${buildCmd}`);
-  try {
-    execSync(`${buildCmd} 2>&1`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 120000 });
-    checks.buildGate.status = 'pass';
-    checks.buildGate.output = 'Build passed';
-  } catch (e) {
-    checks.buildGate.status = 'fail';
-    checks.buildGate.output = e.message.substring(0, 500);
-  }
+  checks.buildGate = runEvidenceCommand(buildCmd);
+
+  log.info(`Running lint gate: ${lintCmd}`);
+  checks.lintGate = runEvidenceCommand(lintCmd);
+
+  log.info(`Running audit gate: ${auditCmd}`);
+  checks.auditGate = runEvidenceCommand(auditCmd);
 
   return checks;
-}
-
-// Check if a reviewer report exists
-function reviewerReportExists(roundDir, reviewer) {
-  const scorePath = join(roundDir, reviewer, 'score.md');
-  const blockerPath = join(roundDir, reviewer, 'blockers.md');
-  return existsSync(scorePath) || existsSync(blockerPath);
-}
-
-// Simple YAML parser for result.yaml
-// SECURITY: Used to validate reviewer scores - must be correct
-function parseYamlResult(yamlContent) {
-  if (!yamlContent || typeof yamlContent !== 'string') {
-    return {
-      reviewer: null,
-      score: null,
-      status: null,
-      blockers: [],
-      redlines: [],
-      dimensions: {},
-    };
-  }
-
-  const result = {
-    reviewer: null,
-    score: null,
-    status: null,
-    blockers: [],
-    redlines: [],
-    dimensions: {},
-  };
-
-  const lines = yamlContent.split('\n');
-  let currentKey = null;
-  let currentArray = null;
-  let inArray = false;
-  let currentNestedObj = null; // Track nested object within an array item
-  let arrayStack = []; // Stack for nested arrays (e.g., blockers > sub-blockers)
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-
-    // Skip comments and empty lines
-    if (!trimmed || trimmed.startsWith('#')) continue;
-
-    // Check for array items
-    if (trimmed.startsWith('- ')) {
-      const item = trimmed.substring(2).trim();
-
-      // Flush previous nested object if we're starting a new array item
-      if (currentNestedObj && currentArray) {
-        result[currentArray].push(currentNestedObj);
-        currentNestedObj = null;
-      }
-
-      if (currentArray && item) {
-        if (currentArray === 'blockers' || currentArray === 'redlines') {
-          // Try inline format: "P1: Description"
-          const blockerMatch = item.match(/^(P[0-3]):\s*(.+)$/i);
-          if (blockerMatch) {
-            result[currentArray].push({ priority: blockerMatch[1].toUpperCase(), text: blockerMatch[2] });
-          } else if (item.includes(':')) {
-            // Nested object format: "priority: P0" or "severity: P1"
-            const nestedKv = item.match(/^(\w+):\s*(.+)$/);
-            if (nestedKv) {
-              currentNestedObj = { [nestedKv[1].trim().toLowerCase()]: nestedKv[2].trim() };
-            } else {
-              result[currentArray].push(item);
-            }
-          } else {
-            result[currentArray].push(item);
-          }
-        } else {
-          result[currentArray].push(item);
-        }
-      }
-      continue;
-    }
-
-    // Check for continuation of nested object (indented key: value after array item)
-    if (currentNestedObj && trimmed.includes(':')) {
-      const colonIndex = trimmed.indexOf(':');
-      const key = trimmed.substring(0, colonIndex).trim().toLowerCase();
-      const value = trimmed.substring(colonIndex + 1).trim();
-      if (key && value) {
-        currentNestedObj[key] = value;
-        continue;
-      }
-    }
-
-    // Check for key: value
-    const colonIndex = trimmed.indexOf(':');
-    if (colonIndex > 0) {
-      const key = trimmed.substring(0, colonIndex).trim().toLowerCase();
-      const value = trimmed.substring(colonIndex + 1).trim();
-
-      // Handle array markers
-      if (value === '' || value === '[]') {
-        // Flush pending nested object
-        if (currentNestedObj && currentArray) {
-          result[currentArray].push(currentNestedObj);
-          currentNestedObj = null;
-        }
-        currentKey = key;
-        currentArray = key;
-        inArray = true;
-        continue;
-      }
-
-      // Parse values
-      switch (key) {
-        case 'reviewer':
-          result.reviewer = value;
-          break;
-        case 'score':
-          // Handle "85/100" or just "85"
-          const scoreMatch = value.match(/^(\d+)(?:\/100)?$/);
-          if (scoreMatch) {
-            const score = parseInt(scoreMatch[1], 10);
-            if (score >= 0 && score <= 100) {
-              result.score = score;
-            }
-          }
-          break;
-        case 'status':
-          result.status = value;
-          break;
-        default:
-          // Check for dimension scores like "module-clarity: 17/25"
-          const dimMatch = value.match(/^(\d+)\/(\d+)$/);
-          if (dimMatch) {
-            result.dimensions[key] = {
-              score: parseInt(dimMatch[1], 10),
-              max: parseInt(dimMatch[2], 10),
-            };
-          }
-      }
-
-      inArray = false;
-      currentArray = null;
-    }
-  }
-
-  // Flush remaining nested object
-  if (currentNestedObj && currentArray) {
-    result[currentArray].push(currentNestedObj);
-  }
-
-  return result;
 }
 
 // Validate reviewer identity
@@ -1081,12 +912,6 @@ function validateReviewerIdentity(reviewer, profile) {
   // Check if reviewer definition exists
   if (!existsSync(reviewerPath)) {
     return { valid: false, error: `Unknown reviewer: ${reviewer}` };
-  }
-
-  // Check if reviewer is in the current profile
-  const profileConfig = PROFILES[profile];
-  if (profileConfig && !profileConfig.reviewers.includes(reviewer)) {
-    return { valid: false, error: `Reviewer ${reviewer} not in profile ${profile}` };
   }
 
   return { valid: true };
@@ -1109,6 +934,11 @@ function loadExistingScores(roundDir, reviewers) {
     let improvements = null;
     let hasReport = false;
     let scoreSource = null;
+    let status = null;
+    let declaredReviewer = null;
+    let declaredProfile = null;
+    let declaredRound = null;
+    let packetError = null;
 
     // Priority: result.yaml > score.md (for score)
     // Blockers: blockers.md OR result.yaml OR score.md
@@ -1123,6 +953,10 @@ function loadExistingScores(roundDir, reviewers) {
           score = yamlResult.score;
           scoreSource = 'result.yaml';
         }
+        status = yamlResult.status;
+        declaredReviewer = yamlResult.reviewer;
+        declaredProfile = yamlResult.profile;
+        declaredRound = yamlResult.round;
 
         // Merge blockers from result.yaml (includes nested severity objects)
         const resultBlockers = yamlResult.blockers.map(b =>
@@ -1144,28 +978,26 @@ function loadExistingScores(roundDir, reviewers) {
 
         hasReport = true;
       } catch (e) {
-        // result.yaml exists but couldn't be parsed - fall through to score.md
+        packetError = `Invalid result.yaml: ${e.message}`;
       }
     }
 
     // Fall back to score.md for score (if result.yaml didn't have one)
-    if (score === null && existsSync(scorePath)) {
+    if (existsSync(scorePath)) {
       try {
         const content = readFileSync(scorePath, 'utf-8');
         const parsedScore = parseScoreShared(content);
-        if (parsedScore !== null) {
+        if (score === null && parsedScore !== null) {
           score = parsedScore;
           scoreSource = 'score.md';
+        } else if (score !== null && parsedScore !== null && parsedScore !== score) {
+          packetError = `Score mismatch: result.yaml=${score}, score.md=${parsedScore}`;
         }
 
         // Also extract blockers from score.md if not found in result.yaml
-        if (blockers.length === 0) {
-          // Look for "Blockers" or "## Blockers" section in score.md
-          const blockerMatch = content.match(/(?:##\s+)?Blockers?\s*\n([\s\S]*?)(?:\n##|\n#|$)/i);
-          if (blockerMatch) {
-            const blockerSection = blockerMatch[1];
-            blockers = parseBlockersShared(blockerSection);
-          }
+        const blockerMatch = content.match(/^##\s+Blockers?\s*$\n([\s\S]*?)(?=^##?\s|(?![\s\S]))/im);
+        if (blockerMatch) {
+          blockers.push(...parseBlockersShared(blockerMatch[1]));
         }
 
         hasReport = true;
@@ -1174,11 +1006,11 @@ function loadExistingScores(roundDir, reviewers) {
       }
     }
 
-    // Load blockers.md if exists and blockers still empty
-    if (blockers.length === 0 && existsSync(blockerPath)) {
+    // Load blockers.md independently; no artifact may hide another artifact's veto.
+    if (existsSync(blockerPath)) {
       try {
         const blockerContent = readFileSync(blockerPath, 'utf-8');
-        blockers = parseBlockersShared(blockerContent);
+        blockers.push(...parseBlockersShared(blockerContent));
         hasReport = true;
       } catch (e) {
         // Ignore
@@ -1197,19 +1029,36 @@ function loadExistingScores(roundDir, reviewers) {
 
     // Validate reviewer identity
     const validation = validateReviewerIdentity(reviewer, profile);
+    const requiredFiles = [resultYamlPath, scorePath, blockerPath, improvementPath];
+    const packetPresent = requiredFiles.some(existsSync);
+    if (packetPresent && !requiredFiles.every(existsSync)) packetError = 'Incomplete reviewer packet: four required files are mandatory';
+    if (packetPresent && declaredReviewer !== reviewer) packetError = `Reviewer identity mismatch: expected ${reviewer}, got ${declaredReviewer || 'missing'}`;
+    if (packetPresent && declaredProfile !== profile) packetError = `Profile mismatch: expected ${profile}, got ${declaredProfile || 'missing'}`;
+    if (packetPresent && declaredRound !== roundNumber) packetError = `Round mismatch: expected ${roundNumber}, got ${declaredRound ?? 'missing'}`;
+    if (packetPresent && !['pass', 'fail'].includes(String(status || '').toLowerCase())) packetError = 'result.yaml status must be pass or fail';
+    blockers = [...new Set(blockers.map(item => typeof item === 'string' ? item : JSON.stringify(item)))];
 
     results[reviewer] = {
       score,
       scoreSource, // Track where the score came from
+      status,
       hasReport,
       blockers,
       improvements,
-      isValidReviewer: validation.valid,
-      validationError: validation.error,
+      isValidReviewer: validation.valid && !packetError,
+      validationError: packetError || validation.error,
     };
   }
 
   return results;
+}
+
+function reviewerPacketPassed(result, minScore = 90) {
+  return result?.isValidReviewer === true &&
+    result.score !== null &&
+    result.score >= minScore &&
+    String(result.status || '').toLowerCase() === 'pass' &&
+    (result.blockers?.length || 0) === 0;
 }
 
 // Generate summary report
@@ -1224,6 +1073,7 @@ function generateSummary(roundDir, profile, scores, allPassed, evidence = null) 
   if (evidence) {
     content += `**Git:** ${evidence.git.branch} @ ${evidence.git.commit}\n`;
   }
+  content += `**Final arbitration evidence:** \`evidence/final-arbitration.json\`\n`;
 
   if (evidence && evidence.automatedChecks) {
     const ac = evidence.automatedChecks;
@@ -1232,13 +1082,17 @@ function generateSummary(roundDir, profile, scores, allPassed, evidence = null) 
     content += `|-------|--------|--------|\n`;
 
     const testIcon = ac.testGate.status === 'pass' ? '✅' : '❌';
-    content += `| pnpm test | ${testIcon} ${ac.testGate.status} | ${ac.testGate.output.substring(0, 50)} |\n`;
+    content += `| test | ${testIcon} ${ac.testGate.status} | ${ac.testGate.status === 'pass' ? 'Passed' : 'See evidence'} |\n`;
 
     const typeIcon = ac.typecheckGate.status === 'pass' ? '✅' : '❌';
-    content += `| pnpm typecheck | ${typeIcon} ${ac.typecheckGate.status} | ${ac.typecheckGate.output.substring(0, 50)} |\n`;
+    content += `| typecheck | ${typeIcon} ${ac.typecheckGate.status} | ${ac.typecheckGate.status === 'pass' ? 'Passed' : 'See evidence'} |\n`;
 
     const buildIcon = ac.buildGate?.status === 'pass' ? '✅' : '❌';
-    content += `| pnpm build | ${buildIcon} ${ac.buildGate?.status || 'unknown'} | ${(ac.buildGate?.output || '').substring(0, 50)} |\n`;
+    content += `| build | ${buildIcon} ${ac.buildGate?.status || 'unknown'} | ${ac.buildGate?.status === 'pass' ? 'Passed' : 'See evidence'} |\n`;
+    const lintIcon = ac.lintGate?.status === 'pass' ? '✅' : '❌';
+    content += `| lint | ${lintIcon} ${ac.lintGate?.status || 'unknown'} | ${ac.lintGate?.status === 'pass' ? 'Passed' : 'See evidence'} |\n`;
+    const auditIcon = ac.auditGate?.status === 'pass' ? '✅' : '❌';
+    content += `| audit | ${auditIcon} ${ac.auditGate?.status || 'unknown'} | ${ac.auditGate?.status === 'pass' ? 'Passed' : 'See evidence'} |\n`;
 
     const sizeIcon = ac.oversizedFiles.status === 'pass' ? '✅' : '⚠️';
     content += `| File sizes | ${sizeIcon} ${ac.oversizedFiles.issues.length} oversized | ${ac.oversizedFiles.issues.slice(0, 2).map(i => `${i.lines}L ${i.path.split('/').pop()}`).join(', ') || 'OK'} |\n`;
@@ -1281,11 +1135,12 @@ function generateSummary(roundDir, profile, scores, allPassed, evidence = null) 
   for (const [reviewer, result] of Object.entries(scores)) {
     totalReviewed++;
     if (result.score !== null) {
-      const status = result.score >= 90 ? '✅ PASS' : '❌ FAIL';
+      const passed = reviewerPacketPassed(result);
+      const status = !result.isValidReviewer ? '❌ INVALID' : passed ? '✅ PASS' : '❌ FAIL';
       const blockerCount = result.blockers.length;
       totalBlockers += blockerCount;
       content += `| ${reviewer} | ${result.score}/100 | ${status} | ${blockerCount > 0 ? `⚠ ${blockerCount}` : '-'} |\n`;
-      if (result.score >= 90) totalPassed++;
+      if (passed) totalPassed++;
     } else if (result.hasReport) {
       content += `| ${reviewer} | N/A | ⚠ INCOMPLETE | ${result.blockers.length} |\n`;
     } else {
@@ -1316,15 +1171,12 @@ function generateSummary(roundDir, profile, scores, allPassed, evidence = null) 
     content += `This release has passed all quality gates. It is ready to ship.\n`;
     content += `\nTo generate the final report:\n`;
     content += `\`\`\`bash\n`;
-    content += `node skills/release-quality-review/scripts/review-gate.mjs --generate-final\n`;
+    content += `npm run skill:gate -- --profile ${profile} --round ${roundNumber}\n`;
     content += `\`\`\`\n`;
   } else {
     content += `## ❌ QUALITY GATE FAILED\n\n`;
     content += `This release has not passed quality gates. Fix the issues below and re-run review.\n\n`;
-    content += `**To continue:**\n`;
-    content += `\`\`\`bash\n`;
-    content += `node skills/release-quality-review/scripts/review-runner.mjs --profile ${profile} --round ${roundNumber + 1}\n`;
-    content += `\`\`\`\n\n`;
+    content += `**To continue:** launch the failed or pending reviewers as independent host agents, write their four required report files, then re-run this same round.\n\n`;
 
     // Show top blockers
     if (allBlockers.length > 0) {
@@ -1378,7 +1230,7 @@ function writePhaseBoundary(roundDir, roundNumber, phase, nextPhase) {
 4. Phase boundary marked
 
 ### For Next Review Round
-Run: \`node review-gate.mjs --round ${roundNumber + 1} --profile release-gate\`
+Run: \`npm run skill:gate -- --round ${roundNumber + 1} --profile release-gate\`
 
 ---
 *Generated by Release Quality Review Skill*
@@ -1461,6 +1313,11 @@ async function runGate() {
   }
 
   const config = loadConfig();
+  const strictProfileRequested = ['release-gate', 'full', 'agentic-release-gate'].includes(profile);
+  if (strictProfileRequested && excludeReviewers.length > 0) {
+    log.error('Strict profiles do not allow --exclude-reviewer');
+    return false;
+  }
 
   // Determine reviewers to run
   let reviewers = [];
@@ -1495,7 +1352,12 @@ async function runGate() {
       reviewers: reviewers,
       gate: yamlProfile.gate,
     };
+    reviewers = reviewers.filter(r => !excludeReviewers.includes(r));
   } else {
+    if (userSpecifiedProfile) {
+      log.error(`Profile not found: ${profile}`);
+      return false;
+    }
     // Fall back to PROFILES object
     reviewers = profileConfig.reviewers.filter(r => !excludeReviewers.includes(r));
   }
@@ -1503,6 +1365,11 @@ async function runGate() {
   // Single reviewer mode overrides profile
   if (singleReviewer) {
     reviewers = [singleReviewer];
+  }
+  reviewers = [...new Set(reviewers)];
+  if (reviewers.length === 0) {
+    log.error('GATE BLOCKED - no reviewers selected');
+    return false;
   }
 
   // Dry run mode
@@ -1513,12 +1380,13 @@ async function runGate() {
     log.info(`Round: ${roundNumber}`);
 
     // Validate reviewer files exist
+    let valid = true;
     for (const reviewer of reviewers) {
       const exists = existsSync(join(SKILL_DIR, 'reviewers', `${reviewer}.md`));
       log.info(`  ${exists ? '✓' : '✗'} ${reviewer}: ${exists ? 'found' : 'MISSING'}`);
+      valid &&= exists;
     }
-
-    return true;
+    return valid;
   }
 
   // Title
@@ -1526,7 +1394,6 @@ async function runGate() {
   log.title('RELEASE QUALITY GATE');
   log.info(`Profile: ${colors.bright}${profile}${colors.reset}`);
   log.info(`Reviewers: ${reviewers.join(', ')}`);
-  if (parallel) log.info(`Mode: parallel`);
   console.log('');
 
   // Determine round directory
@@ -1546,20 +1413,28 @@ async function runGate() {
   if (collectEvidence) {
     try {
       evidence = collectEvidence_(config);
+      persistEvidence(roundDir, evidence, profile, reviewers);
       log.success(`Evidence collected`);
     } catch (e) {
-      log.warn(`Evidence collection failed: ${e.message}`);
+      log.error(`Evidence collection failed: ${e.message}`);
+      return false;
     }
   }
 
   // Load existing scores
   const existingScores = loadExistingScores(roundDir, reviewers);
+  const minScore = Number(profileConfig.gate?.min_score ?? 90);
   const pendingReviewers = reviewers.filter(r => !existingScores[r].hasReport);
   const completedReviewers = reviewers.filter(r => existingScores[r].hasReport);
 
   // Check for redlines only mode
   if (checkRedlinesOnly) {
     log.title('REDLINE CHECK');
+    const invalidPackets = Object.values(existingScores).filter(result => !result.isValidReviewer);
+    if (pendingReviewers.length > 0 || invalidPackets.length > 0) {
+      log.error('Redline check is incomplete: all required reviewer packets must be complete and valid');
+      return false;
+    }
     const allBlockers = Object.entries(existingScores)
       .filter(([, r]) => r.blockers && r.blockers.length > 0)
       .flatMap(([name, r]) => r.blockers.map(b => ({ reviewer: name, blocker: b })));
@@ -1610,7 +1485,8 @@ async function runGate() {
       }
 
       if (score !== null) {
-        const icon = score >= 90 ? '✅' : '❌';
+        const reviewerPassed = reviewerPacketPassed(reviewerResult, minScore);
+        const icon = reviewerPassed ? '✅' : '❌';
         const blockerIcon = blockerCount > 0 ? ` ${colors.yellow}⚠${blockerCount}${colors.reset}` : '';
         const sourceNote = scoreSource === 'result.yaml' ? ` ${colors.dim}(verified)${colors.reset}` : '';
         console.log(`  ${icon} ${reviewer}: ${score}/100${blockerIcon}${sourceNote}`);
@@ -1630,7 +1506,7 @@ async function runGate() {
   // ============================================================================
   // P3: 对抗性审查 - 运行 evidence-validator 检查证据来源合规性
   // ============================================================================
-  let evidenceValidationPassed = true;
+  let evidenceValidationPassed = !validateEvidence;
   let evidenceValidationResults = null;
 
   if (validateEvidence && allHaveScores) {
@@ -1642,13 +1518,13 @@ async function runGate() {
         log.info(`Running evidence-validator for ${roundName}...`);
 
         // Run evidence validator and capture output
-        const validatorOutput = execSync(
-          `node "${evidenceValidatorScript}" --round ${roundName}`,
-          { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 60000 }
-        );
+        const validatorOutput = execFileSync('node', [evidenceValidatorScript, '--round', roundName, '--base', resolvedDiffBase], {
+          encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 60000,
+        });
 
         // Check if validation passed
         if (validatorOutput.includes('✅ All reviewers passed')) {
+          evidenceValidationPassed = true;
           log.success('Evidence source validation passed');
         } else {
           evidenceValidationPassed = false;
@@ -1661,6 +1537,8 @@ async function runGate() {
           log.info(`Validation report: ${validationReportPath}`);
         }
         evidenceValidationResults = validatorOutput;
+      } else {
+        log.error('Evidence validator is missing');
       }
     } catch (e) {
       // Validator might exit 1 on violations - that's expected
@@ -1673,6 +1551,7 @@ async function runGate() {
         const validationReportPath = join(roundDir, 'evidence-validation.md');
         writeFileSync(validationReportPath, `# Evidence Source Validation\n\n${e.stdout}\n`);
       } else {
+        evidenceValidationPassed = false;
         log.warn(`Evidence validator error: ${e.message}`);
       }
     }
@@ -1768,14 +1647,17 @@ async function runGate() {
       );
 
       // Parse score from output
-      const scoreMatch = gateOutput.match(/Score:\s*(\d+)/);
+      const plainGateOutput = gateOutput.replace(/\x1b\[[0-9;]*m/g, '');
+      const scoreMatch = plainGateOutput.match(/Score:\s*(\d+)/);
       const score = scoreMatch ? parseInt(scoreMatch[1], 10) : 0;
-      const passed = gateOutput.includes('判定：合格') || gateOutput.includes('✓');
+      const passed = score >= 90 && plainGateOutput.includes('判定：合格');
 
       goalInstructionResult = { passed, score };
 
       if (passed) {
         log.success(`Goal instruction valid (${score}/100)`);
+        const validationReport = join(roundDir, 'goal-instruction-validation.md');
+        writeFileSync(validationReport, `# Goal Instruction Validation\n\n${gateOutput}\n`);
       } else {
         log.error(`Goal instruction invalid (${score}/100)`);
         console.log(gateOutput);
@@ -1803,7 +1685,7 @@ async function runGate() {
   // SECURITY: Goal mode constraint must be satisfied (if enabled)
   // SECURITY: Goal instruction must be valid (goal 指令生成器)
   // SECURITY: Automated checks (test/typecheck) are mandatory gates, not just advisory
-  const allPassed = allHaveScores && reviewers.every(r => existingScores[r].score >= 90);
+  const allPassed = allHaveScores && reviewers.every(r => reviewerPacketPassed(existingScores[r], minScore));
 
   // Automated checks must pass - test and typecheck are mandatory release gates
   const autoChecks = evidence?.automatedChecks;
@@ -1811,23 +1693,51 @@ async function runGate() {
   const testGateFailed = autoChecks?.testGate?.status !== 'pass';
   const typecheckGateFailed = autoChecks?.typecheckGate?.status !== 'pass';
   const buildGateFailed = autoChecks?.buildGate?.status !== 'pass';
+  const lintGateFailed = autoChecks?.lintGate?.status !== 'pass';
+  const auditGateFailed = autoChecks?.auditGate?.status !== 'pass';
+  const secretsGateFailed = autoChecks?.secrets?.status !== 'pass';
   const automatedChecksPassed = strictProfile
-    ? Boolean(autoChecks) && !testGateFailed && !typecheckGateFailed && !buildGateFailed && validateEvidence
+    ? Boolean(autoChecks) && !testGateFailed && !typecheckGateFailed && !buildGateFailed &&
+      !lintGateFailed && !auditGateFailed && !secretsGateFailed && validateEvidence
     : !autoChecks || (!testGateFailed && !typecheckGateFailed);
 
   // Only P0/P1 blockers are true "redlines" - P2/P3 are suggestions, not blockers
-  const hasRedlines = Object.values(existingScores).some(r =>
+  const vetoFindingsPresent = Object.values(existingScores).some(r =>
     r.blockers && r.blockers.some(b =>
       typeof b === 'string' ?
         /\bP0\b|\bP1\b/i.test(b) :
         (b.priority === 'P0' || b.priority === 'P1')
     )
   );
+  const hasRedlines = profileConfig.gate?.fail_on_p0_p1_blockers !== false && vetoFindingsPresent;
   const hasInvalidReviewers = Object.values(existingScores).some(r => !r.isValidReviewer);
-  const goalInstructionValid = !goalInstructionResult || goalInstructionResult.passed;
+  const goalRequired = profile === 'agentic-release-gate';
+  const goalInstructionValid = goalRequired ? goalInstructionResult?.passed === true : !goalInstructionResult || goalInstructionResult.passed;
+  const requiredAgenticArtifacts = [
+    'metadata.json', 'generated-goal.md', 'goal-instruction-validation.md',
+    `phase-${roundNumber}-plan.md`, 'changes.md', 'diff-summary.md', 'risk.md', 'handoff.md',
+    'evidence/automated-checks.json', 'evidence/clean-candidate.json',
+  ];
+  let cleanCandidateEvidenceValid = !goalRequired;
+  const cleanCandidatePath = join(roundDir, 'evidence', 'clean-candidate.json');
+  if (goalRequired && existsSync(cleanCandidatePath)) {
+    try {
+      const clean = JSON.parse(readFileSync(cleanCandidatePath, 'utf8'));
+      const currentCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+      cleanCandidateEvidenceValid = clean.status === 'pass' && clean.exit_code === 0 &&
+        clean.isolated_checkout === true && clean.candidate_commit === currentCommit &&
+        clean.source_status === '' && Array.isArray(clean.commands) &&
+        clean.commands.length > 0 && clean.commands.every(command => command.exit_code === 0);
+    } catch {
+      cleanCandidateEvidenceValid = false;
+    }
+  }
+  const artifactCompletenessPassed = !goalRequired ||
+    (requiredAgenticArtifacts.every(file => existsSync(join(roundDir, file))) && cleanCandidateEvidenceValid);
+  const arbitrationEligible = !singleReviewer && excludeReviewers.length === 0;
   const gatePassed = allPassed && !hasRedlines && evidenceValidationPassed &&
                      (!checkGoalMode || goalModeViolations.length === 0) &&
-                     goalInstructionValid && automatedChecksPassed;
+                     goalInstructionValid && artifactCompletenessPassed && automatedChecksPassed && arbitrationEligible;
 
   // Summary
   log.title('GATE STATUS');
@@ -1841,6 +1751,7 @@ async function runGate() {
       }
     }
     generateSummary(roundDir, profile, existingScores, false, evidence);
+    persistFinalArbitration(roundDir, false, 'invalid reviewer packet');
     return false;
   }
 
@@ -1856,6 +1767,7 @@ async function runGate() {
       writePhaseBoundary(roundDir, roundNumber, currentPhase, nextPhase);
 
       generateSummary(roundDir, profile, existingScores, true, evidence);
+      persistFinalArbitration(roundDir, true, 'all conjunctive gates passed');
 
       // Generate final report
       const finalPath = generateFinalReport(existingScores, evidence);
@@ -1873,6 +1785,15 @@ async function runGate() {
       if (buildGateFailed) {
         log.error(`Automated build gate FAILED: ${autoChecks?.buildGate?.output || 'build evidence missing'}`);
       }
+      if (lintGateFailed) {
+        log.error(`Automated lint gate FAILED: ${autoChecks?.lintGate?.output || 'lint evidence missing'}`);
+      }
+      if (auditGateFailed) {
+        log.error(`Automated audit gate FAILED: ${autoChecks?.auditGate?.output || 'audit evidence missing'}`);
+      }
+      if (secretsGateFailed) {
+        log.error(`Automated secret scan FAILED: ${autoChecks?.secrets?.issues?.join(', ') || 'scan evidence missing'}`);
+      }
       if (hasRedlines) {
         log.error('Redlines detected - blocking release');
       }
@@ -1885,7 +1806,11 @@ async function runGate() {
       if (goalInstructionResult && !goalInstructionResult.passed) {
         log.error(`Goal instruction invalid (${goalInstructionResult.score}/100) - contains plan language`);
       }
+      if (!artifactCompletenessPassed) {
+        log.error('Required agentic Goal, evidence, risk, and handoff artifacts are incomplete');
+      }
       generateSummary(roundDir, profile, existingScores, false, evidence);
+      persistFinalArbitration(roundDir, false, 'one or more release gates failed');
       return false;
     }
   } else {
@@ -1893,17 +1818,15 @@ async function runGate() {
     const total = reviewers.length;
     console.log(`  Progress: ${completed}/${total} completed`);
     console.log('');
-    log.info('To complete this review, run the pending reviewers:');
+    log.info('To complete this review, launch these independent reviewers with the Codex/Claude host:');
     console.log('');
     for (const reviewer of pendingReviewers) {
-      console.log(`  ${colors.magenta}node review-gate.mjs --reviewer ${reviewer}${colors.reset}`);
+      console.log(`  ${colors.magenta}${reviewer}${colors.reset}`);
     }
     console.log('');
 
-    // P4: Persistent Handoff - Write Phase boundary for intermediate rounds
-    writePhaseBoundary(roundDir, roundNumber, roundNumber, roundNumber + 1);
-
     generateSummary(roundDir, profile, existingScores, false, evidence);
+    persistFinalArbitration(roundDir, false, 'reviewer packets pending');
     return false;
   }
 }

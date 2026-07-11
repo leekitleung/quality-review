@@ -78,16 +78,15 @@ export function parseBlockers(blockerContent) {
       continue;
     }
 
-    if (trimmed.includes('无 P0') || trimmed.includes('无 P1') ||
-        trimmed.includes('no P0') || trimmed.includes('no P1') ||
-        trimmed.includes('无 blockers') || trimmed.includes('no blockers') ||
+    if (/^none(?:\.|\b)/i.test(trimmed) ||
+        /^(?:no|none|无).*?(?:p0|p1|blockers?)/i.test(trimmed) ||
+        /^#+\s*(?:P0|P1)\s*$/i.test(trimmed) ||
         trimmed.match(/^#\s+.*Blockers$/i)) {
       continue;
     }
 
-    if (trimmed.includes('P0') || trimmed.includes('P1') ||
-        trimmed.includes('❌') || trimmed.includes('红') ||
-        trimmed.includes('[ ]') || trimmed.match(/^[-*]\s+\[/)) {
+    const severityFinding = /^(?:#{1,6}\s*|[-*+]\s*(?:\[[ xX]\]\s*)?|>\s*)?(?:\*\*)?\[?P[01]\]?(?:\*\*)?(?=\s*(?:[:：—–-]|\(|$))/i.test(trimmed);
+    if (severityFinding) {
       if (currentBlocker) {
         blockers.push(currentBlocker);
       }
@@ -118,6 +117,8 @@ export function parseYamlResult(yamlContent) {
   if (!yamlContent || typeof yamlContent !== 'string') {
     return {
       reviewer: null,
+      profile: null,
+      round: null,
       score: null,
       status: null,
       blockers: [],
@@ -128,6 +129,8 @@ export function parseYamlResult(yamlContent) {
 
   const result = {
     reviewer: null,
+    profile: null,
+    round: null,
     score: null,
     status: null,
     blockers: [],
@@ -232,6 +235,14 @@ export function parseYamlResult(yamlContent) {
         case 'reviewer':
           result.reviewer = value;
           break;
+        case 'profile':
+          result.profile = value;
+          break;
+        case 'round': {
+          const roundMatch = value.match(/^(?:round-)?(\d+)$/i);
+          if (roundMatch) result.round = parseInt(roundMatch[1], 10);
+          break;
+        }
         case 'score':
           const scoreMatch = value.match(/^(\d+)(?:\/100)?$/);
           if (scoreMatch) {
@@ -244,6 +255,15 @@ export function parseYamlResult(yamlContent) {
         case 'status':
           result.status = value;
           break;
+        case 'blockers':
+        case 'redlines': {
+          const inlineItems = value.match(/^\[(.*)\]$/)?.[1]
+            ?.split(',')
+            .map(item => item.trim().replace(/^['"]|['"]$/g, ''))
+            .filter(Boolean) || [];
+          result[key].push(...inlineItems);
+          break;
+        }
         default:
           const dimMatch = value.match(/^(\d+)\/(\d+)$/);
           if (dimMatch) {
@@ -323,6 +343,27 @@ export function detectChangeScale(changedFiles = [], addedLines = 0, deletedLine
     reason,
     requiresAgentic: scale === 'xlarge',
   };
+}
+
+export function matchesTriggerConditions(changedFiles = [], diff = '', conditions = {}) {
+  const filePatterns = conditions.files || [];
+  const contentPatterns = conditions.patterns || [];
+  const fileMatched = filePatterns.some(pattern => {
+    const escaped = pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\?/g, '::QUESTION::')
+      .replace(/\*\*\//g, '::GLOBSTAR_DIR::')
+      .replace(/\*\*/g, '::GLOBSTAR::')
+      .replace(/\*/g, '[^/]*')
+      .replace(/::GLOBSTAR_DIR::/g, '(?:.*/)?')
+      .replace(/::GLOBSTAR::/g, '.*')
+      .replace(/::QUESTION::/g, '.');
+    const regex = new RegExp(`^${escaped}$`);
+    return changedFiles.some(file => regex.test(file));
+  });
+  const normalizedDiff = String(diff).toLowerCase();
+  const contentMatched = contentPatterns.some(pattern => normalizedDiff.includes(String(pattern).toLowerCase()));
+  return fileMatched || contentMatched;
 }
 
 // ============================================================================

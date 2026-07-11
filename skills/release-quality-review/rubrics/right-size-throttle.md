@@ -148,8 +148,8 @@ Override with: --profile <name>
   - 自动化证据收集
 
 ✅ 通过条件:
-  - 所有 reviewer >= 85
-  - 无 P0 redlines
+  - 所有 reviewer >= 90
+  - 无 P0/P1 blockers 或 redlines
 ```
 
 #### Large (20+ 文件, 500+ 行)
@@ -162,7 +162,7 @@ Override with: --profile <name>
 
 ✅ 通过条件:
   - 所有 reviewer >= 90
-  - 无 P0 redlines
+  - 无 P0/P1 blockers 或 redlines
 ```
 
 #### XLarge (50+ 文件, 2000+ 行)
@@ -174,8 +174,8 @@ Override with: --profile <name>
   - 人工介入点
 
 ✅ 通过条件:
-  - 所有 reviewer >= 85
-  - 无 P0 redlines
+  - 所有 reviewer >= 90
+  - 无 P0/P1 blockers 或 redlines
   - 人工确认
 ```
 
