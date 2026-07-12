@@ -637,11 +637,15 @@ test.describe('CLI fail-closed integration', () => {
   test('parallel runner terminates hung reviewers and exits with agent failure', () => {
     const round = reportRound(TEST_ROUNDS.parallelTimeout);
     const fakeBin = join(TEST_DIR, 'fake-bin');
+    const leakMarker = join(TEST_DIR, 'reviewer-descendant-leak');
     try {
       mkdirSync(fakeBin);
       const fakeCodex = join(fakeBin, 'codex');
       writeFileSync(fakeCodex, `#!/usr/bin/env node
 if (process.argv.includes('--version')) process.exit(0);
+process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e',
+  "process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(process.env.LEAK_MARKER, 'leaked'), 500)"
+], { stdio: 'ignore', env: process.env }).unref();
 setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
 `);
       chmodSync(fakeCodex, 0o755);
@@ -657,10 +661,13 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
           PATH: `${fakeBin}:${process.env.PATH}`,
           RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '100',
           RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+          LEAK_MARKER: leakMarker,
         },
       });
       assertEqual(result.status, 5, `Expected exit 5, output: ${result.stdout}${result.stderr}`);
       assertTrue(result.stdout.includes('timed out'), 'Expected explicit reviewer timeout diagnostic');
+      spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
+      assertEqual(existsSync(leakMarker), false, 'Reviewer descendants must not survive to perform delayed writes');
     } finally {
       rmSync(round, { recursive: true, force: true });
     }

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "skills": {
     "release-quality-review": {
-      "canonical_sha256": "b1e6d3d81d9542a56a5d9aea859a1e629ba67e8e5b556df12e90195e5d0eb79d",
+      "canonical_sha256": "1db46a9fa989915d5700a7ddcbf5dff610dccc2609f9f1152af44b973a2c5f44",
       "adapters_sha256": "fb707450dbb95e6d1b0a158157a547e1f5d102bdbcf83f286aceb39e3034b967"
     }
   }

@@ -764,12 +764,27 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       const proc = spawn('codex', ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt], {
         cwd: PROJECT_ROOT,
         stdio: ['ignore', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
       });
       let diagnostic = '';
       let settled = false;
       let aborted = false;
       let forceTimer = null;
       const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
+      const signalProcessTree = signal => {
+        if (!proc.pid) return;
+        try {
+          if (process.platform === 'win32') {
+            const args = ['/pid', String(proc.pid), '/t'];
+            if (signal === 'SIGKILL') args.push('/f');
+            execFileSync('taskkill', args, { stdio: 'ignore', timeout: REVIEWER_KILL_GRACE_MS });
+          } else {
+            process.kill(-proc.pid, signal);
+          }
+        } catch (error) {
+          if (error.code !== 'ESRCH') diagnostic = `${diagnostic}\nprocess-tree ${signal} failed: ${error.message}`.slice(-4000);
+        }
+      };
       proc.stdout.on('data', retainTail);
       proc.stderr.on('data', retainTail);
       const finish = (code, eventStatus = null) => {
@@ -789,10 +804,10 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         if (settled || aborted) return;
         aborted = true;
         diagnostic = `${diagnostic}\n${reason}`.slice(-4000);
-        proc.kill('SIGTERM');
+        signalProcessTree('SIGTERM');
         forceTimer = setTimeout(() => {
           if (settled) return;
-          proc.kill('SIGKILL');
+          signalProcessTree('SIGKILL');
           forceTimer = setTimeout(() => finish(null, 'failed'), 100);
         }, REVIEWER_KILL_GRACE_MS);
       };
@@ -802,7 +817,9 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         console.log(`  ${c.red}✗${c.reset} ${reason}`);
         abortAll(reason);
       }, REVIEWER_TIMEOUT_MS);
-      proc.on('close', code => finish(code));
+      proc.on('close', code => {
+        if (!aborted) finish(code);
+      });
       proc.on('error', error => {
         console.log(`  ${c.red}✗${c.reset} ${reviewer}: ${error.message}`);
         finish(null, 'error');
