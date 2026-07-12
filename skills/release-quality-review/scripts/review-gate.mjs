@@ -23,6 +23,7 @@ import { fileURLToPath } from 'url';
 import { execFileSync as nodeExecFileSync } from 'child_process';
 import { readFile } from 'fs/promises';
 import { createHash } from 'node:crypto';
+import { persistPhasePlan } from '../lib/phase-persistence.mjs';
 import {
   parseScore as parseScoreShared,
   parseBlockers as parseBlockersShared,
@@ -42,31 +43,59 @@ const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 const ISOLATED_HOME = mkdtempSync(join(tmpdir(), 'release-quality-review-gate-home-'));
+const CHECKOUT_PARENT = mkdtempSync(join(tmpdir(), 'release-quality-review-gate-checkout-'));
 const SUBPROCESS_ENV = createCandidateSubprocessEnv(process.env, ISOLATED_HOME);
-process.on('exit', () => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
+process.on('exit', () => {
+  rmSync(ISOLATED_HOME, { recursive: true, force: true });
+  rmSync(CHECKOUT_PARENT, { recursive: true, force: true });
+});
 
 function execSync(command, options = {}) {
+  const { sandboxReadOnlyRoots = [], sandboxWriteRoots = [ISOLATED_HOME], ...execOptions } = options;
   const wrapped = wrapCandidateCommand('/bin/sh', ['-c', command], {
-    readOnlyRoots: [PROJECT_ROOT], writeRoots: [ISOLATED_HOME],
+    readOnlyRoots: [PROJECT_ROOT, ...sandboxReadOnlyRoots], writeRoots: sandboxWriteRoots,
   });
-  return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: SUBPROCESS_ENV });
+  return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env: SUBPROCESS_ENV });
 }
 
 function execFileSync(file, args, options = {}) {
+  const { sandboxReadOnlyRoots = [], sandboxWriteRoots = [ISOLATED_HOME], ...execOptions } = options;
   const wrapped = wrapCandidateCommand(file, args, {
-    readOnlyRoots: [PROJECT_ROOT], writeRoots: [ISOLATED_HOME],
+    readOnlyRoots: [PROJECT_ROOT, ...sandboxReadOnlyRoots], writeRoots: sandboxWriteRoots,
   });
-  return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: SUBPROCESS_ENV });
+  return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env: SUBPROCESS_ENV });
 }
 
 function prepareCandidateCheckout() {
-  const checkout = join(ISOLATED_HOME, 'candidate-checkout');
+  const checkout = join(CHECKOUT_PARENT, 'candidate-checkout');
   if (!existsSync(checkout)) {
     execFileSync('git', ['clone', '--quiet', '--no-hardlinks', PROJECT_ROOT, checkout], {
       cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
+      sandboxWriteRoots: [ISOLATED_HOME, CHECKOUT_PARENT],
     });
+    ensureContainedDirectorySync(checkout, join(checkout, 'quality-reports'));
   }
   return checkout;
+}
+
+function readCheckoutIdentity(root) {
+  const options = { cwd: root, encoding: 'utf8', timeout: 10000, sandboxReadOnlyRoots: [root] };
+  return {
+    commit: execFileSync('git', ['rev-parse', 'HEAD'], options).trim(),
+    tree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], options).trim(),
+    status: execFileSync('git', ['status', '--short'], options).trim(),
+  };
+}
+
+function validateCandidateCheckout(root, initial) {
+  const source = readCheckoutIdentity(PROJECT_ROOT);
+  const final = readCheckoutIdentity(root);
+  if (source.status !== '' || initial.status !== '' || final.status !== '' ||
+      initial.commit !== source.commit || initial.tree !== source.tree ||
+      final.commit !== source.commit || final.tree !== source.tree) {
+    throw new Error('automated verification checkout identity changed or source checkout is dirty');
+  }
+  return { status: 'pass', source_commit: source.commit, source_tree: source.tree, initial, final };
 }
 
 // ANSI colors
@@ -558,6 +587,9 @@ function collectEvidence_(config) {
   } catch (e) {
     log.warn('Could not collect git evidence');
   }
+  if (evidence.git.status !== '') {
+    throw new Error('source checkout must be clean before evidence collection');
+  }
 
   // Package info
   try {
@@ -575,7 +607,9 @@ function collectEvidence_(config) {
   }
 
   // Automated checks with config
-  evidence.automatedChecks = runAutomatedChecks(config, prepareCandidateCheckout());
+  const candidateRoot = prepareCandidateCheckout();
+  const initialCheckout = readCheckoutIdentity(candidateRoot);
+  evidence.automatedChecks = runAutomatedChecks(config, candidateRoot, initialCheckout);
 
   return evidence;
 }
@@ -624,6 +658,12 @@ function validCommandEvidence(record, expectedCommand) {
     (record.truncated || record.output_bytes === retainedBytes);
 }
 
+function validCandidateCheckoutEvidence(record, expectedCommit, expectedTree) {
+  return record?.status === 'pass' && record.source_commit === expectedCommit && record.source_tree === expectedTree &&
+    record.initial?.commit === expectedCommit && record.initial?.tree === expectedTree && record.initial?.status === '' &&
+    record.final?.commit === expectedCommit && record.final?.tree === expectedTree && record.final?.status === '';
+}
+
 function persistFinalArbitration(roundDir, passed, reason) {
   const evidenceDir = join(roundDir, 'evidence');
   ensureContainedDirectorySync(roundDir, evidenceDir);
@@ -646,7 +686,12 @@ function runEvidenceCommand(command, cwd = PROJECT_ROOT) {
   let rawOutput = '';
   let exitCode = 0;
   try {
-    rawOutput = execSync(`${command} 2>&1`, { encoding: 'utf-8', cwd, timeout: 120000 });
+    const candidateReportRoot = join(cwd, 'quality-reports');
+    rawOutput = execSync(`${command} 2>&1`, {
+      encoding: 'utf-8', cwd, timeout: 120000,
+      sandboxReadOnlyRoots: cwd === PROJECT_ROOT ? [] : [cwd],
+      sandboxWriteRoots: cwd === PROJECT_ROOT ? [ISOLATED_HOME] : [ISOLATED_HOME, candidateReportRoot],
+    });
   } catch (error) {
     exitCode = Number.isInteger(error.status) ? error.status : 1;
     rawOutput = String(error.stdout || error.stderr || error.message || 'command failed');
@@ -706,7 +751,7 @@ function scanCircularDependencies() {
 }
 
 // Run automated gate checks
-function runAutomatedChecks(config, candidateRoot) {
+function runAutomatedChecks(config, candidateRoot, initialCheckout) {
   const checks = {
     oversizedFiles: { status: 'pass', issues: [] },
     circularDeps: { status: 'pass', issues: [] },
@@ -806,6 +851,8 @@ function runAutomatedChecks(config, candidateRoot) {
     log.info(`Running coverage gate: ${coverageCmd}`);
     checks.coverageGate = runEvidenceCommand(coverageCmd, candidateRoot);
   }
+
+  checks.candidateCheckout = validateCandidateCheckout(candidateRoot, initialCheckout);
 
   return checks;
 }
@@ -1405,6 +1452,7 @@ async function runGate() {
           : createHash('sha256').update(cleanCandidateContent).digest('hex');
         if (metadata.profile !== profile || metadata.round !== roundNumber ||
             metadata.git?.commit !== currentCommit || metadata.git?.status !== currentStatus ||
+            currentStatus !== '' ||
             metadata.candidate_commit !== fullCommit || metadata.candidate_tree !== currentTree ||
             metadata.automated_checks_sha256 !== digest ||
             (profile === 'agentic-release-gate' && metadata.clean_candidate_sha256 !== cleanCandidateDigest)) {
@@ -1425,6 +1473,9 @@ async function runGate() {
             throw new Error(`invalid ${name} command evidence`);
           }
         }
+        if (!validCandidateCheckoutEvidence(automatedChecks.candidateCheckout, fullCommit, currentTree)) {
+          throw new Error('invalid automated verification checkout evidence');
+        }
         evidence = {
           timestamp: metadata.collected_at,
           git: metadata.git,
@@ -1437,6 +1488,11 @@ async function runGate() {
         return false;
       }
     }
+  }
+
+  const phasePlanPath = join(roundDir, `phase-${roundNumber}-plan.md`);
+  if (!existsSync(phasePlanPath)) {
+    persistPhasePlan(roundDir, roundNumber, reviewers, evidence || {}, profileConfig);
   }
 
   // Load existing scores

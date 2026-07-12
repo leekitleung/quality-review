@@ -34,33 +34,50 @@ const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 const TOOL_ENV = createSubprocessEnv();
 const ISOLATED_HOME = mkdtempSync(join(tmpdir(), 'release-quality-review-runner-home-'));
+const CHECKOUT_PARENT = mkdtempSync(join(tmpdir(), 'release-quality-review-runner-checkout-'));
 const CANDIDATE_ENV = createCandidateSubprocessEnv(process.env, ISOLATED_HOME);
-process.on('exit', () => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
+process.on('exit', () => {
+  rmSync(ISOLATED_HOME, { recursive: true, force: true });
+  rmSync(CHECKOUT_PARENT, { recursive: true, force: true });
+});
 const REVIEWER_TIMEOUT_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_TIMEOUT_MS, 15 * 60 * 1000);
 const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS, 5000);
 
 function execSync(command, options = {}) {
+  const { sandboxReadOnlyRoots = [], sandboxWriteRoots = [ISOLATED_HOME], ...execOptions } = options;
   const wrapped = wrapCandidateCommand('/bin/sh', ['-c', command], {
-    readOnlyRoots: [PROJECT_ROOT], writeRoots: [ISOLATED_HOME],
+    readOnlyRoots: [PROJECT_ROOT, ...sandboxReadOnlyRoots], writeRoots: sandboxWriteRoots,
   });
-  return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: CANDIDATE_ENV });
+  return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env: CANDIDATE_ENV });
 }
 
 function execFileSync(file, args, options = {}) {
+  const { sandboxReadOnlyRoots = [], sandboxWriteRoots = [ISOLATED_HOME], ...execOptions } = options;
   const wrapped = wrapCandidateCommand(file, args, {
-    readOnlyRoots: [PROJECT_ROOT], writeRoots: [ISOLATED_HOME],
+    readOnlyRoots: [PROJECT_ROOT, ...sandboxReadOnlyRoots], writeRoots: sandboxWriteRoots,
   });
-  return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: CANDIDATE_ENV });
+  return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env: CANDIDATE_ENV });
 }
 
 function prepareCandidateCheckout() {
-  const checkout = join(ISOLATED_HOME, 'candidate-checkout');
+  const checkout = join(CHECKOUT_PARENT, 'candidate-checkout');
   if (!existsSync(checkout)) {
     execFileSync('git', ['clone', '--quiet', '--no-hardlinks', PROJECT_ROOT, checkout], {
       cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
+      sandboxWriteRoots: [ISOLATED_HOME, CHECKOUT_PARENT],
     });
+    ensureContainedDirectorySync(checkout, join(checkout, 'quality-reports'));
   }
   return checkout;
+}
+
+function readCheckoutIdentity(root) {
+  const options = { cwd: root, encoding: 'utf8', timeout: 10000, sandboxReadOnlyRoots: [root] };
+  return {
+    commit: execFileSync('git', ['rev-parse', 'HEAD'], options).trim(),
+    tree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], options).trim(),
+    status: execFileSync('git', ['status', '--short'], options).trim(),
+  };
 }
 
 function parsePositiveDuration(value, fallback) {
@@ -252,6 +269,7 @@ function collectEvidence(config) {
     evidence.git = {
       branch: execSync('git branch --show-current 2>/dev/null', { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
       commit: execSync('git rev-parse --short HEAD 2>/dev/null', { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
+      status: execSync('git status --short 2>/dev/null', { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
       diffStats: execSync(`git diff --stat ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
     };
 
@@ -277,6 +295,7 @@ function collectEvidence(config) {
   } catch (e) {
     log.warn('Could not collect git info');
   }
+  if (evidence.git.status !== '') throw new Error('source checkout must be clean before evidence collection');
 
   // Project/Skill structure (from REVIEW_TARGET)
   const targetRoot = REVIEW_TARGET;
@@ -340,6 +359,12 @@ function collectEvidence(config) {
   evidence.testResults = { available: false };
   if (!isSelfReview && REVIEW_TARGET === PROJECT_ROOT) {
     const candidateRoot = prepareCandidateCheckout();
+    const candidateReportRoot = join(candidateRoot, 'quality-reports');
+    const initialCheckout = readCheckoutIdentity(candidateRoot);
+    const candidateOptions = {
+      sandboxReadOnlyRoots: [candidateRoot],
+      sandboxWriteRoots: [ISOLATED_HOME, candidateReportRoot],
+    };
     try {
       // Run tests
       log.info(`Running: ${testCmd}`);
@@ -348,6 +373,7 @@ function collectEvidence(config) {
         timeout: 120000,
         cwd: candidateRoot,
         env: CANDIDATE_ENV,
+        ...candidateOptions,
       });
       evidence.testResults = {
         available: true,
@@ -372,11 +398,20 @@ function collectEvidence(config) {
         timeout: 60000,
         cwd: candidateRoot,
         env: CANDIDATE_ENV,
+        ...candidateOptions,
       });
       evidence.typecheckResults = { passed: true, output: typeOutput.slice(0, 1000) };
     } catch (e) {
       evidence.typecheckResults = { passed: false, output: String(e.message).slice(0, 500) };
     }
+    const finalCheckout = readCheckoutIdentity(candidateRoot);
+    const sourceIdentity = readCheckoutIdentity(PROJECT_ROOT);
+    if (sourceIdentity.status !== '' || initialCheckout.status !== '' || finalCheckout.status !== '' ||
+        initialCheckout.commit !== sourceIdentity.commit || initialCheckout.tree !== sourceIdentity.tree ||
+        finalCheckout.commit !== sourceIdentity.commit || finalCheckout.tree !== sourceIdentity.tree) {
+      throw new Error('automated verification checkout identity changed or source checkout is dirty');
+    }
+    evidence.candidateCheckout = { status: 'pass', source: sourceIdentity, initial: initialCheckout, final: finalCheckout };
   }
 
   log.success(`Git: ${evidence.git.branch || '?'} @ ${evidence.git.commit || '?'}`);

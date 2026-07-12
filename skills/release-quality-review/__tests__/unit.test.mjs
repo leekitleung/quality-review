@@ -750,7 +750,7 @@ test.describe('CLI fail-closed integration', () => {
     for (const name of ['review-gate.mjs', 'review-runner.mjs']) {
       const source = readFileSync(join(SKILL_DIR, 'scripts', name), 'utf8');
       assertEqual(source.includes('writeRoots: [REPORT_DIR, ISOLATED_HOME]'), false, `${name} exposes report root`);
-      assertEqual(source.includes('writeRoots: [ISOLATED_HOME]'), true, `${name} lacks isolated write root`);
+      assertEqual(source.includes('sandboxWriteRoots = [ISOLATED_HOME]'), true, `${name} lacks isolated write root`);
       assertEqual(source.includes('prepareCandidateCheckout()'), true, `${name} lacks isolated checkout`);
     }
   });
@@ -926,6 +926,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       });
       const testCheck = commandRecord('npm test', 'pass', 0, 'passed');
       const typecheckCheck = commandRecord('npm run typecheck', 'pass', 0, 'passed');
+      const checkoutIdentity = { commit: fullCommit, tree, status: '' };
       const automatedContent = JSON.stringify({
         testGate: testCheck, typecheckGate: typecheckCheck,
         buildGate: commandRecord('npm run build', 'fail', 1, 'optional failure'),
@@ -933,6 +934,10 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         auditGate: commandRecord('npm audit --audit-level=high', 'fail', 1, 'optional failure'),
         secrets: { status: 'fail', issues: ['optional scan failure'] }, oversizedFiles: { status: 'pass', issues: [] },
         circularDeps: { status: 'pass', issues: [] },
+        candidateCheckout: {
+          status: 'pass', source_commit: fullCommit, source_tree: tree,
+          initial: checkoutIdentity, final: checkoutIdentity,
+        },
       });
       writeFileSync(join(round, 'evidence', 'automated-checks.json'), automatedContent);
       writeFileSync(join(round, 'metadata.json'), JSON.stringify({
@@ -946,6 +951,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(result.status, 0, `Expected no-collect pass, output: ${result.stdout}${result.stderr}`);
       assertTrue(result.stdout.includes('Loaded persisted automated evidence'), 'Expected persisted evidence rehydration');
+      assertEqual(existsSync(join(round, `phase-${roundNumber}-plan.md`)), true, 'Expected Gate-owned phase plan');
       const report = readFileSync(finalReport, 'utf8');
       assertEqual(report.includes('Clean-candidate verification passed'), false);
       assertEqual(report.includes('Goal instruction validation passed'), false);
@@ -1012,6 +1018,20 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(contradictoryResult.status, 1);
       assertTrue(contradictoryResult.stdout.includes('invalid testGate command evidence'), 'Expected pass/nonzero contradiction to fail closed');
+
+      const alteredCheckout = JSON.parse(automatedContent);
+      alteredCheckout.candidateCheckout.final.status = ' M package.json';
+      const alteredCheckoutContent = JSON.stringify(alteredCheckout);
+      writeFileSync(join(round, 'evidence', 'automated-checks.json'), alteredCheckoutContent);
+      reboundMetadata.automated_checks_sha256 = createHash('sha256').update(alteredCheckoutContent).digest('hex');
+      writeFileSync(join(round, 'metadata.json'), JSON.stringify(reboundMetadata));
+      const alteredCheckoutResult = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(alteredCheckoutResult.status, 1);
+      assertTrue(alteredCheckoutResult.stdout.includes('invalid automated verification checkout evidence'),
+        'Expected altered checkout identity to fail closed');
     } finally {
       rmSync(round, { recursive: true, force: true });
     }
