@@ -41,13 +41,15 @@ const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY
 
 function execSync(command, options = {}) {
   const wrapped = wrapCandidateCommand('/bin/sh', ['-c', command], {
-    allowedRoots: [PROJECT_ROOT, ISOLATED_HOME],
+    readOnlyRoots: [PROJECT_ROOT], writeRoots: [REPORT_DIR, ISOLATED_HOME],
   });
   return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: CANDIDATE_ENV });
 }
 
 function execFileSync(file, args, options = {}) {
-  const wrapped = wrapCandidateCommand(file, args, { allowedRoots: [PROJECT_ROOT, ISOLATED_HOME] });
+  const wrapped = wrapCandidateCommand(file, args, {
+    readOnlyRoots: [PROJECT_ROOT], writeRoots: [REPORT_DIR, ISOLATED_HOME],
+  });
   return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: CANDIDATE_ENV });
 }
 

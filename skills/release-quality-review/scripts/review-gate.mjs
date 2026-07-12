@@ -47,13 +47,15 @@ process.on('exit', () => rmSync(ISOLATED_HOME, { recursive: true, force: true })
 
 function execSync(command, options = {}) {
   const wrapped = wrapCandidateCommand('/bin/sh', ['-c', command], {
-    allowedRoots: [PROJECT_ROOT, ISOLATED_HOME],
+    readOnlyRoots: [PROJECT_ROOT], writeRoots: [REPORT_DIR, ISOLATED_HOME],
   });
   return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: SUBPROCESS_ENV });
 }
 
 function execFileSync(file, args, options = {}) {
-  const wrapped = wrapCandidateCommand(file, args, { allowedRoots: [PROJECT_ROOT, ISOLATED_HOME] });
+  const wrapped = wrapCandidateCommand(file, args, {
+    readOnlyRoots: [PROJECT_ROOT], writeRoots: [REPORT_DIR, ISOLATED_HOME],
+  });
   return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: SUBPROCESS_ENV });
 }
 
@@ -616,7 +618,7 @@ function persistFinalArbitration(roundDir, passed, reason) {
   const evidenceDir = join(roundDir, 'evidence');
   ensureContainedDirectorySync(roundDir, evidenceDir);
   const record = {
-    command: ['node', ...process.argv.slice(1)].join(' '),
+    command: redactSensitiveText(['node', ...process.argv.slice(1)].join(' ')),
     recorded_at: new Date().toISOString(),
     profile,
     round: roundNumber,
@@ -624,7 +626,9 @@ function persistFinalArbitration(roundDir, passed, reason) {
     exit_code: passed ? 0 : 1,
     reason,
   };
-  writeContainedFileSync(roundDir, join(evidenceDir, 'final-arbitration.json'), `${JSON.stringify(record, null, 2)}\n`);
+  const content = `${JSON.stringify(record, null, 2)}\n`;
+  if (containsSensitiveText(content)) throw new Error('final arbitration contains sensitive text');
+  writeContainedFileSync(roundDir, join(evidenceDir, 'final-arbitration.json'), content);
 }
 
 function runEvidenceCommand(command) {

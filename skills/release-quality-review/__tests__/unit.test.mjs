@@ -562,7 +562,7 @@ test.describe('security boundaries', () => {
     const now = new Date().toISOString();
     const clean = {
       schema_version: 1, candidate_commit: 'commit', candidate_tree: 'tree',
-      isolated_commit: 'commit', isolated_tree: 'tree', source_status: '',
+      isolated_commit: 'commit', isolated_tree: 'tree', source_status: '', final_source_status: '',
       isolated_checkout: true, status: 'pass', exit_code: 0,
       commands: CLEAN_CANDIDATE_COMMANDS.map(([id, command]) => ({
         id, command, started_at: now, finished_at: now, exit_code: 0, status: 'pass',

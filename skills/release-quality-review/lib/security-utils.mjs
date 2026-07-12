@@ -55,14 +55,19 @@ export function createCandidateSubprocessEnv(source = process.env, isolatedHome)
   return result;
 }
 
-export function wrapCandidateCommand(command, args, { allowedRoots, hostHome = userInfo().homedir } = {}) {
+export function wrapCandidateCommand(command, args, {
+  allowedRoots = [], readOnlyRoots = [], writeRoots = [], hostHome = userInfo().homedir,
+} = {}) {
   if (process.platform !== 'darwin') throw new Error(`candidate filesystem sandbox is unavailable on ${process.platform}`);
-  if (!Array.isArray(allowedRoots) || allowedRoots.length === 0) throw new Error('candidate sandbox roots are required');
-  const roots = [...new Set(allowedRoots.map(root => realpathSync(path.resolve(root))))];
+  const writable = [...allowedRoots, ...writeRoots];
+  if (readOnlyRoots.length === 0 && writable.length === 0) throw new Error('candidate sandbox roots are required');
+  const canonicalize = root => existsSync(root) ? realpathSync(path.resolve(root)) : path.resolve(root);
+  const readable = [...new Set([...readOnlyRoots, ...writable].map(canonicalize))];
+  const roots = [...new Set(writable.map(canonicalize))];
   const runtimeRoot = path.dirname(path.dirname(realpathSync(process.execPath)));
   const quote = value => JSON.stringify(value);
   const readRoots = [
-    '/', '/usr', '/System', '/Library', '/bin', '/sbin', '/opt/homebrew', '/private', '/dev', runtimeRoot, ...roots,
+    '/', '/usr', '/System', '/Library', '/bin', '/sbin', '/opt/homebrew', '/private', '/dev', runtimeRoot, ...readable,
   ];
   const profile = [
     '(version 1)',
@@ -70,14 +75,13 @@ export function wrapCandidateCommand(command, args, { allowedRoots, hostHome = u
     '(allow process*)',
     '(allow signal (target same-sandbox))',
     '(allow sysctl*)',
-    '(allow mach*)',
     '(allow network*)',
     '(allow dynamic-code-generation)',
     '(allow file-read-metadata)',
     `(allow file-read* (literal "/") ${readRoots.slice(1).map(root => `(subpath ${quote(root)})`).join(' ')})`,
     `(allow file-write* ${[...roots, '/private/tmp', '/private/var/folders', '/dev'].map(root => `(subpath ${quote(root)})`).join(' ')})`,
   ].join(' ');
-  if (roots.some(root => root === realpathSync(hostHome))) throw new Error('host home cannot be a candidate sandbox root');
+  if (readable.some(root => root === realpathSync(hostHome))) throw new Error('host home cannot be a candidate sandbox root');
   const probe = spawnSync('/usr/bin/sandbox-exec', [
     '-p', '(version 1) (allow default)', '/usr/bin/true',
   ], { encoding: 'utf8' });

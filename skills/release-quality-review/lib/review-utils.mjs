@@ -68,7 +68,7 @@ export function validateCleanCandidateEvidence(clean, candidateCommit, candidate
   if (!clean || clean.schema_version !== 1 || clean.status !== 'pass' || clean.exit_code !== 0 ||
       clean.isolated_checkout !== true || clean.candidate_commit !== candidateCommit ||
       clean.candidate_tree !== candidateTree || clean.isolated_commit !== candidateCommit ||
-      clean.isolated_tree !== candidateTree || clean.source_status !== '' ||
+      clean.isolated_tree !== candidateTree || clean.source_status !== '' || clean.final_source_status !== '' ||
       !Array.isArray(clean.commands) || clean.commands.length !== CLEAN_CANDIDATE_COMMANDS.length) return false;
   for (let index = 0; index < CLEAN_CANDIDATE_COMMANDS.length; index++) {
     const record = clean.commands[index];
