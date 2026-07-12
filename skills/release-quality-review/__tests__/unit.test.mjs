@@ -40,7 +40,7 @@ import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.m
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
 const PROJECT_ROOT = join(SKILL_DIR, '..', '..');
-const TEST_ROOT = join(__dirname, '__test_output__');
+const TEST_ROOT = join(tmpdir(), 'release-quality-review-tests');
 const TEST_DIR = join(TEST_ROOT, `${process.pid}-${randomUUID()}`);
 const ROUND_BASE = process.pid * 10;
 const TEST_ROUNDS = {
