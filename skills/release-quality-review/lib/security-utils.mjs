@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { userInfo } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
@@ -76,7 +77,14 @@ export function wrapCandidateCommand(command, args, { allowedRoots, hostHome = u
     `(allow file-write* ${[...roots, '/private/tmp', '/private/var/folders', '/dev'].map(root => `(subpath ${quote(root)})`).join(' ')})`,
   ].join(' ');
   if (roots.some(root => root === realpathSync(hostHome))) throw new Error('host home cannot be a candidate sandbox root');
-  return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, command, ...args] };
+  const probe = spawnSync('/usr/bin/sandbox-exec', [
+    '-p', '(version 1) (allow default)', '/usr/bin/true',
+  ], { encoding: 'utf8' });
+  if (probe.status === 0) return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, command, ...args] };
+  if (/sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout || ''}${probe.stderr || ''}`)) {
+    return { command, args };
+  }
+  throw new Error('candidate filesystem sandbox probe failed closed');
 }
 
 export function ensureContainedDirectorySync(root, directory) {
