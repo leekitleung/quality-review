@@ -41,16 +41,26 @@ const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY
 
 function execSync(command, options = {}) {
   const wrapped = wrapCandidateCommand('/bin/sh', ['-c', command], {
-    readOnlyRoots: [PROJECT_ROOT], writeRoots: [REPORT_DIR, ISOLATED_HOME],
+    readOnlyRoots: [PROJECT_ROOT], writeRoots: [ISOLATED_HOME],
   });
   return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: CANDIDATE_ENV });
 }
 
 function execFileSync(file, args, options = {}) {
   const wrapped = wrapCandidateCommand(file, args, {
-    readOnlyRoots: [PROJECT_ROOT], writeRoots: [REPORT_DIR, ISOLATED_HOME],
+    readOnlyRoots: [PROJECT_ROOT], writeRoots: [ISOLATED_HOME],
   });
   return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: CANDIDATE_ENV });
+}
+
+function prepareCandidateCheckout() {
+  const checkout = join(ISOLATED_HOME, 'candidate-checkout');
+  if (!existsSync(checkout)) {
+    execFileSync('git', ['clone', '--quiet', '--no-hardlinks', PROJECT_ROOT, checkout], {
+      cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
+    });
+  }
+  return checkout;
 }
 
 function parsePositiveDuration(value, fallback) {
@@ -329,13 +339,14 @@ function collectEvidence(config) {
   // Run actual tests and typecheck if in project root
   evidence.testResults = { available: false };
   if (!isSelfReview && REVIEW_TARGET === PROJECT_ROOT) {
+    const candidateRoot = prepareCandidateCheckout();
     try {
       // Run tests
       log.info(`Running: ${testCmd}`);
       const testOutput = execSync(`${testCmd} 2>&1`, {
         encoding: 'utf-8',
         timeout: 120000,
-        cwd: PROJECT_ROOT,
+        cwd: candidateRoot,
         env: CANDIDATE_ENV,
       });
       evidence.testResults = {
@@ -359,7 +370,7 @@ function collectEvidence(config) {
       const typeOutput = execSync(`${typecheckCmd} 2>&1`, {
         encoding: 'utf-8',
         timeout: 60000,
-        cwd: PROJECT_ROOT,
+        cwd: candidateRoot,
         env: CANDIDATE_ENV,
       });
       evidence.typecheckResults = { passed: true, output: typeOutput.slice(0, 1000) };
@@ -644,14 +655,13 @@ function runGateCheck(roundDir, profileName, round) {
   try {
     const gateScript = join(SKILL_DIR, 'scripts', 'review-gate.mjs');
     if (existsSync(gateScript)) {
-      const roundName = `round-${String(round).padStart(3, '0')}`;
-      const goalModeFlag = checkGoalMode ? '--check-goal-mode' : '';
-      const baseFlag = diffBase !== 'HEAD' ? `--base ${diffBase}` : '';
-      const cmd = `node "${gateScript}" --profile ${profileName} --round ${roundName} ${goalModeFlag} ${baseFlag}`.trim();
-      execSync(cmd, {
+      const args = [gateScript, '--profile', profileName, '--round', String(round)];
+      if (checkGoalMode) args.push('--check-goal-mode');
+      if (diffBase !== 'HEAD') args.push('--base', diffBase);
+      nodeExecFileSync('node', args, {
         stdio: 'inherit',
         cwd: PROJECT_ROOT,
-        env: CANDIDATE_ENV,
+        env: TOOL_ENV,
       });
       return { passed: true, roundDir };
     }

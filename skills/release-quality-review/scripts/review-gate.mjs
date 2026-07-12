@@ -47,16 +47,26 @@ process.on('exit', () => rmSync(ISOLATED_HOME, { recursive: true, force: true })
 
 function execSync(command, options = {}) {
   const wrapped = wrapCandidateCommand('/bin/sh', ['-c', command], {
-    readOnlyRoots: [PROJECT_ROOT], writeRoots: [REPORT_DIR, ISOLATED_HOME],
+    readOnlyRoots: [PROJECT_ROOT], writeRoots: [ISOLATED_HOME],
   });
   return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: SUBPROCESS_ENV });
 }
 
 function execFileSync(file, args, options = {}) {
   const wrapped = wrapCandidateCommand(file, args, {
-    readOnlyRoots: [PROJECT_ROOT], writeRoots: [REPORT_DIR, ISOLATED_HOME],
+    readOnlyRoots: [PROJECT_ROOT], writeRoots: [ISOLATED_HOME],
   });
   return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: SUBPROCESS_ENV });
+}
+
+function prepareCandidateCheckout() {
+  const checkout = join(ISOLATED_HOME, 'candidate-checkout');
+  if (!existsSync(checkout)) {
+    execFileSync('git', ['clone', '--quiet', '--no-hardlinks', PROJECT_ROOT, checkout], {
+      cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
+    });
+  }
+  return checkout;
 }
 
 // ANSI colors
@@ -565,7 +575,7 @@ function collectEvidence_(config) {
   }
 
   // Automated checks with config
-  evidence.automatedChecks = runAutomatedChecks(config);
+  evidence.automatedChecks = runAutomatedChecks(config, prepareCandidateCheckout());
 
   return evidence;
 }
@@ -631,12 +641,12 @@ function persistFinalArbitration(roundDir, passed, reason) {
   writeContainedFileSync(roundDir, join(evidenceDir, 'final-arbitration.json'), content);
 }
 
-function runEvidenceCommand(command) {
+function runEvidenceCommand(command, cwd = PROJECT_ROOT) {
   const startedAt = new Date().toISOString();
   let rawOutput = '';
   let exitCode = 0;
   try {
-    rawOutput = execSync(`${command} 2>&1`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 120000 });
+    rawOutput = execSync(`${command} 2>&1`, { encoding: 'utf-8', cwd, timeout: 120000 });
   } catch (error) {
     exitCode = Number.isInteger(error.status) ? error.status : 1;
     rawOutput = String(error.stdout || error.stderr || error.message || 'command failed');
@@ -696,7 +706,7 @@ function scanCircularDependencies() {
 }
 
 // Run automated gate checks
-function runAutomatedChecks(config) {
+function runAutomatedChecks(config, candidateRoot) {
   const checks = {
     oversizedFiles: { status: 'pass', issues: [] },
     circularDeps: { status: 'pass', issues: [] },
@@ -777,24 +787,24 @@ function runAutomatedChecks(config) {
 
   // Check 4: Test gate
   log.info(`Running test gate: ${testCmd}`);
-  checks.testGate = runEvidenceCommand(testCmd);
+  checks.testGate = runEvidenceCommand(testCmd, candidateRoot);
 
   // Check 5: Typecheck gate
   log.info(`Running typecheck gate: ${typecheckCmd}`);
-  checks.typecheckGate = runEvidenceCommand(typecheckCmd);
+  checks.typecheckGate = runEvidenceCommand(typecheckCmd, candidateRoot);
 
   log.info(`Running build gate: ${buildCmd}`);
-  checks.buildGate = runEvidenceCommand(buildCmd);
+  checks.buildGate = runEvidenceCommand(buildCmd, candidateRoot);
 
   log.info(`Running lint gate: ${lintCmd}`);
-  checks.lintGate = runEvidenceCommand(lintCmd);
+  checks.lintGate = runEvidenceCommand(lintCmd, candidateRoot);
 
   log.info(`Running audit gate: ${auditCmd}`);
-  checks.auditGate = runEvidenceCommand(auditCmd);
+  checks.auditGate = runEvidenceCommand(auditCmd, candidateRoot);
 
   if (profile === 'agentic-release-gate') {
     log.info(`Running coverage gate: ${coverageCmd}`);
-    checks.coverageGate = runEvidenceCommand(coverageCmd);
+    checks.coverageGate = runEvidenceCommand(coverageCmd, candidateRoot);
   }
 
   return checks;

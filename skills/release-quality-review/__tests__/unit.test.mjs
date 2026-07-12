@@ -604,6 +604,18 @@ test.describe('security boundaries', () => {
     });
     const result = spawnSync(wrapped.command, wrapped.args, { cwd: PROJECT_ROOT, encoding: 'utf8' });
     assertEqual(result.status, 0, result.stderr);
+
+    const isolated = join(TEST_DIR, 'nested-write-root');
+    mkdirSync(isolated, { recursive: true });
+    const protectedTarget = join(PROJECT_ROOT, 'quality-reports', `.nested-write-${randomUUID()}`);
+    const childScript = `require('node:fs').writeFileSync(${JSON.stringify(protectedTarget)},'forged')`;
+    const nestedScript = `const{spawnSync}=require('node:child_process');const r=spawnSync(process.execPath,['-e',${JSON.stringify(childScript)}]);process.exit(r.status===0?5:0)`;
+    const outer = wrapCandidateCommand(process.execPath, ['-e', nestedScript], {
+      readOnlyRoots: [PROJECT_ROOT], writeRoots: [isolated], hostHome,
+    });
+    const nested = spawnSync(outer.command, outer.args, { cwd: PROJECT_ROOT, encoding: 'utf8' });
+    assertEqual(nested.status, 0, nested.stderr);
+    assertEqual(existsSync(protectedTarget), false, 'Nested candidate must not write the real report root');
   });
 
   test('rejects a repository output parent symlinked outside the repository', async () => {
@@ -732,6 +744,15 @@ test.describe('CLI fail-closed integration', () => {
     const source = readFileSync(join(SKILL_DIR, 'scripts', 'review-gate.mjs'), 'utf8');
     assertEqual(/npx\s+madge/.test(source), false);
     assertEqual(/madge[^\n]*\|\|\s*echo/.test(source), false);
+  });
+
+  test('gate and runner keep candidate writes outside the real report root', () => {
+    for (const name of ['review-gate.mjs', 'review-runner.mjs']) {
+      const source = readFileSync(join(SKILL_DIR, 'scripts', name), 'utf8');
+      assertEqual(source.includes('writeRoots: [REPORT_DIR, ISOLATED_HOME]'), false, `${name} exposes report root`);
+      assertEqual(source.includes('writeRoots: [ISOLATED_HOME]'), true, `${name} lacks isolated write root`);
+      assertEqual(source.includes('prepareCandidateCheckout()'), true, `${name} lacks isolated checkout`);
+    }
   });
 
   test('release evidence exposes a coverage command and versioned changelog', () => {
