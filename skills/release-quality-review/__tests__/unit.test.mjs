@@ -27,11 +27,13 @@ import {
   detectChangeScale,
   parseYamlProfile,
   matchesTriggerConditions,
+  validateCleanCandidateEvidence,
 } from '../lib/review-utils.mjs';
 import {
   resolveWithinRoot,
   shouldIncludeCanonicalFile,
   containsSensitiveText,
+  createCandidateSubprocessEnv,
   createSubprocessEnv,
   redactSensitiveText,
   writeContainedFile,
@@ -50,6 +52,7 @@ const TEST_ROUNDS = {
   rehydrate: ROUND_BASE + 3,
   missingEvidence: ROUND_BASE + 4,
   parallelTimeout: ROUND_BASE + 5,
+  parallelSuccess: ROUND_BASE + 6,
 };
 const reportRound = round => join(PROJECT_ROOT, 'quality-reports', `round-${String(round).padStart(3, '0')}`);
 
@@ -535,6 +538,40 @@ test.describe('security boundaries', () => {
     assertEqual(env.NODE_TEST_CONTEXT, 'child-v8');
     assertEqual(env.OPENAI_API_KEY, undefined);
     assertEqual(env.AMBIENT_SECRET_CANARY, undefined);
+    const candidateEnv = createCandidateSubprocessEnv({
+      PATH: '/usr/bin', HOME: '/real-home', CODEX_HOME: '/real-codex', OPENAI_API_KEY: 'hidden',
+    }, '/isolated-home');
+    assertEqual(candidateEnv.PATH, '/usr/bin');
+    assertEqual(candidateEnv.HOME, '/isolated-home');
+    assertEqual(candidateEnv.CODEX_HOME, undefined);
+    assertEqual(candidateEnv.OPENAI_API_KEY, undefined);
+  });
+
+  test('detects quoted and unquoted generic secret assignments', () => {
+    for (const value of [
+      'password=correct-horse-battery-staple',
+      'token=plain-secret-value',
+      'api_key=plain-secret-value',
+      'CUSTOM_API_KEY=abcdefghijklmnopqrstuvwxyz123456',
+    ]) assertEqual(containsSensitiveText(value), true, `Expected sensitive assignment: ${value.split('=')[0]}`);
+  });
+
+  test('rejects forged clean-candidate command and tree evidence', () => {
+    const now = new Date().toISOString();
+    const ids = ['clone', 'install', 'test', 'coverage', 'drift', 'lint', 'build', 'audit', 'skill-check', 'skill-verify', 'final-status'];
+    const clean = {
+      schema_version: 1, candidate_commit: 'commit', candidate_tree: 'tree', source_status: '',
+      isolated_checkout: true, status: 'pass', exit_code: 0,
+      commands: ids.map(id => ({
+        id, command: id, started_at: now, finished_at: now, exit_code: 0, status: 'pass',
+        output: '', output_bytes: 0, truncated: false,
+      })),
+    };
+    assertEqual(validateCleanCandidateEvidence(clean, 'commit', 'tree'), true);
+    assertEqual(validateCleanCandidateEvidence({ ...clean, candidate_tree: 'forged' }, 'commit', 'tree'), false);
+    const forgedCommands = structuredClone(clean);
+    forgedCommands.commands = [{ id: 'forged', command: 'forged', exit_code: 0, status: 'pass' }];
+    assertEqual(validateCleanCandidateEvidence(forgedCommands, 'commit', 'tree'), false);
   });
 
   test('rejects a repository output parent symlinked outside the repository', async () => {
@@ -687,6 +724,44 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
       assertEqual(existsSync(leakMarker), false, 'Reviewer descendants must not survive to perform delayed writes');
       assertEqual(existsSync(canaryMarker), false, 'Reviewer subprocesses must not inherit ambient secrets');
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
+  });
+
+  test('parallel runner cleans descendants after a successful reviewer exit', () => {
+    const round = reportRound(TEST_ROUNDS.parallelSuccess);
+    const fakeBin = join(TEST_DIR, 'fake-bin-success');
+    const leakMarker = join(TEST_DIR, 'successful-reviewer-descendant-leak');
+    try {
+      mkdirSync(fakeBin);
+      const fakeCodex = join(fakeBin, 'codex');
+      const reviewerDir = join(round, 'product-flow');
+      const descendantCode = `process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(leakMarker)}, 'survived'), 500)`;
+      writeFileSync(fakeCodex, `#!/usr/bin/env node
+if (process.argv.includes('--version')) process.exit(0);
+const fs = process.getBuiltinModule('node:fs');
+fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${TEST_ROUNDS.parallelSuccess}\\nscore: 95\\nstatus: pass\\nblockers: []\\nredlines: []\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, '# Blockers\\n\\nNo P0/P1 blockers.\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
+process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendantCode)}], { stdio: 'ignore', env: process.env }).unref();
+`);
+      chmodSync(fakeCodex, 0o755);
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel', '--dry-run',
+        '--reviewer', 'product-flow', '--round', String(TEST_ROUNDS.parallelSuccess), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
+        env: {
+          ...process.env, PATH: `${fakeBin}:${process.env.PATH}`,
+          RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '1000', RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+        },
+      });
+      assertEqual(result.status, 0, `Expected successful dry run, output: ${result.stdout}${result.stderr}`);
+      spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
+      assertEqual(existsSync(leakMarker), false, 'Successful reviewers must not leave descendants alive');
     } finally {
       rmSync(round, { recursive: true, force: true });
     }

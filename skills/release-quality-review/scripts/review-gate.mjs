@@ -16,8 +16,9 @@
  *   node review-gate.mjs --dry-run               # Validate without running
  */
 
-import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'fs';
 import { join, dirname, resolve, extname, relative } from 'path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'url';
 import { execSync as nodeExecSync, execFileSync as nodeExecFileSync } from 'child_process';
 import { readFile } from 'fs/promises';
@@ -28,9 +29,10 @@ import {
   parseYamlResult as parseYamlResultShared,
   parseYamlProfile as parseYamlProfileShared,
   matchesTriggerConditions,
+  validateCleanCandidateEvidence,
 } from '../lib/review-utils.mjs';
 import {
-  containsSensitiveText, createSubprocessEnv, ensureContainedDirectorySync, readContainedFileSync,
+  containsSensitiveText, createCandidateSubprocessEnv, ensureContainedDirectorySync, readContainedFileSync,
   redactSensitiveText, writeContainedFile, writeContainedFileSync,
 } from '../lib/security-utils.mjs';
 
@@ -39,7 +41,9 @@ const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
-const SUBPROCESS_ENV = createSubprocessEnv();
+const ISOLATED_HOME = mkdtempSync(join(tmpdir(), 'release-quality-review-gate-home-'));
+const SUBPROCESS_ENV = createCandidateSubprocessEnv(process.env, ISOLATED_HOME);
+process.on('exit', () => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
 
 function execSync(command, options = {}) {
   return nodeExecSync(command, { ...options, env: SUBPROCESS_ENV });
@@ -568,6 +572,10 @@ async function persistEvidence(roundDir, evidence, profileName, reviewers) {
   const evidenceDir = join(roundDir, 'evidence');
   ensureContainedDirectorySync(roundDir, evidenceDir);
   const automatedContent = `${JSON.stringify(evidence.automatedChecks, null, 2)}\n`;
+  const cleanCandidatePath = join(evidenceDir, 'clean-candidate.json');
+  const cleanCandidateContent = existsSync(cleanCandidatePath)
+    ? readContainedFileSync(roundDir, cleanCandidatePath, 'utf8')
+    : null;
   const metadata = {
     profile: profileName,
     round: roundNumber,
@@ -578,6 +586,9 @@ async function persistEvidence(roundDir, evidence, profileName, reviewers) {
     candidate_commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(),
     candidate_tree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(),
     automated_checks_sha256: createHash('sha256').update(automatedContent).digest('hex'),
+    clean_candidate_sha256: cleanCandidateContent === null
+      ? null
+      : createHash('sha256').update(cleanCandidateContent).digest('hex'),
   };
   await writeContainedFile(PROJECT_ROOT, join(evidenceDir, 'automated-checks.json'), automatedContent);
   await writeContainedFile(PROJECT_ROOT, join(roundDir, 'metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`);
@@ -1368,10 +1379,17 @@ async function runGate() {
         const fullCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
         const currentTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
         const digest = createHash('sha256').update(automatedContent).digest('hex');
+        const cleanCandidateContent = profile === 'agentic-release-gate'
+          ? readContainedFileSync(roundDir, join(roundDir, 'evidence', 'clean-candidate.json'), 'utf8')
+          : null;
+        const cleanCandidateDigest = cleanCandidateContent === null
+          ? null
+          : createHash('sha256').update(cleanCandidateContent).digest('hex');
         if (metadata.profile !== profile || metadata.round !== roundNumber ||
             metadata.git?.commit !== currentCommit || metadata.git?.status !== currentStatus ||
             metadata.candidate_commit !== fullCommit || metadata.candidate_tree !== currentTree ||
-            metadata.automated_checks_sha256 !== digest) {
+            metadata.automated_checks_sha256 !== digest ||
+            (profile === 'agentic-release-gate' && metadata.clean_candidate_sha256 !== cleanCandidateDigest)) {
           throw new Error('persisted evidence does not match the current commit and working-tree status');
         }
         const expectedCommands = {
@@ -1709,10 +1727,8 @@ async function runGate() {
     try {
       const clean = JSON.parse(readContainedFileSync(roundDir, cleanCandidatePath, 'utf8'));
       const currentCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
-      cleanCandidateEvidenceValid = clean.status === 'pass' && clean.exit_code === 0 &&
-        clean.isolated_checkout === true && clean.candidate_commit === currentCommit &&
-        clean.source_status === '' && Array.isArray(clean.commands) &&
-        clean.commands.length > 0 && clean.commands.every(command => command.exit_code === 0);
+      const currentTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+      cleanCandidateEvidenceValid = validateCleanCandidateEvidence(clean, currentCommit, currentTree);
     } catch {
       cleanCandidateEvidenceValid = false;
     }

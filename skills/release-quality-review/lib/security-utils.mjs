@@ -42,6 +42,17 @@ export function createSubprocessEnv(source = process.env) {
   return result;
 }
 
+export function createCandidateSubprocessEnv(source = process.env, isolatedHome) {
+  if (typeof isolatedHome !== 'string' || !isolatedHome) throw new Error('isolated home is required');
+  const result = createSubprocessEnv(source);
+  for (const key of [
+    'HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
+  ]) delete result[key];
+  result.HOME = isolatedHome;
+  if (process.platform === 'win32') result.USERPROFILE = isolatedHome;
+  return result;
+}
+
 export function ensureContainedDirectorySync(root, directory) {
   const rootPath = path.resolve(root);
   const target = path.resolve(directory);
@@ -151,7 +162,7 @@ export function containsSensitiveText(value) {
     /\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b/,
     /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/,
     /\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\b/,
-    /(?:token|secret|password|api[_-]?key|private[_-]?key|access[_-]?key|credential)\s*[:=]\s*["'][^"'\r\n]{8,}["']/i,
+    /(?:token|secret|password|api[_-]?key|private[_-]?key|access[_-]?key|credential)\s*[:=]\s*(?:["'][^"'\r\n]{8,}["']|[^\s"'`]{8,})/i,
   ].some(pattern => pattern.test(text));
 }
 

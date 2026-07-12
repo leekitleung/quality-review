@@ -17,21 +17,25 @@
  *   node review-runner.mjs --target <dir>  # Review a specific directory (self-review)
  */
 
-import { readFileSync, existsSync, readdirSync, realpathSync, statSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'node:os';
 import { execSync, execFileSync, spawn } from 'child_process';
 import { matchesTriggerConditions, parseYamlProfile as parseYamlProfileShared } from '../lib/review-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
 import {
-  createSubprocessEnv, ensureContainedDirectorySync, isPathWithin, redactSensitiveText, resolveWithinRoot,
-  writeContainedFileSync,
+  createCandidateSubprocessEnv, createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
+  redactSensitiveText, resolveWithinRoot, writeContainedFileSync,
 } from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
-const SUBPROCESS_ENV = createSubprocessEnv();
+const TOOL_ENV = createSubprocessEnv();
+const ISOLATED_HOME = mkdtempSync(join(tmpdir(), 'release-quality-review-runner-home-'));
+const CANDIDATE_ENV = createCandidateSubprocessEnv(process.env, ISOLATED_HOME);
+process.on('exit', () => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
 const REVIEWER_TIMEOUT_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_TIMEOUT_MS, 15 * 60 * 1000);
 const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS, 5000);
 
@@ -121,7 +125,7 @@ function resolveDiffBase(ref) {
   }
   try {
     return execFileSync('git', ['merge-base', ref, 'HEAD'], {
-      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, env: SUBPROCESS_ENV,
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, env: CANDIDATE_ENV,
     }).trim();
   } catch {
     console.error(`Unable to resolve --base ref: ${ref}`);
@@ -222,28 +226,28 @@ function collectEvidence(config) {
   // Git info (always from PROJECT_ROOT)
   try {
     evidence.git = {
-      branch: execSync('git branch --show-current 2>/dev/null', { encoding: 'utf-8', env: SUBPROCESS_ENV }).trim(),
-      commit: execSync('git rev-parse --short HEAD 2>/dev/null', { encoding: 'utf-8', env: SUBPROCESS_ENV }).trim(),
-      diffStats: execSync(`git diff --stat ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', env: SUBPROCESS_ENV }).trim(),
+      branch: execSync('git branch --show-current 2>/dev/null', { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
+      commit: execSync('git rev-parse --short HEAD 2>/dev/null', { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
+      diffStats: execSync(`git diff --stat ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
     };
 
     // For self-review, only show changes in the skill directory
     if (isSelfReview) {
       evidence.git.changedFiles = execSync(
         `git diff --name-only ${resolvedDiffBase} 2>/dev/null | grep "^skills/release-quality-review/" || true`,
-        { encoding: 'utf-8', env: SUBPROCESS_ENV }
+        { encoding: 'utf-8', env: CANDIDATE_ENV }
       ).trim().split('\n').filter(Boolean);
       evidence.git.diff = execSync(
         `git diff ${resolvedDiffBase} 2>/dev/null -- "skills/release-quality-review/" || true`,
-        { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, env: SUBPROCESS_ENV }
+        { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, env: CANDIDATE_ENV }
       ).trim();
     } else {
-      evidence.git.changedFiles = execSync(`git diff --name-only ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', env: SUBPROCESS_ENV })
+      evidence.git.changedFiles = execSync(`git diff --name-only ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', env: CANDIDATE_ENV })
         .trim().split('\n').filter(Boolean);
-      evidence.git.diff = execSync(`git diff ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, env: SUBPROCESS_ENV }).trim();
+      evidence.git.diff = execSync(`git diff ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, env: CANDIDATE_ENV }).trim();
     }
     const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
-      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, env: SUBPROCESS_ENV,
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, env: CANDIDATE_ENV,
     }).trim().split('\n').filter(Boolean);
     evidence.git.changedFiles = [...new Set([...(evidence.git.changedFiles || []), ...untracked])];
   } catch (e) {
@@ -318,7 +322,7 @@ function collectEvidence(config) {
         encoding: 'utf-8',
         timeout: 120000,
         cwd: PROJECT_ROOT,
-        env: SUBPROCESS_ENV,
+        env: CANDIDATE_ENV,
       });
       evidence.testResults = {
         available: true,
@@ -342,7 +346,7 @@ function collectEvidence(config) {
         encoding: 'utf-8',
         timeout: 60000,
         cwd: PROJECT_ROOT,
-        env: SUBPROCESS_ENV,
+        env: CANDIDATE_ENV,
       });
       evidence.typecheckResults = { passed: true, output: typeOutput.slice(0, 1000) };
     } catch (e) {
@@ -633,7 +637,7 @@ function runGateCheck(roundDir, profileName, round) {
       execSync(cmd, {
         stdio: 'inherit',
         cwd: PROJECT_ROOT,
-        env: SUBPROCESS_ENV,
+        env: CANDIDATE_ENV,
       });
       return { passed: true, roundDir };
     }
@@ -744,7 +748,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   if (parallel) {
     log.info(`Parallel mode: launching ${allReviewers.length} independent Codex reviewers...`);
     try {
-      execFileSync('codex', ['--version'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: SUBPROCESS_ENV });
+      execFileSync('codex', ['--version'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
     } catch {
       log.error('Parallel mode requires the Codex CLI on PATH; no reviewer agents were launched.');
       process.exit(5);
@@ -770,7 +774,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         cwd: PROJECT_ROOT,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
-        env: SUBPROCESS_ENV,
+        env: TOOL_ENV,
       });
       let diagnostic = '';
       let settled = false;
@@ -778,17 +782,19 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       let forceTimer = null;
       const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
       const signalProcessTree = signal => {
-        if (!proc.pid) return;
+        if (!proc.pid) return false;
         try {
           if (process.platform === 'win32') {
             const args = ['/pid', String(proc.pid), '/t'];
             if (signal === 'SIGKILL') args.push('/f');
-            execFileSync('taskkill', args, { stdio: 'ignore', timeout: REVIEWER_KILL_GRACE_MS, env: SUBPROCESS_ENV });
+            execFileSync('taskkill', args, { stdio: 'ignore', timeout: REVIEWER_KILL_GRACE_MS, env: CANDIDATE_ENV });
           } else {
             process.kill(-proc.pid, signal);
           }
+          return true;
         } catch (error) {
           if (error.code !== 'ESRCH') diagnostic = `${diagnostic}\nprocess-tree ${signal} failed: ${error.message}`.slice(-4000);
+          return false;
         }
       };
       proc.stdout.on('data', retainTail);
@@ -824,7 +830,16 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         abortAll(reason);
       }, REVIEWER_TIMEOUT_MS);
       proc.on('close', code => {
-        if (!aborted) finish(code);
+        if (aborted) return;
+        clearTimeout(timeoutTimer);
+        if (!signalProcessTree('SIGTERM')) {
+          finish(code);
+          return;
+        }
+        forceTimer = setTimeout(() => {
+          signalProcessTree('SIGKILL');
+          forceTimer = setTimeout(() => finish(code), 100);
+        }, REVIEWER_KILL_GRACE_MS);
       });
       proc.on('error', error => {
         console.log(`  ${c.red}✗${c.reset} ${reviewer}: ${error.message}`);

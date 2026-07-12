@@ -50,6 +50,31 @@ export function parseScore(scoreContent) {
   return null;
 }
 
+export const CLEAN_CANDIDATE_COMMAND_IDS = [
+  'clone', 'install', 'test', 'coverage', 'drift', 'lint', 'build', 'audit', 'skill-check',
+  'skill-verify', 'final-status',
+];
+
+export function validateCleanCandidateEvidence(clean, candidateCommit, candidateTree) {
+  if (!clean || clean.schema_version !== 1 || clean.status !== 'pass' || clean.exit_code !== 0 ||
+      clean.isolated_checkout !== true || clean.candidate_commit !== candidateCommit ||
+      clean.candidate_tree !== candidateTree || clean.source_status !== '' ||
+      !Array.isArray(clean.commands) || clean.commands.length !== CLEAN_CANDIDATE_COMMAND_IDS.length) return false;
+  for (let index = 0; index < CLEAN_CANDIDATE_COMMAND_IDS.length; index++) {
+    const record = clean.commands[index];
+    const retainedBytes = Buffer.byteLength(record?.output || '');
+    const started = Date.parse(record?.started_at);
+    const finished = Date.parse(record?.finished_at);
+    if (!record || record.id !== CLEAN_CANDIDATE_COMMAND_IDS[index] ||
+        typeof record.command !== 'string' || !record.command || record.exit_code !== 0 || record.status !== 'pass' ||
+        !Number.isFinite(started) || !Number.isFinite(finished) || finished < started ||
+        typeof record.output !== 'string' || !Number.isInteger(record.output_bytes) ||
+        record.output_bytes < retainedBytes || typeof record.truncated !== 'boolean' ||
+        (!record.truncated && record.output_bytes !== retainedBytes)) return false;
+  }
+  return clean.commands.at(-1).output.trim() === '';
+}
+
 // ============================================================================
 // Blocker Parsing
 // ============================================================================

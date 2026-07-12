@@ -5,7 +5,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import {
-  createSubprocessEnv, redactSensitiveText, resolveWithinRoot, writeContainedFile,
+  createCandidateSubprocessEnv, createSubprocessEnv, redactSensitiveText, resolveWithinRoot, writeContainedFile,
 } from '../skills/release-quality-review/lib/security-utils.mjs';
 
 const root = process.cwd();
@@ -21,25 +21,27 @@ if (!/quality-reports[/\\]round-\d+[/\\]evidence[/\\]clean-candidate\.json$/.tes
   process.exit(4);
 }
 
-function run(command, args, cwd) {
+function run(id, command, args, cwd, env = subprocessEnv) {
   const startedAt = new Date().toISOString();
   const result = spawnSync(command, args, {
-    cwd, encoding: 'utf8', timeout: 180000, maxBuffer: 8 * 1024 * 1024, env: subprocessEnv,
+    cwd, encoding: 'utf8', timeout: 180000, maxBuffer: 8 * 1024 * 1024, env,
   });
   const raw = `${result.stdout || ''}${result.stderr || ''}`;
   const redacted = redactSensitiveText(raw);
   return {
+    id,
     command: [command, ...args].join(' '),
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     exit_code: result.status ?? 1,
+    status: result.status === 0 ? 'pass' : 'fail',
     output: redacted.slice(-8000),
     output_bytes: Buffer.byteLength(redacted),
     truncated: Buffer.byteLength(redacted) > Buffer.byteLength(redacted.slice(-8000)),
   };
 }
 
-const sourceStatus = run('git', ['status', '--porcelain', '--untracked-files=all'], root);
+const sourceStatus = run('source-status', 'git', ['status', '--porcelain', '--untracked-files=all'], root);
 if (sourceStatus.exit_code !== 0 || sourceStatus.output.trim()) {
   console.error('Source candidate must be committed and clean before isolated verification');
   process.exit(1);
@@ -47,26 +49,28 @@ if (sourceStatus.exit_code !== 0 || sourceStatus.output.trim()) {
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-quality-review-'));
 const candidate = path.join(temporary, 'candidate');
+const isolatedHome = await mkdtemp(path.join(temporary, 'home-'));
+const candidateEnv = createCandidateSubprocessEnv(process.env, isolatedHome);
 const records = [];
 try {
-  const clone = run('git', ['clone', '--quiet', '--no-local', root, candidate], temporary);
+  const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', root, candidate], temporary, candidateEnv);
   records.push(clone);
   if (clone.exit_code === 0) {
-    for (const [command, args] of [
-      ['npm', ['ci', '--ignore-scripts']],
-      ['npm', ['test']],
-      ['npm', ['run', 'coverage']],
-      ['npm', ['run', 'skill:check-drift']],
-      ['npm', ['run', 'lint']],
-      ['npm', ['run', 'build']],
-      ['npm', ['audit', '--audit-level=high']],
-      ['npm', ['run', 'skill:check']],
-      ['npm', ['run', 'skill:verify']],
-      ['git', ['status', '--porcelain', '--untracked-files=all']],
-    ]) records.push(run(command, args, candidate));
+    for (const [id, command, args] of [
+      ['install', 'npm', ['ci', '--ignore-scripts']],
+      ['test', 'npm', ['test']],
+      ['coverage', 'npm', ['run', 'coverage']],
+      ['drift', 'npm', ['run', 'skill:check-drift']],
+      ['lint', 'npm', ['run', 'lint']],
+      ['build', 'npm', ['run', 'build']],
+      ['audit', 'npm', ['audit', '--audit-level=high']],
+      ['skill-check', 'npm', ['run', 'skill:check']],
+      ['skill-verify', 'npm', ['run', 'skill:verify']],
+      ['final-status', 'git', ['status', '--porcelain', '--untracked-files=all']],
+    ]) records.push(run(id, command, args, candidate, candidateEnv));
   }
-  const commit = run('git', ['rev-parse', 'HEAD'], root);
-  const tree = run('git', ['rev-parse', 'HEAD^{tree}'], root);
+  const commit = run('candidate-commit', 'git', ['rev-parse', 'HEAD'], root);
+  const tree = run('candidate-tree', 'git', ['rev-parse', 'HEAD^{tree}'], root);
   const passed = records.length === 11 && records.every(record => record.exit_code === 0) &&
     records.at(-1).output.trim() === '';
   const report = {
