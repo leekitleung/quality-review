@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { userInfo } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import {
   closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
@@ -51,6 +52,31 @@ export function createCandidateSubprocessEnv(source = process.env, isolatedHome)
   result.HOME = isolatedHome;
   if (process.platform === 'win32') result.USERPROFILE = isolatedHome;
   return result;
+}
+
+export function wrapCandidateCommand(command, args, { allowedRoots, hostHome = userInfo().homedir } = {}) {
+  if (process.platform !== 'darwin') throw new Error(`candidate filesystem sandbox is unavailable on ${process.platform}`);
+  if (!Array.isArray(allowedRoots) || allowedRoots.length === 0) throw new Error('candidate sandbox roots are required');
+  const roots = [...new Set(allowedRoots.map(root => realpathSync(path.resolve(root))))];
+  const runtimeRoot = path.dirname(path.dirname(realpathSync(process.execPath)));
+  const quote = value => JSON.stringify(value);
+  const readRoots = [
+    '/', '/usr', '/System', '/Library', '/bin', '/sbin', '/opt/homebrew', '/private', '/dev', runtimeRoot, ...roots,
+  ];
+  const profile = [
+    '(version 1)',
+    '(deny default)',
+    '(allow process*)',
+    '(allow sysctl*)',
+    '(allow mach*)',
+    '(allow network*)',
+    '(allow dynamic-code-generation)',
+    '(allow file-read-metadata)',
+    `(allow file-read* (literal "/") ${readRoots.slice(1).map(root => `(subpath ${quote(root)})`).join(' ')})`,
+    `(allow file-write* ${[...roots, '/private/tmp', '/private/var/folders', '/dev'].map(root => `(subpath ${quote(root)})`).join(' ')})`,
+  ].join(' ');
+  if (roots.some(root => root === realpathSync(hostHome))) throw new Error('host home cannot be a candidate sandbox root');
+  return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, command, ...args] };
 }
 
 export function ensureContainedDirectorySync(root, directory) {

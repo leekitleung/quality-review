@@ -20,7 +20,7 @@ import { readFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } 
 import { join, dirname, resolve, extname, relative } from 'path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'url';
-import { execSync as nodeExecSync, execFileSync as nodeExecFileSync } from 'child_process';
+import { execFileSync as nodeExecFileSync } from 'child_process';
 import { readFile } from 'fs/promises';
 import { createHash } from 'node:crypto';
 import {
@@ -33,7 +33,7 @@ import {
 } from '../lib/review-utils.mjs';
 import {
   containsSensitiveText, createCandidateSubprocessEnv, ensureContainedDirectorySync, readContainedFileSync,
-  redactSensitiveText, writeContainedFile, writeContainedFileSync,
+  redactSensitiveText, wrapCandidateCommand, writeContainedFile, writeContainedFileSync,
 } from '../lib/security-utils.mjs';
 
 // Use process.cwd() as the reliable project root
@@ -46,11 +46,15 @@ const SUBPROCESS_ENV = createCandidateSubprocessEnv(process.env, ISOLATED_HOME);
 process.on('exit', () => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
 
 function execSync(command, options = {}) {
-  return nodeExecSync(command, { ...options, env: SUBPROCESS_ENV });
+  const wrapped = wrapCandidateCommand('/bin/sh', ['-c', command], {
+    allowedRoots: [PROJECT_ROOT, ISOLATED_HOME],
+  });
+  return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: SUBPROCESS_ENV });
 }
 
 function execFileSync(file, args, options = {}) {
-  return nodeExecFileSync(file, args, { ...options, env: SUBPROCESS_ENV });
+  const wrapped = wrapCandidateCommand(file, args, { allowedRoots: [PROJECT_ROOT, ISOLATED_HOME] });
+  return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: SUBPROCESS_ENV });
 }
 
 // ANSI colors
@@ -1768,10 +1772,6 @@ async function runGate() {
 
   if (allHaveScores) {
     if (gatePassed) {
-      log.success('All gates PASSED!');
-      log.success('Evidence source validation passed');
-      log.success('Goal mode constraint satisfied');
-
       // P4: Persistent Handoff - Write Phase boundary marker
       const currentPhase = roundNumber;
       const nextPhase = 'END (Release Complete)';
@@ -1779,6 +1779,15 @@ async function runGate() {
 
       generateSummary(roundDir, profile, existingScores, true, evidence);
       generateFinalReport(roundDir, existingScores, evidence);
+      const finalArtifactFindings = scanRoundArtifacts(roundDir);
+      if (finalArtifactFindings.length > 0) {
+        log.error(`Final artifact security scan failed: ${finalArtifactFindings.join(', ')}`);
+        persistFinalArbitration(roundDir, false, 'final artifact security scan failed');
+        return false;
+      }
+      log.success('All gates PASSED!');
+      log.success('Evidence source validation passed');
+      log.success('Goal mode constraint satisfied');
       persistFinalArbitration(roundDir, true, 'all conjunctive gates passed');
       console.log('');
       log.success('🎉 Release is ready!');

@@ -50,23 +50,34 @@ export function parseScore(scoreContent) {
   return null;
 }
 
-export const CLEAN_CANDIDATE_COMMAND_IDS = [
-  'clone', 'install', 'test', 'coverage', 'drift', 'lint', 'build', 'audit', 'skill-check',
-  'skill-verify', 'final-status',
+export const CLEAN_CANDIDATE_COMMANDS = [
+  ['clone', 'git clone --quiet --no-local <source> <candidate>'],
+  ['install', 'npm ci --ignore-scripts'],
+  ['test', 'npm test'],
+  ['coverage', 'npm run coverage'],
+  ['drift', 'npm run skill:check-drift'],
+  ['lint', 'npm run lint'],
+  ['build', 'npm run build'],
+  ['audit', 'npm audit --audit-level=high'],
+  ['skill-check', 'npm run skill:check'],
+  ['skill-verify', 'npm run skill:verify'],
+  ['final-status', 'git status --porcelain --untracked-files=all'],
 ];
 
 export function validateCleanCandidateEvidence(clean, candidateCommit, candidateTree) {
   if (!clean || clean.schema_version !== 1 || clean.status !== 'pass' || clean.exit_code !== 0 ||
       clean.isolated_checkout !== true || clean.candidate_commit !== candidateCommit ||
-      clean.candidate_tree !== candidateTree || clean.source_status !== '' ||
-      !Array.isArray(clean.commands) || clean.commands.length !== CLEAN_CANDIDATE_COMMAND_IDS.length) return false;
-  for (let index = 0; index < CLEAN_CANDIDATE_COMMAND_IDS.length; index++) {
+      clean.candidate_tree !== candidateTree || clean.isolated_commit !== candidateCommit ||
+      clean.isolated_tree !== candidateTree || clean.source_status !== '' ||
+      !Array.isArray(clean.commands) || clean.commands.length !== CLEAN_CANDIDATE_COMMANDS.length) return false;
+  for (let index = 0; index < CLEAN_CANDIDATE_COMMANDS.length; index++) {
     const record = clean.commands[index];
+    const [expectedId, expectedCommand] = CLEAN_CANDIDATE_COMMANDS[index];
     const retainedBytes = Buffer.byteLength(record?.output || '');
     const started = Date.parse(record?.started_at);
     const finished = Date.parse(record?.finished_at);
-    if (!record || record.id !== CLEAN_CANDIDATE_COMMAND_IDS[index] ||
-        typeof record.command !== 'string' || !record.command || record.exit_code !== 0 || record.status !== 'pass' ||
+    if (!record || record.id !== expectedId || record.command !== expectedCommand ||
+        record.exit_code !== 0 || record.status !== 'pass' ||
         !Number.isFinite(started) || !Number.isFinite(finished) || finished < started ||
         typeof record.output !== 'string' || !Number.isInteger(record.output_bytes) ||
         record.output_bytes < retainedBytes || typeof record.truncated !== 'boolean' ||

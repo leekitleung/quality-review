@@ -6,6 +6,7 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import {
   createCandidateSubprocessEnv, createSubprocessEnv, redactSensitiveText, resolveWithinRoot, writeContainedFile,
+  wrapCandidateCommand,
 } from '../skills/release-quality-review/lib/security-utils.mjs';
 
 const root = process.cwd();
@@ -21,16 +22,17 @@ if (!/quality-reports[/\\]round-\d+[/\\]evidence[/\\]clean-candidate\.json$/.tes
   process.exit(4);
 }
 
-function run(id, command, args, cwd, env = subprocessEnv) {
+function run(id, command, args, cwd, env = subprocessEnv, displayCommand = null, sandboxRoots = null) {
   const startedAt = new Date().toISOString();
-  const result = spawnSync(command, args, {
+  const executable = sandboxRoots ? wrapCandidateCommand(command, args, { allowedRoots: sandboxRoots }) : { command, args };
+  const result = spawnSync(executable.command, executable.args, {
     cwd, encoding: 'utf8', timeout: 180000, maxBuffer: 8 * 1024 * 1024, env,
   });
   const raw = `${result.stdout || ''}${result.stderr || ''}`;
   const redacted = redactSensitiveText(raw);
   return {
     id,
-    command: [command, ...args].join(' '),
+    command: displayCommand || [command, ...args].join(' '),
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     exit_code: result.status ?? 1,
@@ -53,7 +55,9 @@ const isolatedHome = await mkdtemp(path.join(temporary, 'home-'));
 const candidateEnv = createCandidateSubprocessEnv(process.env, isolatedHome);
 const records = [];
 try {
-  const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', root, candidate], temporary, candidateEnv);
+  const sandboxRoots = [root, temporary];
+  const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', root, candidate], temporary, candidateEnv,
+    'git clone --quiet --no-local <source> <candidate>', sandboxRoots);
   records.push(clone);
   if (clone.exit_code === 0) {
     for (const [id, command, args] of [
@@ -67,16 +71,21 @@ try {
       ['skill-check', 'npm', ['run', 'skill:check']],
       ['skill-verify', 'npm', ['run', 'skill:verify']],
       ['final-status', 'git', ['status', '--porcelain', '--untracked-files=all']],
-    ]) records.push(run(id, command, args, candidate, candidateEnv));
+    ]) records.push(run(id, command, args, candidate, candidateEnv, null, sandboxRoots));
   }
   const commit = run('candidate-commit', 'git', ['rev-parse', 'HEAD'], root);
   const tree = run('candidate-tree', 'git', ['rev-parse', 'HEAD^{tree}'], root);
+  const isolatedCommit = run('isolated-commit', 'git', ['rev-parse', 'HEAD'], candidate, candidateEnv, null, sandboxRoots);
+  const isolatedTree = run('isolated-tree', 'git', ['rev-parse', 'HEAD^{tree}'], candidate, candidateEnv, null, sandboxRoots);
   const passed = records.length === 11 && records.every(record => record.exit_code === 0) &&
-    records.at(-1).output.trim() === '';
+    records.at(-1).output.trim() === '' && isolatedCommit.exit_code === 0 && isolatedTree.exit_code === 0 &&
+    isolatedCommit.output.trim() === commit.output.trim() && isolatedTree.output.trim() === tree.output.trim();
   const report = {
     schema_version: 1,
     candidate_commit: commit.output.trim(),
     candidate_tree: tree.output.trim(),
+    isolated_commit: isolatedCommit.output.trim(),
+    isolated_tree: isolatedTree.output.trim(),
     source_status: sourceStatus.output,
     isolated_checkout: true,
     status: passed ? 'pass' : 'fail',

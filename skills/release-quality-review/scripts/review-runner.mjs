@@ -20,12 +20,12 @@
 import { readFileSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'node:os';
-import { execSync, execFileSync, spawn } from 'child_process';
+import { execFileSync as nodeExecFileSync, spawn } from 'child_process';
 import { matchesTriggerConditions, parseYamlProfile as parseYamlProfileShared } from '../lib/review-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
 import {
   createCandidateSubprocessEnv, createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
-  redactSensitiveText, resolveWithinRoot, writeContainedFileSync,
+  redactSensitiveText, resolveWithinRoot, wrapCandidateCommand, writeContainedFileSync,
 } from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
@@ -38,6 +38,18 @@ const CANDIDATE_ENV = createCandidateSubprocessEnv(process.env, ISOLATED_HOME);
 process.on('exit', () => rmSync(ISOLATED_HOME, { recursive: true, force: true }));
 const REVIEWER_TIMEOUT_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_TIMEOUT_MS, 15 * 60 * 1000);
 const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS, 5000);
+
+function execSync(command, options = {}) {
+  const wrapped = wrapCandidateCommand('/bin/sh', ['-c', command], {
+    allowedRoots: [PROJECT_ROOT, ISOLATED_HOME],
+  });
+  return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: CANDIDATE_ENV });
+}
+
+function execFileSync(file, args, options = {}) {
+  const wrapped = wrapCandidateCommand(file, args, { allowedRoots: [PROJECT_ROOT, ISOLATED_HOME] });
+  return nodeExecFileSync(wrapped.command, wrapped.args, { ...options, env: CANDIDATE_ENV });
+}
 
 function parsePositiveDuration(value, fallback) {
   if (value === undefined) return fallback;
@@ -748,7 +760,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   if (parallel) {
     log.info(`Parallel mode: launching ${allReviewers.length} independent Codex reviewers...`);
     try {
-      execFileSync('codex', ['--version'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
+      nodeExecFileSync('codex', ['--version'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
     } catch {
       log.error('Parallel mode requires the Codex CLI on PATH; no reviewer agents were launched.');
       process.exit(5);
@@ -787,7 +799,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           if (process.platform === 'win32') {
             const args = ['/pid', String(proc.pid), '/t'];
             if (signal === 'SIGKILL') args.push('/f');
-            execFileSync('taskkill', args, { stdio: 'ignore', timeout: REVIEWER_KILL_GRACE_MS, env: CANDIDATE_ENV });
+            nodeExecFileSync('taskkill', args, { stdio: 'ignore', timeout: REVIEWER_KILL_GRACE_MS, env: CANDIDATE_ENV });
           } else {
             process.kill(-proc.pid, signal);
           }

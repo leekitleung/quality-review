@@ -27,6 +27,7 @@ import {
   detectChangeScale,
   parseYamlProfile,
   matchesTriggerConditions,
+  CLEAN_CANDIDATE_COMMANDS,
   validateCleanCandidateEvidence,
 } from '../lib/review-utils.mjs';
 import {
@@ -36,6 +37,7 @@ import {
   createCandidateSubprocessEnv,
   createSubprocessEnv,
   redactSensitiveText,
+  wrapCandidateCommand,
   writeContainedFile,
 } from '../lib/security-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
@@ -558,12 +560,12 @@ test.describe('security boundaries', () => {
 
   test('rejects forged clean-candidate command and tree evidence', () => {
     const now = new Date().toISOString();
-    const ids = ['clone', 'install', 'test', 'coverage', 'drift', 'lint', 'build', 'audit', 'skill-check', 'skill-verify', 'final-status'];
     const clean = {
-      schema_version: 1, candidate_commit: 'commit', candidate_tree: 'tree', source_status: '',
+      schema_version: 1, candidate_commit: 'commit', candidate_tree: 'tree',
+      isolated_commit: 'commit', isolated_tree: 'tree', source_status: '',
       isolated_checkout: true, status: 'pass', exit_code: 0,
-      commands: ids.map(id => ({
-        id, command: id, started_at: now, finished_at: now, exit_code: 0, status: 'pass',
+      commands: CLEAN_CANDIDATE_COMMANDS.map(([id, command]) => ({
+        id, command, started_at: now, finished_at: now, exit_code: 0, status: 'pass',
         output: '', output_bytes: 0, truncated: false,
       })),
     };
@@ -572,6 +574,19 @@ test.describe('security boundaries', () => {
     const forgedCommands = structuredClone(clean);
     forgedCommands.commands = [{ id: 'forged', command: 'forged', exit_code: 0, status: 'pass' }];
     assertEqual(validateCleanCandidateEvidence(forgedCommands, 'commit', 'tree'), false);
+    const substitutedCommand = structuredClone(clean);
+    substitutedCommand.commands[2].command = 'printf [REDACTED]';
+    assertEqual(validateCleanCandidateEvidence(substitutedCommand, 'commit', 'tree'), false);
+  });
+
+  test('filesystem sandbox denies the host home outside allowed roots', { skip: process.platform !== 'darwin' }, () => {
+    const hostHome = process.env.HOME;
+    const script = `const fs=require('node:fs');if(!fs.existsSync('package.json'))process.exit(2);try{fs.readdirSync(${JSON.stringify(hostHome)});process.exit(3)}catch{}`;
+    const wrapped = wrapCandidateCommand(process.execPath, ['-e', script], {
+      allowedRoots: [PROJECT_ROOT], hostHome,
+    });
+    const result = spawnSync(wrapped.command, wrapped.args, { cwd: PROJECT_ROOT, encoding: 'utf8' });
+    assertEqual(result.status, 0, result.stderr);
   });
 
   test('rejects a repository output parent symlinked outside the repository', async () => {
@@ -868,7 +883,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
         '--no-collect', '--no-validate-evidence',
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
-      assertEqual(result.status, 0);
+      assertEqual(result.status, 0, `Expected no-collect pass, output: ${result.stdout}${result.stderr}`);
       assertTrue(result.stdout.includes('Loaded persisted automated evidence'), 'Expected persisted evidence rehydration');
       const report = readFileSync(finalReport, 'utf8');
       assertEqual(report.includes('Clean-candidate verification passed'), false);
