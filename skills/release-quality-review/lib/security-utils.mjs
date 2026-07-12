@@ -51,6 +51,9 @@ export function createCandidateSubprocessEnv(source = process.env, isolatedHome)
     'HOME', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
   ]) delete result[key];
   result.HOME = isolatedHome;
+  result.TMPDIR = isolatedHome;
+  result.TMP = isolatedHome;
+  result.TEMP = isolatedHome;
   if (process.platform === 'win32') result.USERPROFILE = isolatedHome;
   return result;
 }
@@ -75,7 +78,8 @@ export function wrapCandidateCommand(command, args, {
   const runtimeRoot = path.dirname(path.dirname(realpathSync(process.execPath)));
   const quote = value => JSON.stringify(value);
   const readRoots = [
-    '/', '/usr', '/System', '/Library', '/bin', '/sbin', '/opt/homebrew', '/private', '/dev', runtimeRoot, ...readable,
+    '/', '/usr', '/System', '/Library', '/bin', '/sbin', '/opt/homebrew', '/private/etc',
+    '/private/var/db', '/private/var/run', '/private/var/select', '/dev', runtimeRoot, ...readable,
   ];
   const profile = [
     '(version 1)',
@@ -87,7 +91,7 @@ export function wrapCandidateCommand(command, args, {
     '(allow dynamic-code-generation)',
     '(allow file-read-metadata)',
     `(allow file-read* (literal "/") ${readRoots.slice(1).map(root => `(subpath ${quote(root)})`).join(' ')})`,
-    `(allow file-write* ${[...roots, '/private/tmp', '/private/var/folders', '/dev'].map(root => `(subpath ${quote(root)})`).join(' ')})`,
+    `(allow file-write* ${[...roots, '/dev'].map(root => `(subpath ${quote(root)})`).join(' ')})`,
   ].join(' ');
   if (readable.some(root => root === realpathSync(hostHome))) throw new Error('host home cannot be a candidate sandbox root');
   return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, command, ...args] };

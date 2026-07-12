@@ -38,6 +38,8 @@ import {
   createSubprocessEnv,
   redactSensitiveText,
   wrapCandidateCommand,
+  readContainedFileSync,
+  writeContainedFileSync,
   writeContainedFile,
 } from '../lib/security-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
@@ -479,6 +481,13 @@ test.describe('security boundaries', () => {
       rejected = true;
     }
     assertTrue(rejected, 'Expected path traversal to be rejected');
+    let absoluteRejected = false;
+    try {
+      resolveWithinRoot('/tmp/repository', '/tmp/absolute.md', 'adapter');
+    } catch {
+      absoluteRejected = true;
+    }
+    assertTrue(absoluteRejected, 'Expected absolute paths to be rejected');
   });
 
   test('accepts paths contained by the repository', () => {
@@ -545,6 +554,7 @@ test.describe('security boundaries', () => {
     }, '/isolated-home');
     assertEqual(candidateEnv.PATH, '/usr/bin');
     assertEqual(candidateEnv.HOME, '/isolated-home');
+    assertEqual(candidateEnv.TMPDIR, '/isolated-home');
     assertEqual(candidateEnv.CODEX_HOME, undefined);
     assertEqual(candidateEnv.OPENAI_API_KEY, undefined);
   });
@@ -588,7 +598,7 @@ test.describe('security boundaries', () => {
       return;
     }
     const hostHome = userInfo().homedir;
-    const script = `const fs=require('node:fs');if(!fs.existsSync('package.json'))process.exit(2);try{fs.readdirSync(${JSON.stringify(hostHome)});process.exit(3)}catch{}`;
+    const script = `const fs=require('node:fs');if(!fs.existsSync('package.json'))process.exit(2);try{fs.readdirSync(${JSON.stringify(hostHome)});process.exit(3)}catch{}try{fs.readdirSync(${JSON.stringify(TEST_DIR)});process.exit(4)}catch{}`;
     const wrapped = wrapCandidateCommand(process.execPath, ['-e', script], {
       allowedRoots: [PROJECT_ROOT], hostHome,
     });
@@ -607,9 +617,31 @@ test.describe('security boundaries', () => {
     }
     assertEqual(rejected, true);
   });
+
+  test('writes contained files through production filesystem guards', async () => {
+    const root = join(TEST_DIR, 'contained-files');
+    mkdirSync(root, { recursive: true });
+    const syncFile = join(root, 'sync', 'record.txt');
+    writeContainedFileSync(root, syncFile, 'one');
+    assertEqual(readContainedFileSync(root, syncFile), 'one');
+    writeContainedFileSync(root, syncFile, 'two');
+    assertEqual(readContainedFileSync(root, syncFile), 'two');
+
+    const asyncFile = join(root, 'async', 'record.txt');
+    await writeContainedFile(root, asyncFile, 'async');
+    assertEqual(readContainedFileSync(root, asyncFile), 'async');
+  });
 });
 
 test.describe('fail-closed result parsing', () => {
+  test('returns an empty result for missing YAML', () => {
+    const parsed = parseYamlResult(null);
+    assertEqual(parsed.reviewer, null);
+    assertEqual(parsed.score, null);
+    assertEqual(parsed.blockers.length, 0);
+    assertEqual(parsed.redlines.length, 0);
+  });
+
   test('parses inline blocker and redline arrays', () => {
     const parsed = parseYamlResult(`reviewer: destructive-qa\nscore: 100\nstatus: fail\nblockers: [P1]\nredlines: [P0]\n`);
     assertEqual(parsed.status, 'fail');
