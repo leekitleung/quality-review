@@ -44,12 +44,32 @@ Host workflow:
 4. Run `npm run skill:gate -- --profile release-gate --round 1`. Exit `0` is the
    only release approval; exit `1` means pending or failed review.
 
-For `agentic-release-gate`, commit the bounded candidate and persist isolated
-clean-checkout verification before final arbitration:
+For `agentic-release-gate`, use this complete high-assurance workflow:
+
+1. Commit the bounded candidate so evidence can bind an immutable commit/tree.
+2. Run the runner or Gate once with an explicit round and base to create
+   `metadata.json` and `evidence/automated-checks.json`.
+3. Add the required round artifacts: `generated-goal.md`,
+   `goal-instruction-validation.md`, `phase-N-plan.md`, `changes.md`,
+   `diff-summary.md`, `risk.md`, and `handoff.md`.
+4. Persist isolated clean-checkout verification for that same commit:
 
 ```bash
 npm run skill:verify-clean -- --output quality-reports/round-001/evidence/clean-candidate.json
 ```
+
+5. Launch every resident, triggered conditional, and adversarial reviewer.
+   Each writes its four-file packet under the same round.
+6. Validate packets, then run final arbitration against persisted evidence:
+
+```bash
+node skills/release-quality-review/scripts/evidence-validator.mjs --round round-001 --base <base-ref>
+npm run skill:gate -- --profile agentic-release-gate --round 1 --base <base-ref> --no-collect
+```
+
+Approval exists only when both commands exit `0`. The authoritative approval
+report is `quality-reports/round-001/final-report.md`; it is never a shared
+cross-round file.
 
 Troubleshooting:
 
