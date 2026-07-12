@@ -579,7 +579,14 @@ test.describe('security boundaries', () => {
     assertEqual(validateCleanCandidateEvidence(substitutedCommand, 'commit', 'tree'), false);
   });
 
-  test('filesystem sandbox denies the host home outside allowed roots', { skip: process.platform !== 'darwin' }, () => {
+  test('filesystem sandbox denies the host home outside allowed roots', { skip: process.platform !== 'darwin' }, t => {
+    const probe = spawnSync('/usr/bin/sandbox-exec', [
+      '-p', '(version 1) (allow default)', '/usr/bin/true',
+    ], { encoding: 'utf8' });
+    if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout}${probe.stderr}`)) {
+      t.skip('Inherited sandbox is already enforcing the outer filesystem policy');
+      return;
+    }
     const hostHome = userInfo().homedir;
     const script = `const fs=require('node:fs');if(!fs.existsSync('package.json'))process.exit(2);try{fs.readdirSync(${JSON.stringify(hostHome)});process.exit(3)}catch{}`;
     const wrapped = wrapCandidateCommand(process.execPath, ['-e', script], {
