@@ -20,6 +20,7 @@ npm run skill:check
 
 # Run unit tests plus distribution validation
 npm run skill:verify
+npm run coverage
 
 # Aggregate reports and execute the release gate
 npm run skill:gate -- --profile release-gate

@@ -50,6 +50,7 @@ try {
     for (const [command, args] of [
       ['npm', ['ci', '--ignore-scripts']],
       ['npm', ['test']],
+      ['npm', ['run', 'coverage']],
       ['npm', ['run', 'skill:check-drift']],
       ['npm', ['run', 'lint']],
       ['npm', ['run', 'build']],
@@ -61,7 +62,7 @@ try {
   }
   const commit = run('git', ['rev-parse', 'HEAD'], root);
   const tree = run('git', ['rev-parse', 'HEAD^{tree}'], root);
-  const passed = records.length === 10 && records.every(record => record.exit_code === 0) &&
+  const passed = records.length === 11 && records.every(record => record.exit_code === 0) &&
     records.at(-1).output.trim() === '';
   const report = {
     schema_version: 1,

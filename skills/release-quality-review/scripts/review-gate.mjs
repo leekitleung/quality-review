@@ -16,8 +16,8 @@
  *   node review-gate.mjs --dry-run               # Validate without running
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'fs';
-import { join, dirname } from 'path';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { join, dirname, resolve, extname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync, execFileSync } from 'child_process';
 import { readFile } from 'fs/promises';
@@ -29,7 +29,10 @@ import {
   parseYamlProfile as parseYamlProfileShared,
   matchesTriggerConditions,
 } from '../lib/review-utils.mjs';
-import { containsSensitiveText, redactSensitiveText, writeContainedFile } from '../lib/security-utils.mjs';
+import {
+  containsSensitiveText, ensureContainedDirectorySync, readContainedFileSync,
+  redactSensitiveText, writeContainedFile, writeContainedFileSync,
+} from '../lib/security-utils.mjs';
 
 // Use process.cwd() as the reliable project root
 const PROJECT_ROOT = process.cwd();
@@ -130,7 +133,7 @@ const {
 } = parseCliArgs(process.argv.slice(2));
 
 function latestExistingRound() {
-  if (!existsSync(REPORT_DIR)) return 1;
+  ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR);
   const rounds = readdirSync(REPORT_DIR)
     .map(name => name.match(/^round-(\d+)$/)?.[1])
     .filter(Boolean)
@@ -554,7 +557,7 @@ function redactEvidence(value) {
 
 async function persistEvidence(roundDir, evidence, profileName, reviewers) {
   const evidenceDir = join(roundDir, 'evidence');
-  mkdirSync(evidenceDir, { recursive: true });
+  ensureContainedDirectorySync(roundDir, evidenceDir);
   const automatedContent = `${JSON.stringify(evidence.automatedChecks, null, 2)}\n`;
   const metadata = {
     profile: profileName,
@@ -587,7 +590,7 @@ function validCommandEvidence(record, expectedCommand) {
 
 function persistFinalArbitration(roundDir, passed, reason) {
   const evidenceDir = join(roundDir, 'evidence');
-  mkdirSync(evidenceDir, { recursive: true });
+  ensureContainedDirectorySync(roundDir, evidenceDir);
   const record = {
     command: ['node', ...process.argv.slice(1)].join(' '),
     recorded_at: new Date().toISOString(),
@@ -597,7 +600,7 @@ function persistFinalArbitration(roundDir, passed, reason) {
     exit_code: passed ? 0 : 1,
     reason,
   };
-  writeFileSync(join(evidenceDir, 'final-arbitration.json'), `${JSON.stringify(record, null, 2)}\n`);
+  writeContainedFileSync(roundDir, join(evidenceDir, 'final-arbitration.json'), `${JSON.stringify(record, null, 2)}\n`);
 }
 
 function runEvidenceCommand(command) {
@@ -623,6 +626,47 @@ function runEvidenceCommand(command) {
   };
 }
 
+function scanCircularDependencies() {
+  const tracked = execFileSync('git', ['ls-files', 'skills', 'scripts'], {
+    cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
+  }).trim().split('\n').filter(file => /\.(?:js|mjs|ts)$/.test(file));
+  const files = new Set(tracked.map(file => resolve(PROJECT_ROOT, file)));
+  const graph = new Map();
+  for (const file of files) {
+    const content = readFileSync(file, 'utf8');
+    const dependencies = [];
+    const importPattern = /(?:import|export)\s+(?:[^'";]+?\s+from\s+)?['"](\.[^'"]+)['"]|import\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+    for (const match of content.matchAll(importPattern)) {
+      const specifier = match[1] || match[2];
+      const base = resolve(dirname(file), specifier);
+      const candidates = extname(base)
+        ? [base]
+        : [base, `${base}.js`, `${base}.mjs`, `${base}.ts`, join(base, 'index.js'), join(base, 'index.mjs'), join(base, 'index.ts')];
+      const dependency = candidates.find(candidate => files.has(candidate));
+      if (dependency) dependencies.push(dependency);
+    }
+    graph.set(file, dependencies);
+  }
+
+  const visiting = new Set();
+  const visited = new Set();
+  const cycles = [];
+  function visit(file, trail) {
+    if (visiting.has(file)) {
+      const start = trail.indexOf(file);
+      cycles.push([...trail.slice(start), file].map(item => item.slice(PROJECT_ROOT.length + 1)).join(' --> '));
+      return;
+    }
+    if (visited.has(file)) return;
+    visiting.add(file);
+    for (const dependency of graph.get(file) || []) visit(dependency, [...trail, file]);
+    visiting.delete(file);
+    visited.add(file);
+  }
+  for (const file of files) visit(file, []);
+  return [...new Set(cycles)];
+}
+
 // Run automated gate checks
 function runAutomatedChecks(config) {
   const checks = {
@@ -634,6 +678,7 @@ function runAutomatedChecks(config) {
     buildGate: null,
     lintGate: null,
     auditGate: null,
+    coverageGate: null,
   };
 
   // Get commands from config or use defaults
@@ -642,6 +687,7 @@ function runAutomatedChecks(config) {
   const buildCmd = config?.verification?.build || 'pnpm build';
   const lintCmd = config?.verification?.lint || 'pnpm lint';
   const auditCmd = config?.verification?.audit || 'npm audit --audit-level=high';
+  const coverageCmd = config?.verification?.coverage || 'npm run coverage';
 
   // Check 1: Oversized files (>2000 lines)
   log.info('Checking for oversized files...');
@@ -665,34 +711,17 @@ function runAutomatedChecks(config) {
     log.warn('Could not check file sizes');
   }
 
-  // Check 2: Circular dependencies (basic heuristic)
+  // Check 2: Circular dependencies using the repository's local import graph.
   log.info('Checking for circular dependencies...');
   try {
-    // Try madge first
-    const madgeOutput = execSync(
-      'npx madge --circular --extensions js,mjs,ts skills scripts 2>&1 || echo ""',
-      { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 30000 }
-    );
-    if (madgeOutput.includes('Circular dependencies found') || madgeOutput.includes('-->')) {
+    const cycles = scanCircularDependencies();
+    if (cycles.length > 0) {
       checks.circularDeps.status = 'fail';
-      checks.circularDeps.issues = madgeOutput.split('\n').filter(l => l.includes('-->'));
+      checks.circularDeps.issues = cycles;
     }
   } catch (e) {
-    // madge might not be installed, try manual check
-    try {
-      const files = execSync(
-        'find skills scripts -name "index.*" -type f 2>/dev/null | head -10',
-        { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000 }
-      ).trim().split('\n');
-
-      if (files.length > 5) {
-        // Too many barrel files might indicate design issues
-        checks.circularDeps.issues.push('High number of barrel exports detected - manual review needed');
-        checks.circularDeps.status = 'warn';
-      }
-    } catch (e2) {
-      // Ignore
-    }
+    checks.circularDeps.status = 'fail';
+    checks.circularDeps.issues = [`circular dependency scan failed: ${e.message}`];
   }
 
   // Check 3: Secrets in source
@@ -734,6 +763,11 @@ function runAutomatedChecks(config) {
 
   log.info(`Running audit gate: ${auditCmd}`);
   checks.auditGate = runEvidenceCommand(auditCmd);
+
+  if (profile === 'agentic-release-gate') {
+    log.info(`Running coverage gate: ${coverageCmd}`);
+    checks.coverageGate = runEvidenceCommand(coverageCmd);
+  }
 
   return checks;
 }
@@ -780,7 +814,7 @@ function loadExistingScores(roundDir, reviewers) {
     // Try result.yaml first (if exists)
     if (existsSync(resultYamlPath)) {
       try {
-        const yamlContent = readFileSync(resultYamlPath, 'utf-8');
+        const yamlContent = readContainedFileSync(roundDir, resultYamlPath, 'utf-8');
         const yamlResult = parseYamlResultShared(yamlContent);
 
         if (yamlResult.score !== null) {
@@ -819,7 +853,7 @@ function loadExistingScores(roundDir, reviewers) {
     // Fall back to score.md for score (if result.yaml didn't have one)
     if (existsSync(scorePath)) {
       try {
-        const content = readFileSync(scorePath, 'utf-8');
+        const content = readContainedFileSync(roundDir, scorePath, 'utf-8');
         const parsedScore = parseScoreShared(content);
         if (score === null && parsedScore !== null) {
           score = parsedScore;
@@ -836,28 +870,28 @@ function loadExistingScores(roundDir, reviewers) {
 
         hasReport = true;
       } catch (e) {
-        // score.md exists but couldn't be read
+        packetError = `Invalid score.md: ${e.message}`;
       }
     }
 
     // Load blockers.md independently; no artifact may hide another artifact's veto.
     if (existsSync(blockerPath)) {
       try {
-        const blockerContent = readFileSync(blockerPath, 'utf-8');
+        const blockerContent = readContainedFileSync(roundDir, blockerPath, 'utf-8');
         blockers.push(...parseBlockersShared(blockerContent));
         hasReport = true;
       } catch (e) {
-        // Ignore
+        packetError = `Invalid blockers.md: ${e.message}`;
       }
     }
 
     // Load improvements
     if (existsSync(improvementPath)) {
       try {
-        improvements = readFileSync(improvementPath, 'utf-8');
+        improvements = readContainedFileSync(roundDir, improvementPath, 'utf-8');
         hasReport = true;
       } catch (e) {
-        // Ignore
+        packetError = `Invalid improvement-list.md: ${e.message}`;
       }
     }
 
@@ -927,6 +961,11 @@ function generateSummary(roundDir, profile, scores, allPassed, evidence = null) 
     content += `| lint | ${lintIcon} ${ac.lintGate?.status || 'unknown'} | ${ac.lintGate?.status === 'pass' ? 'Passed' : 'See evidence'} |\n`;
     const auditIcon = ac.auditGate?.status === 'pass' ? '✅' : '❌';
     content += `| audit | ${auditIcon} ${ac.auditGate?.status || 'unknown'} | ${ac.auditGate?.status === 'pass' ? 'Passed' : 'See evidence'} |\n`;
+
+    if (ac.coverageGate) {
+      const coverageIcon = ac.coverageGate.status === 'pass' ? '✅' : '❌';
+      content += `| coverage | ${coverageIcon} ${ac.coverageGate.status} | ${ac.coverageGate.status === 'pass' ? 'Measured' : 'See evidence'} |\n`;
+    }
 
     const sizeIcon = ac.oversizedFiles.status === 'pass' ? '✅' : '⚠️';
     content += `| File sizes | ${sizeIcon} ${ac.oversizedFiles.issues.length} oversized | ${ac.oversizedFiles.issues.slice(0, 2).map(i => `${i.lines}L ${i.path.split('/').pop()}`).join(', ') || 'OK'} |\n`;
@@ -1021,7 +1060,7 @@ function generateSummary(roundDir, profile, scores, allPassed, evidence = null) 
     }
   }
 
-  writeFileSync(reportPath, content);
+  writeContainedFileSync(roundDir, reportPath, content);
   log.success(`Summary written to: ${reportPath}`);
   return allPassed;
 }
@@ -1070,7 +1109,7 @@ Run: \`npm run skill:gate -- --round ${roundNumber + 1} --profile release-gate\`
 *Generated by Release Quality Review Skill*
 `;
 
-  writeFileSync(boundaryPath, content);
+  writeContainedFileSync(roundDir, boundaryPath, content);
   log.success(`Phase boundary written: ${boundaryPath}`);
   return boundaryPath;
 }
@@ -1116,7 +1155,7 @@ function generateFinalReport(roundDir, scores, evidence = null) {
   content += `*Generated by Release Quality Review Skill*\n`;
   content += `*Tool: release-quality-review gate*\n`;
 
-  writeFileSync(reportPath, content);
+  writeContainedFileSync(roundDir, reportPath, content);
   log.success(`Final report: ${reportPath}`);
   return reportPath;
 }
@@ -1133,10 +1172,10 @@ function updateMetadataWithScale(roundDir) {
   try {
     let meta = {};
     if (existsSync(metaPath)) {
-      meta = JSON.parse(readFileSync(metaPath, 'utf-8'));
+      meta = JSON.parse(readContainedFileSync(roundDir, metaPath, 'utf-8'));
     }
     meta.scale = startupScaleInfo;
-    writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+    writeContainedFileSync(roundDir, metaPath, JSON.stringify(meta, null, 2));
   } catch (e) {
     // Ignore - metadata update is best-effort
   }
@@ -1237,16 +1276,19 @@ async function runGate() {
   console.log('');
 
   // Determine round directory
+  ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR);
   let roundDir = join(REPORT_DIR, `round-${String(roundNumber).padStart(3, '0')}`);
 
   // Check if this is a new round or continuing
   const isNewRound = !existsSync(roundDir);
   if (isNewRound) {
-    mkdirSync(roundDir, { recursive: true });
+    ensureContainedDirectorySync(REPORT_DIR, roundDir);
     log.info(`New round: ${roundDir}`);
   } else {
+    ensureContainedDirectorySync(REPORT_DIR, roundDir);
     log.info(`Continuing round: ${roundDir}`);
   }
+  persistFinalArbitration(roundDir, false, 'gate evaluation in progress');
 
   // Collect evidence if requested
   let evidence = null;
@@ -1264,8 +1306,8 @@ async function runGate() {
     const automatedPath = join(roundDir, 'evidence', 'automated-checks.json');
     if (existsSync(metadataPath) && existsSync(automatedPath)) {
       try {
-        const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
-        const automatedContent = readFileSync(automatedPath, 'utf8');
+        const metadata = JSON.parse(readContainedFileSync(roundDir, metadataPath, 'utf8'));
+        const automatedContent = readContainedFileSync(roundDir, automatedPath, 'utf8');
         const automatedChecks = JSON.parse(automatedContent);
         const currentCommit = execFileSync('git', ['rev-parse', '--short=8', 'HEAD'], {
           cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
@@ -1289,6 +1331,9 @@ async function runGate() {
           lintGate: config?.verification?.lint || 'pnpm lint',
           auditGate: config?.verification?.audit || 'npm audit --audit-level=high',
         };
+        if (profile === 'agentic-release-gate') {
+          expectedCommands.coverageGate = config?.verification?.coverage || 'npm run coverage';
+        }
         for (const [name, expectedCommand] of Object.entries(expectedCommands)) {
           if (!validCommandEvidence(automatedChecks[name], expectedCommand)) {
             throw new Error(`invalid ${name} command evidence`);
@@ -1345,7 +1390,7 @@ async function runGate() {
       const reviewerContent = loadReviewer(reviewer);
       if (reviewerContent) {
         const reviewerDir = join(roundDir, reviewer);
-        mkdirSync(reviewerDir, { recursive: true });
+        ensureContainedDirectorySync(roundDir, reviewerDir);
         console.log(`  ${colors.cyan}${reviewer}${colors.reset}`);
       } else {
         log.warn(`  ${reviewer}: reviewer definition not found`);
@@ -1420,7 +1465,7 @@ async function runGate() {
 
           // Also save to file
           const validationReportPath = join(roundDir, 'evidence-validation.md');
-          writeFileSync(validationReportPath, `# Evidence Source Validation\n\n${validatorOutput}\n`);
+          writeContainedFileSync(roundDir, validationReportPath, `# Evidence Source Validation\n\n${validatorOutput}\n`);
           log.info(`Validation report: ${validationReportPath}`);
         }
         evidenceValidationResults = validatorOutput;
@@ -1436,7 +1481,7 @@ async function runGate() {
 
         // Save report
         const validationReportPath = join(roundDir, 'evidence-validation.md');
-        writeFileSync(validationReportPath, `# Evidence Source Validation\n\n${e.stdout}\n`);
+        writeContainedFileSync(roundDir, validationReportPath, `# Evidence Source Validation\n\n${e.stdout}\n`);
       } else {
         evidenceValidationPassed = false;
         log.warn(`Evidence validator error: ${e.message}`);
@@ -1463,7 +1508,7 @@ async function runGate() {
       const scorePath = join(reviewerDir, 'score.md');
 
       if (existsSync(scorePath)) {
-        const content = readFileSync(scorePath, 'utf-8');
+        const content = readContainedFileSync(roundDir, scorePath, 'utf-8');
 
         for (const { pattern, desc } of goalModePatterns) {
           // Reset lastIndex for global patterns
@@ -1501,13 +1546,13 @@ async function runGate() {
 
         // Save detailed report
         const reportPath = join(roundDir, 'goal-mode-validation.md');
-        writeFileSync(reportPath, `# Goal Mode Validation\n\n${validatorOutput}\n`);
+        writeContainedFileSync(roundDir, reportPath, `# Goal Mode Validation\n\n${validatorOutput}\n`);
         log.info(`Detailed report: ${reportPath}`);
       } catch (e) {
         // Validator exits 1 on violations - expected behavior
         if (e.stdout) {
           const reportPath = join(roundDir, 'goal-mode-validation.md');
-          writeFileSync(reportPath, `# Goal Mode Validation\n\n${e.stdout}\n`);
+          writeContainedFileSync(roundDir, reportPath, `# Goal Mode Validation\n\n${e.stdout}\n`);
           log.info(`Detailed report: ${reportPath}`);
         }
       }
@@ -1525,7 +1570,7 @@ async function runGate() {
 
     try {
       const goalFile = join(roundDir, 'generated-goal.md');
-      const goalText = readFileSync(goalFile, 'utf-8');
+      const goalText = readContainedFileSync(roundDir, goalFile, 'utf-8');
 
       // Run goal instruction gate
       const gateOutput = execSync(
@@ -1544,14 +1589,14 @@ async function runGate() {
       if (passed) {
         log.success(`Goal instruction valid (${score}/100)`);
         const validationReport = join(roundDir, 'goal-instruction-validation.md');
-        writeFileSync(validationReport, `# Goal Instruction Validation\n\n${gateOutput}\n`);
+        writeContainedFileSync(roundDir, validationReport, `# Goal Instruction Validation\n\n${gateOutput}\n`);
       } else {
         log.error(`Goal instruction invalid (${score}/100)`);
         console.log(gateOutput);
 
         // Save validation report
         const validationReport = join(roundDir, 'goal-instruction-validation.md');
-        writeFileSync(validationReport, `# Goal Instruction Validation\n\n${gateOutput}\n`);
+        writeContainedFileSync(roundDir, validationReport, `# Goal Instruction Validation\n\n${gateOutput}\n`);
         log.info(`Validation report: ${validationReport}`);
       }
     } catch (e) {
@@ -1582,10 +1627,13 @@ async function runGate() {
   const buildGateFailed = autoChecks?.buildGate?.status !== 'pass';
   const lintGateFailed = autoChecks?.lintGate?.status !== 'pass';
   const auditGateFailed = autoChecks?.auditGate?.status !== 'pass';
+  const coverageGateFailed = profile === 'agentic-release-gate' && autoChecks?.coverageGate?.status !== 'pass';
   const secretsGateFailed = autoChecks?.secrets?.status !== 'pass';
+  const circularGateFailed = autoChecks?.circularDeps?.status === 'fail';
   const automatedChecksPassed = strictProfile
     ? Boolean(autoChecks) && !testGateFailed && !typecheckGateFailed && !buildGateFailed &&
-      !lintGateFailed && !auditGateFailed && !secretsGateFailed && validateEvidence
+      !lintGateFailed && !auditGateFailed && !coverageGateFailed && !secretsGateFailed &&
+      !circularGateFailed && validateEvidence
     : Boolean(autoChecks) && !testGateFailed && !typecheckGateFailed;
 
   // Only P0/P1 blockers are true "redlines" - P2/P3 are suggestions, not blockers
@@ -1609,7 +1657,7 @@ async function runGate() {
   const cleanCandidatePath = join(roundDir, 'evidence', 'clean-candidate.json');
   if (goalRequired && existsSync(cleanCandidatePath)) {
     try {
-      const clean = JSON.parse(readFileSync(cleanCandidatePath, 'utf8'));
+      const clean = JSON.parse(readContainedFileSync(roundDir, cleanCandidatePath, 'utf8'));
       const currentCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
       cleanCandidateEvidenceValid = clean.status === 'pass' && clean.exit_code === 0 &&
         clean.isolated_checkout === true && clean.candidate_commit === currentCommit &&
@@ -1620,7 +1668,14 @@ async function runGate() {
     }
   }
   const artifactCompletenessPassed = !goalRequired ||
-    (requiredAgenticArtifacts.every(file => existsSync(join(roundDir, file))) && cleanCandidateEvidenceValid);
+    (requiredAgenticArtifacts.every(file => {
+      try {
+        readContainedFileSync(roundDir, join(roundDir, file), 'utf8');
+        return true;
+      } catch {
+        return false;
+      }
+    }) && cleanCandidateEvidenceValid);
   const arbitrationEligible = !singleReviewer && excludeReviewers.length === 0;
   const gatePassed = allPassed && !hasRedlines && evidenceValidationPassed &&
                      (!checkGoalMode || goalModeViolations.length === 0) &&
@@ -1654,10 +1709,8 @@ async function runGate() {
       writePhaseBoundary(roundDir, roundNumber, currentPhase, nextPhase);
 
       generateSummary(roundDir, profile, existingScores, true, evidence);
+      generateFinalReport(roundDir, existingScores, evidence);
       persistFinalArbitration(roundDir, true, 'all conjunctive gates passed');
-
-      // Generate final report
-      const finalPath = generateFinalReport(roundDir, existingScores, evidence);
       console.log('');
       log.success('🎉 Release is ready!');
       return true;
@@ -1677,6 +1730,12 @@ async function runGate() {
       }
       if (auditGateFailed) {
         log.error(`Automated audit gate FAILED: ${autoChecks?.auditGate?.output || 'audit evidence missing'}`);
+      }
+      if (coverageGateFailed) {
+        log.error(`Automated coverage gate FAILED: ${autoChecks?.coverageGate?.output || 'coverage evidence missing'}`);
+      }
+      if (circularGateFailed) {
+        log.error(`Automated circular dependency scan FAILED: ${autoChecks?.circularDeps?.issues?.join(', ') || 'scan failed'}`);
       }
       if (secretsGateFailed) {
         log.error(`Automated secret scan FAILED: ${autoChecks?.secrets?.issues?.join(', ') || 'scan evidence missing'}`);

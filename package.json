@@ -6,9 +6,10 @@
   "scripts": {
     "start": "node skills/release-quality-review/scripts/review-runner.mjs --help",
     "lint": "npm run typecheck",
-    "typecheck": "node --check scripts/sync-skills.mjs && node --check scripts/verify-clean-candidate.mjs && node --check skills/release-quality-review/scripts/review-gate.mjs && node --check skills/release-quality-review/scripts/review-runner.mjs && node --check skills/release-quality-review/scripts/evidence-validator.mjs && node --check skills/release-quality-review/lib/review-utils.mjs && node --check skills/release-quality-review/lib/security-utils.mjs",
+    "typecheck": "node --check scripts/sync-skills.mjs && node --check scripts/verify-clean-candidate.mjs && node --check skills/release-quality-review/scripts/review-gate.mjs && node --check skills/release-quality-review/scripts/review-runner.mjs && node --check skills/release-quality-review/scripts/evidence-validator.mjs && node --check skills/release-quality-review/lib/review-utils.mjs && node --check skills/release-quality-review/lib/security-utils.mjs && node --check skills/release-quality-review/lib/phase-persistence.mjs",
     "build": "npm run typecheck",
     "test": "node --test skills/release-quality-review/__tests__/unit.test.mjs",
+    "coverage": "node --experimental-test-coverage --test-coverage-lines=75 --test-coverage-branches=60 --test-coverage-functions=75 --test skills/release-quality-review/__tests__/unit.test.mjs",
     "test:skill": "node --test skills/release-quality-review/__tests__/unit.test.mjs",
     "review": "node skills/release-quality-review/scripts/review-runner.mjs",
     "skill:sync": "node scripts/sync-skills.mjs sync",

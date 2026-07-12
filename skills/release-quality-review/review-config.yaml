@@ -102,6 +102,7 @@ verification:
   typecheck: "npm run typecheck"
   e2e: "npm run test:e2e"
   audit: "npm audit --audit-level=high"
+  coverage: "npm run coverage"
 
 # ============================================================
 # 证据收集 (自动收集的证据)

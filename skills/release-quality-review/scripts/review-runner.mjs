@@ -17,11 +17,14 @@
  *   node review-runner.mjs --target <dir>  # Review a specific directory (self-review)
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, realpathSync, statSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, realpathSync, statSync } from 'fs';
 import { join } from 'path';
 import { execSync, execFileSync, spawn } from 'child_process';
 import { matchesTriggerConditions, parseYamlProfile as parseYamlProfileShared } from '../lib/review-utils.mjs';
-import { isPathWithin, redactSensitiveText, resolveWithinRoot } from '../lib/security-utils.mjs';
+import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
+import {
+  ensureContainedDirectorySync, isPathWithin, redactSensitiveText, resolveWithinRoot, writeContainedFileSync,
+} from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
@@ -656,141 +659,6 @@ function checkFailedReviewers(roundDir, minScore) {
   return scores.filter(s => s.score < minScore);
 }
 
-// ============================================================================
-// Phase Persistence: Plan and Result files
-// ============================================================================
-
-/**
- * Persist phase plan before starting a round
- */
-function persistPhasePlan(roundDir, phase, reviewers, evidence, profileConfig) {
-  const planFile = join(roundDir, `phase-${phase}-plan.md`);
-  const scaleInfo = evidence.scale || { scale: 'unknown', files: 0, total: 0 };
-
-  const content = `# Phase ${phase} Plan
-
-## Metadata
-
-| Field | Value |
-|-------|-------|
-| Started | ${new Date().toISOString()} |
-| Profile | ${profileConfig.name} |
-| Scale | ${scaleInfo.scale} (${scaleInfo.files} files, ${scaleInfo.total} lines) |
-| Round | ${phase} |
-
-## Input
-
-- **Changed files:** ${evidence.git?.changedFiles?.length || 0}
-- **Git branch:** ${evidence.git?.branch || 'unknown'}
-- **Git commit:** ${evidence.git?.commit || 'unknown'}
-
-## Reviewers
-
-${reviewers.map(r => `- ${r}`).join('\n')}
-
-## Goals
-
-${reviewers.map(r => `- ${r}: Verify ${getReviewerFocus(r)}`).join('\n')}
-
-## Exit Criteria
-
-- [ ] All reviewers >= ${profileConfig.gate?.min_score || 90}
-- [ ] No P0 redlines
-- [ ] Evidence collected for all dimensions
-
-## Notes
-
-_(Add notes before starting this phase)_
-`;
-
-  writeFileSync(planFile, content);
-  log.success(`Phase plan written: ${planFile}`);
-  return planFile;
-}
-
-/**
- * Get reviewer focus for plan documentation
- */
-function getReviewerFocus(reviewerName) {
-  const focuses = {
-    'product-flow': 'user-facing functionality and completion',
-    'architecture-maintainer': 'code structure and module boundaries',
-    'release-verifier': 'test coverage and build reproducibility',
-    'destructive-qa': 'security vulnerabilities and edge cases',
-    'terminal-veteran': 'CLI/terminal UX and error messages',
-    'native-designer': 'UI consistency and design system compliance',
-    'zero-doc-user': 'documentation and onboarding experience',
-    'data-security': 'token handling and data protection',
-    'adversarial-completion': 'pseudo-completion detection',
-    'evidence-integrity': 'evidence authenticity and completeness',
-    'goal-compliance': 'goal alignment and scope adherence',
-    'regression-risk': 'regression risk and backward compatibility',
-    'handoff-integrity': 'handoff completeness and artifact quality',
-  };
-  return focuses[reviewerName] || 'quality and correctness';
-}
-
-/**
- * Persist phase result after completing a round
- */
-function persistPhaseResult(roundDir, phase, scores, gatePassed, failedReviewers) {
-  const resultFile = join(roundDir, `phase-${phase}-result.md`);
-  const completedAt = new Date().toISOString();
-
-  const scoresTable = Object.entries(scores)
-    .map(([r, s]) => {
-      const scoreVal = typeof s === 'number' ? s : (s.score ?? 'N/A');
-      const pass = typeof scoreVal === 'number' ? scoreVal >= 90 : false;
-      return `| ${r} | ${scoreVal}/100 | ${pass ? '✅ PASS' : '❌ FAIL'} |`;
-    })
-    .join('\n');
-
-  const failedList = failedReviewers.length > 0
-    ? failedReviewers.map(f => `- [ ] **[${f.reviewer}]** Score: ${f.score}/100`).join('\n')
-    : '_None_';
-
-  const content = `# Phase ${phase} Result
-
-## Metadata
-
-| Field | Value |
-|-------|-------|
-| Completed | ${completedAt} |
-| Gate Status | ${gatePassed ? '✅ PASSED' : '❌ FAILED'} |
-| Round | ${phase} |
-
-## Scores
-
-| Reviewer | Score | Status |
-|----------|-------|--------|
-${scoresTable}
-
-## Gate Status
-
-**${gatePassed ? 'ALL GATES PASSED' : 'GATES FAILED'}**
-
-${gatePassed ? '## Ready for Release' : `## Failed Reviewers
-
-${failedList}
-
-## Next Actions
-
-1. Fix the issues identified by failed reviewers
-2. Re-run the review: \`node review-runner.mjs --round ${phase + 1}\`
-3. Or aggregate a specific reviewer packet for diagnostics: \`npm run skill:gate -- --reviewer <name> --round ${phase}\`
-`}
-
-## Timeline
-
-- Phase started: See phase-${phase}-plan.md
-- Phase completed: ${completedAt}
-`;
-
-  writeFileSync(resultFile, content);
-  log.success(`Phase result written: ${resultFile}`);
-  return resultFile;
-}
-
 // Run single review iteration
 async function runSingleReviewIteration(profileConfig, currentRound, onReviewComplete) {
   const roundDir = join(REPORT_DIR, `round-${String(currentRound).padStart(3, '0')}`);
@@ -817,7 +685,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     return { roundDir, evidence: {}, allReviewers: [], results: [] };
   }
 
-  mkdirSync(roundDir, { recursive: true });
+  ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR);
+  ensureContainedDirectorySync(REPORT_DIR, roundDir);
 
   // Collect evidence with config
   const config = loadConfig();
@@ -870,13 +739,13 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
     const parallelResults = await Promise.all(allReviewers.map(reviewer => new Promise(resolve => {
       const reviewerDir = join(roundDir, reviewer);
-      mkdirSync(reviewerDir, { recursive: true });
+      ensureContainedDirectorySync(roundDir, reviewerDir);
       const prompt = generateReviewerPrompt(reviewer, currentRound);
       if (!prompt) {
         resolve({ name: reviewer, status: 'failed' });
         return;
       }
-      writeFileSync(join(reviewerDir, 'prompt.md'), prompt);
+      writeContainedFileSync(roundDir, join(reviewerDir, 'prompt.md'), prompt);
       const proc = spawn('codex', ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt], {
         cwd: PROJECT_ROOT,
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -902,10 +771,10 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   } else {
     for (const reviewer of allReviewers) {
       const reviewerDir = join(roundDir, reviewer);
-      mkdirSync(reviewerDir, { recursive: true });
+      ensureContainedDirectorySync(roundDir, reviewerDir);
       const prompt = generateReviewerPrompt(reviewer, currentRound);
       if (prompt) {
-        writeFileSync(join(reviewerDir, 'prompt.md'), prompt);
+        writeContainedFileSync(roundDir, join(reviewerDir, 'prompt.md'), prompt);
         console.log(`  ${c.green}✓${c.reset} ${reviewer}: prompt written`);
       } else {
         console.log(`  ${c.red}✗${c.reset} ${reviewer}: definition not found`);
@@ -930,7 +799,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       structure: evidence.structure,
     },
   };
-  writeFileSync(join(roundDir, 'metadata.json'), JSON.stringify(meta, null, 2));
+  writeContainedFileSync(roundDir, join(roundDir, 'metadata.json'), JSON.stringify(meta, null, 2));
 
   console.log(`\n${c.green}✓${c.reset} Metadata written`);
 

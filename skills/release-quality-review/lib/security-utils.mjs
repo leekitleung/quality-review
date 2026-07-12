@@ -1,6 +1,10 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, realpath, rename, rm, stat } from 'node:fs/promises';
+import {
+  closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
+  realpathSync, renameSync, rmSync, statSync, writeFileSync,
+} from 'node:fs';
+import { open, realpath, rename, rm, stat } from 'node:fs/promises';
 
 export function isPathWithin(root, candidate) {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
@@ -22,8 +26,73 @@ export function shouldIncludeCanonicalFile(name) {
   return name !== '.DS_Store';
 }
 
+export function ensureContainedDirectorySync(root, directory) {
+  const rootPath = path.resolve(root);
+  const target = path.resolve(directory);
+  if (!isPathWithin(rootPath, target)) throw new Error(`directory escapes repository: ${directory}`);
+  const rootReal = realpathSync(rootPath);
+  const relative = path.relative(rootPath, target);
+  let current = rootPath;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    if (existsSync(current)) {
+      const entry = lstatSync(current);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        throw new Error(`output directory component is not a real directory: ${current}`);
+      }
+    } else {
+      mkdirSync(current);
+    }
+  }
+  const targetReal = realpathSync(target);
+  if (!isPathWithin(rootReal, targetReal)) throw new Error(`directory resolves outside repository: ${directory}`);
+  return targetReal;
+}
+
+export function readContainedFileSync(root, file, encoding = 'utf8') {
+  const rootReal = realpathSync(root);
+  const resolved = path.resolve(file);
+  if (!isPathWithin(root, resolved)) throw new Error(`input escapes report root: ${file}`);
+  const entry = lstatSync(resolved);
+  if (entry.isSymbolicLink() || !entry.isFile()) throw new Error(`input is not a regular file: ${file}`);
+  const fileReal = realpathSync(resolved);
+  if (!isPathWithin(rootReal, fileReal)) throw new Error(`input resolves outside report root: ${file}`);
+  return readFileSync(fileReal, encoding);
+}
+
+export function writeContainedFileSync(root, file, content) {
+  const rootReal = realpathSync(root);
+  const parentReal = ensureContainedDirectorySync(root, path.dirname(file));
+  if (!isPathWithin(rootReal, parentReal)) throw new Error(`output parent resolves outside report root: ${file}`);
+  const parentIdentity = statSync(parentReal);
+  const destination = path.join(parentReal, path.basename(file));
+  if (existsSync(destination)) {
+    const entry = lstatSync(destination);
+    if (entry.isSymbolicLink() || !entry.isFile()) throw new Error(`output is not a regular file: ${file}`);
+  }
+  const temporary = path.join(parentReal, `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
+  let descriptor;
+  try {
+    descriptor = openSync(temporary, 'wx', 0o600);
+    writeFileSync(descriptor, content);
+    fsyncSync(descriptor);
+    closeSync(descriptor);
+    descriptor = undefined;
+    const currentParentReal = realpathSync(path.dirname(file));
+    const currentIdentity = statSync(currentParentReal);
+    if (currentParentReal !== parentReal || currentIdentity.dev !== parentIdentity.dev ||
+        currentIdentity.ino !== parentIdentity.ino || !isPathWithin(rootReal, currentParentReal)) {
+      throw new Error(`output parent changed during write: ${file}`);
+    }
+    renameSync(temporary, destination);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    rmSync(temporary, { force: true });
+  }
+}
+
 export async function writeContainedFile(root, file, content) {
-  await mkdir(path.dirname(file), { recursive: true });
+  ensureContainedDirectorySync(root, path.dirname(file));
   const rootReal = await realpath(root);
   const parentReal = await realpath(path.dirname(file));
   if (!isPathWithin(rootReal, parentReal)) throw new Error(`output parent resolves outside repository: ${file}`);

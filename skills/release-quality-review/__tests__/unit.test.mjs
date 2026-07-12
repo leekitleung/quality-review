@@ -13,8 +13,9 @@
  * 5. parseYamlResult - result.yaml parsing (from production code)
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync } from 'fs';
+import { copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -34,6 +35,7 @@ import {
   redactSensitiveText,
   writeContainedFile,
 } from '../lib/security-utils.mjs';
+import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -72,103 +74,6 @@ function assertTrue(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
-}
-
-// ============================================================================
-// persistPhasePlan (test helper)
-// ============================================================================
-
-function persistPhasePlanTest(roundDir, phase, reviewers, evidence, profileConfig) {
-  mkdirSync(roundDir, { recursive: true });
-  const planFile = join(roundDir, `phase-${phase}-plan.md`);
-  const scaleInfo = evidence.scale || { scale: 'unknown', files: 0, total: 0 };
-
-  const content = `# Phase ${phase} Plan
-
-## Metadata
-
-| Field | Value |
-|-------|-------|
-| Started | ${new Date().toISOString()} |
-| Profile | ${profileConfig.name} |
-| Scale | ${scaleInfo.scale} (${scaleInfo.files} files, ${scaleInfo.total} lines) |
-| Round | ${phase} |
-
-## Input
-
-- **Changed files:** ${evidence.git?.changedFiles?.length || 0}
-- **Git branch:** ${evidence.git?.branch || 'unknown'}
-- **Git commit:** ${evidence.git?.commit || 'unknown'}
-
-## Reviewers
-
-${reviewers.map(r => `- ${r}`).join('\n')}
-
-## Exit Criteria
-
-- [ ] All reviewers >= ${profileConfig.gate?.min_score || 90}
-- [ ] No P0 redlines
-- [ ] Evidence collected for all dimensions
-`;
-
-  writeFileSync(planFile, content);
-  return planFile;
-}
-
-// ============================================================================
-// persistPhaseResult (test helper)
-// ============================================================================
-
-function persistPhaseResultTest(roundDir, phase, scores, gatePassed, failedReviewers) {
-  mkdirSync(roundDir, { recursive: true });
-  const resultFile = join(roundDir, `phase-${phase}-result.md`);
-  const completedAt = new Date().toISOString();
-
-  const scoresTable = Object.entries(scores)
-    .map(([r, s]) => {
-      const scoreVal = typeof s === 'number' ? s : (s.score ?? 'N/A');
-      const pass = typeof scoreVal === 'number' ? scoreVal >= 90 : false;
-      return `| ${r} | ${scoreVal}/100 | ${pass ? '✅ PASS' : '❌ FAIL'} |`;
-    })
-    .join('\n');
-
-  const failedList = failedReviewers.length > 0
-    ? failedReviewers.map(f => `- [ ] **[${f.reviewer}]** Score: ${f.score}/100`).join('\n')
-    : '_None_';
-
-  const content = `# Phase ${phase} Result
-
-## Metadata
-
-| Field | Value |
-|-------|-------|
-| Completed | ${completedAt} |
-| Gate Status | ${gatePassed ? '✅ PASSED' : '❌ FAILED'} |
-| Round | ${phase} |
-
-## Scores
-
-| Reviewer | Score | Status |
-|----------|-------|--------|
-${scoresTable}
-
-## Gate Status
-
-**${gatePassed ? 'ALL GATES PASSED' : 'GATES FAILED'}**
-
-${gatePassed ? '## Ready for Release' : `## Failed Reviewers
-
-${failedList}
-
-## Next Actions
-
-1. Fix the issues identified by failed reviewers
-2. Re-run the review
-`}
-`;
-
-  writeFileSync(resultFile, content);
-  return resultFile;
 }
 
 // ============================================================================
@@ -413,7 +318,7 @@ dimensions:
 test.describe('persistPhasePlan', () => {
   test('creates plan file with correct structure', () => {
     const roundDir = join(TEST_DIR, 'plan-test');
-    const planFile = persistPhasePlanTest(roundDir, 1, ['product-flow', 'destructive-qa'], {
+    const planFile = persistPhasePlan(roundDir, 1, ['product-flow', 'destructive-qa'], {
       git: { changedFiles: ['a.ts', 'b.ts'], branch: 'main', commit: 'abc123' },
       scale: { scale: 'small', files: 2, total: 100 }
     }, { name: 'test', gate: { min_score: 90 } });
@@ -433,7 +338,7 @@ test.describe('persistPhasePlan', () => {
 test.describe('persistPhaseResult', () => {
   test('creates result file with scores', () => {
     const roundDir = join(TEST_DIR, 'result-test');
-    const resultFile = persistPhaseResultTest(roundDir, 1, { 'product-flow': 95, 'destructive-qa': 88 }, false, [{ reviewer: 'destructive-qa', score: 88 }]);
+    const resultFile = persistPhaseResult(roundDir, 1, { 'product-flow': 95, 'destructive-qa': 88 }, false, [{ reviewer: 'destructive-qa', score: 88 }]);
 
     assertTrue(existsSync(resultFile), 'Result file should exist');
     const content = readFileSync(resultFile, 'utf-8');
@@ -444,14 +349,14 @@ test.describe('persistPhaseResult', () => {
 
   test('shows PASSED status when gate passes', () => {
     const roundDir = join(TEST_DIR, 'result-pass');
-    const resultFile = persistPhaseResultTest(roundDir, 1, { 'product-flow': 95 }, true, []);
+    const resultFile = persistPhaseResult(roundDir, 1, { 'product-flow': 95 }, true, []);
     const content = readFileSync(resultFile, 'utf-8');
     assertTrue(content.includes('ALL GATES PASSED'), 'Should show PASSED status');
   });
 
   test('lists failed reviewers', () => {
     const roundDir = join(TEST_DIR, 'result-fail');
-    const resultFile = persistPhaseResultTest(roundDir, 1, { 'product-flow': 95, 'destructive-qa': 75 }, false, [{ reviewer: 'destructive-qa', score: 75 }]);
+    const resultFile = persistPhaseResult(roundDir, 1, { 'product-flow': 95, 'destructive-qa': 75 }, false, [{ reviewer: 'destructive-qa', score: 75 }]);
     const content = readFileSync(resultFile, 'utf-8');
     assertTrue(content.includes('destructive-qa'), 'Should list failed reviewer');
     assertTrue(content.includes('75/100'), 'Should show score');
@@ -690,6 +595,44 @@ test.describe('conditional reviewer triggers', () => {
 });
 
 test.describe('CLI fail-closed integration', () => {
+  test('gate rejects a symlinked report root without writing outside the repository', () => {
+    const sandbox = mkdtempSync(join(tmpdir(), 'quality-review-symlink-'));
+    const clone = join(sandbox, 'repo');
+    const external = join(sandbox, 'external');
+    try {
+      const cloned = spawnSync('git', ['clone', '--quiet', '--no-local', PROJECT_ROOT, clone], { encoding: 'utf8' });
+      assertEqual(cloned.status, 0);
+      copyFileSync(join(SKILL_DIR, 'scripts', 'review-gate.mjs'),
+        join(clone, 'skills/release-quality-review/scripts/review-gate.mjs'));
+      copyFileSync(join(SKILL_DIR, 'lib', 'security-utils.mjs'),
+        join(clone, 'skills/release-quality-review/lib/security-utils.mjs'));
+      mkdirSync(external);
+      rmSync(join(clone, 'quality-reports'), { recursive: true, force: true });
+      symlinkSync(external, join(clone, 'quality-reports'), 'dir');
+      const result = spawnSync('node', [
+        join(clone, 'skills/release-quality-review/scripts/review-gate.mjs'),
+        '--profile', 'quick', '--round', '991', '--no-collect', '--no-validate-evidence',
+      ], { cwd: clone, encoding: 'utf8' });
+      assertTrue(result.status !== 0, 'Expected symlinked report root to fail');
+      assertEqual(existsSync(join(external, 'round-991', 'summary.md')), false,
+        'Gate must not write reports through a symlinked report root');
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  });
+
+  test('gate does not invoke an unpinned network-resolved circular scanner', () => {
+    const source = readFileSync(join(SKILL_DIR, 'scripts', 'review-gate.mjs'), 'utf8');
+    assertEqual(/npx\s+madge/.test(source), false);
+    assertEqual(/madge[^\n]*\|\|\s*echo/.test(source), false);
+  });
+
+  test('release evidence exposes a coverage command and versioned changelog', () => {
+    const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'));
+    assertTrue(typeof manifest.scripts?.coverage === 'string', 'Expected a coverage script');
+    assertEqual(existsSync(join(PROJECT_ROOT, 'CHANGELOG.md')), true, 'Expected CHANGELOG.md');
+  });
+
   test('rejects synthetic auto review', () => {
     const result = spawnSync('node', [
       join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--auto', '--dry-run',
@@ -797,6 +740,32 @@ test.describe('CLI fail-closed integration', () => {
       assertEqual(report.includes('Clean-candidate verification passed'), false);
       assertEqual(report.includes('Goal instruction validation passed'), false);
       assertEqual(report.includes('Build, lint, audit'), false);
+
+      rmSync(finalReport, { force: true });
+      mkdirSync(finalReport);
+      const unwritableFinal = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertTrue(unwritableFinal.status !== 0, 'Expected final report persistence failure');
+      const arbitration = JSON.parse(readFileSync(join(round, 'evidence', 'final-arbitration.json'), 'utf8'));
+      assertTrue(arbitration.status !== 'pass', 'Pass arbitration must not precede durable final artifacts');
+      rmSync(finalReport, { recursive: true, force: true });
+
+      const packetPath = join(round, 'product-flow', 'result.yaml');
+      const packetContent = readFileSync(packetPath, 'utf8');
+      const substitutedPacket = join(TEST_DIR, 'substituted-result.yaml');
+      writeFileSync(substitutedPacket, packetContent);
+      rmSync(packetPath);
+      symlinkSync(substitutedPacket, packetPath);
+      const packetSymlink = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(packetSymlink.status, 1);
+      assertTrue(packetSymlink.stdout.includes('Invalid reviewers detected'), 'Expected symlinked packet rejection');
+      rmSync(packetPath);
+      writeFileSync(packetPath, packetContent);
 
       writeFileSync(join(round, 'evidence', 'automated-checks.json'), `${automatedContent} `);
       const substituted = spawnSync('node', [
