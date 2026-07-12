@@ -1076,8 +1076,8 @@ Run: \`npm run skill:gate -- --round ${roundNumber + 1} --profile release-gate\`
 }
 
 // Generate final report when all gates pass
-function generateFinalReport(scores, evidence = null) {
-  const reportPath = join(REPORT_DIR, 'final-report.md');
+function generateFinalReport(roundDir, scores, evidence = null) {
+  const reportPath = join(roundDir, 'final-report.md');
   const timestamp = new Date().toISOString();
 
   let content = `# 🎉 RELEASE APPROVED\n\n`;
@@ -1657,7 +1657,7 @@ async function runGate() {
       persistFinalArbitration(roundDir, true, 'all conjunctive gates passed');
 
       // Generate final report
-      const finalPath = generateFinalReport(existingScores, evidence);
+      const finalPath = generateFinalReport(roundDir, existingScores, evidence);
       console.log('');
       log.success('🎉 Release is ready!');
       return true;

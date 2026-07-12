@@ -210,6 +210,7 @@ quality-reports/                   # 评审输出
 │   ├── generated-goal.md            # 生成的 Goal 指令
 │   ├── goal-instruction-validation.md # Goal 指令验收结果
 │   ├── evidence-validation.md       # 证据来源验收结果
+│   ├── final-report.md              # 本轮最终批准报告（仅 Gate 通过时）
 │   ├── phase-boundary.json          # Phase 边界标记
 │   ├── product-flow/
 │   │   ├── result.yaml           # 机器可读结果
@@ -217,7 +218,7 @@ quality-reports/                   # 评审输出
 │   │   ├── blockers.md
 │   │   └── improvement-list.md
 │   └── ...
-└── final-report.md
+└── round-NNN/
 ```
 
 ## Claude Code 使用

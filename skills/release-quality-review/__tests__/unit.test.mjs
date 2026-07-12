@@ -751,8 +751,7 @@ test.describe('CLI fail-closed integration', () => {
   test('no-collect rehydrates matching evidence and quick final report avoids agentic claims', () => {
     const roundNumber = TEST_ROUNDS.rehydrate;
     const round = reportRound(roundNumber);
-    const finalReport = join(PROJECT_ROOT, 'quality-reports', 'final-report.md');
-    const previousFinal = existsSync(finalReport) ? readFileSync(finalReport, 'utf8') : null;
+    const finalReport = join(round, 'final-report.md');
     const commit = spawnSync('git', ['rev-parse', '--short=8', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
     const fullCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
     const tree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
@@ -821,8 +820,6 @@ test.describe('CLI fail-closed integration', () => {
       assertTrue(contradictoryResult.stdout.includes('invalid testGate command evidence'), 'Expected pass/nonzero contradiction to fail closed');
     } finally {
       rmSync(round, { recursive: true, force: true });
-      if (previousFinal === null) rmSync(finalReport, { force: true });
-      else writeFileSync(finalReport, previousFinal);
     }
   });
 
