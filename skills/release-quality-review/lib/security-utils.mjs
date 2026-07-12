@@ -68,6 +68,7 @@ export function wrapCandidateCommand(command, args, { allowedRoots, hostHome = u
     '(version 1)',
     '(deny default)',
     '(allow process*)',
+    '(allow signal (target same-sandbox))',
     '(allow sysctl*)',
     '(allow mach*)',
     '(allow network*)',

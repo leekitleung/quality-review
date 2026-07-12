@@ -15,7 +15,7 @@
 
 import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -580,7 +580,7 @@ test.describe('security boundaries', () => {
   });
 
   test('filesystem sandbox denies the host home outside allowed roots', { skip: process.platform !== 'darwin' }, () => {
-    const hostHome = process.env.HOME;
+    const hostHome = userInfo().homedir;
     const script = `const fs=require('node:fs');if(!fs.existsSync('package.json'))process.exit(2);try{fs.readdirSync(${JSON.stringify(hostHome)});process.exit(3)}catch{}`;
     const wrapped = wrapCandidateCommand(process.execPath, ['-e', script], {
       allowedRoots: [PROJECT_ROOT], hostHome,
@@ -737,7 +737,8 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
       assertEqual(result.status, 5, `Expected exit 5, output: ${result.stdout}${result.stderr}`);
       assertTrue(result.stdout.includes('timed out'), 'Expected explicit reviewer timeout diagnostic');
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
-      assertEqual(existsSync(leakMarker), false, 'Reviewer descendants must not survive to perform delayed writes');
+      assertEqual(existsSync(leakMarker), false,
+        `Reviewer descendants must not survive to perform delayed writes: ${result.stdout}${result.stderr}`);
       assertEqual(existsSync(canaryMarker), false, 'Reviewer subprocesses must not inherit ambient secrets');
     } finally {
       rmSync(round, { recursive: true, force: true });
