@@ -1,5 +1,5 @@
 # Result YAML Template
-# Each reviewer MUST output this file to quality-review/round-XXX/<reviewer>/result.yaml
+# Each reviewer MUST output this file to quality-reports/round-XXX/<reviewer>/result.yaml
 
 reviewer: <reviewer-name>
 profile: <quick|default|release-gate|full|agentic-release-gate>
@@ -7,6 +7,9 @@ round: <positive-round-number>
 
 # Overall score (0-100)
 score: <0-100>
+
+# Required machine verdict. Must be exactly pass or fail.
+status: pass|fail
 
 # Dimension scores for weighted calculation
 dimension_scores:
@@ -62,6 +65,6 @@ reviewer_type: <constant|conditional>
 triggered_by: <condition-that-activated-this-reviewer>
 
 # NOTE: Final pass/fail is determined by review-gate.mjs based on:
-# 1. All scores >= threshold (80 for product-polish, 90 for release-gate)
-# 2. No P0/P1 blockers remain (unless explicitly waived)
+# 1. All scores >= 90
+# 2. No P0/P1 blockers remain
 # 3. No redline items present

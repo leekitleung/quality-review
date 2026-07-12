@@ -334,6 +334,7 @@ test.describe('parseYamlResult (production)', () => {
     const result = parseYamlResult(content);
     assertTrue(Array.isArray(result.blockers), 'blockers should be an array');
     assertTrue(Array.isArray(result.redlines), 'redlines should be an array');
+    assertEqual(result.status, 'pass|fail');
     assertTrue(result.redlines.length > 0, 'canonical redline should be retained');
   });
   test('parses inline blocker format', () => {
