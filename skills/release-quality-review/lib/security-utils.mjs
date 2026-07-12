@@ -56,9 +56,17 @@ export function createCandidateSubprocessEnv(source = process.env, isolatedHome)
 }
 
 export function wrapCandidateCommand(command, args, {
-  allowedRoots = [], readOnlyRoots = [], writeRoots = [], hostHome = userInfo().homedir,
+  allowedRoots = [], readOnlyRoots = [], writeRoots = [], hostHome = null,
 } = {}) {
   if (process.platform !== 'darwin') throw new Error(`candidate filesystem sandbox is unavailable on ${process.platform}`);
+  const probe = spawnSync('/usr/bin/sandbox-exec', [
+    '-p', '(version 1) (allow default)', '/usr/bin/true',
+  ], { encoding: 'utf8' });
+  if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout || ''}${probe.stderr || ''}`)) {
+    return { command, args };
+  }
+  if (probe.status !== 0) throw new Error('candidate filesystem sandbox probe failed closed');
+  hostHome ||= userInfo().homedir;
   const writable = [...allowedRoots, ...writeRoots];
   if (readOnlyRoots.length === 0 && writable.length === 0) throw new Error('candidate sandbox roots are required');
   const canonicalize = root => existsSync(root) ? realpathSync(path.resolve(root)) : path.resolve(root);
@@ -82,14 +90,7 @@ export function wrapCandidateCommand(command, args, {
     `(allow file-write* ${[...roots, '/private/tmp', '/private/var/folders', '/dev'].map(root => `(subpath ${quote(root)})`).join(' ')})`,
   ].join(' ');
   if (readable.some(root => root === realpathSync(hostHome))) throw new Error('host home cannot be a candidate sandbox root');
-  const probe = spawnSync('/usr/bin/sandbox-exec', [
-    '-p', '(version 1) (allow default)', '/usr/bin/true',
-  ], { encoding: 'utf8' });
-  if (probe.status === 0) return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, command, ...args] };
-  if (/sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout || ''}${probe.stderr || ''}`)) {
-    return { command, args };
-  }
-  throw new Error('candidate filesystem sandbox probe failed closed');
+  return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, command, ...args] };
 }
 
 export function ensureContainedDirectorySync(root, directory) {
