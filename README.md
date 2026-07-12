@@ -47,11 +47,29 @@ Host workflow:
 For `agentic-release-gate`, use this complete high-assurance workflow:
 
 1. Commit the bounded candidate so evidence can bind an immutable commit/tree.
-2. Run the runner or Gate once with an explicit round and base to create
-   `metadata.json` and `evidence/automated-checks.json`.
-3. Add the required round artifacts: `generated-goal.md`,
-   `goal-instruction-validation.md`, `phase-N-plan.md`, `changes.md`,
-   `diff-summary.md`, `risk.md`, and `handoff.md`.
+2. Run the runner with explicit round/base. It creates `phase-N-plan.md`,
+   reviewer prompts, `metadata.json`, and initial evidence; exit `1` is expected
+   while packets are pending:
+
+```bash
+npm run review -- --profile agentic-release-gate --round 1 --base <base-ref>
+```
+
+3. The host writes `generated-goal.md`, `changes.md`, `diff-summary.md`,
+   `risk.md`, and `handoff.md`. Their contracts are in
+   `skills/release-quality-review/SKILL.md` and
+   `skills/release-quality-review/rubrics/delivery-packet.schema.yaml`.
+   Validate the Goal, then run a collecting Gate pass; the Gate writes
+   `goal-instruction-validation.md`, refreshes `metadata.json` and
+   `evidence/automated-checks.json`, and remains exit `1` while reviews are
+   pending:
+
+```bash
+node skills/release-quality-review/scripts/goal-instruction-gate.mjs \
+  --file quality-reports/round-001/generated-goal.md
+npm run skill:gate -- --profile agentic-release-gate --round 1 --base <base-ref>
+```
+
 4. Persist isolated clean-checkout verification for that same commit:
 
 ```bash
@@ -59,7 +77,13 @@ npm run skill:verify-clean -- --output quality-reports/round-001/evidence/clean-
 ```
 
 5. Launch every resident, triggered conditional, and adversarial reviewer.
-   Each writes its four-file packet under the same round.
+   Each follows its canonical definition in
+   `skills/release-quality-review/reviewers/` and writes `result.yaml`,
+   `score.md`, `blockers.md`, and `improvement-list.md` under the same round.
+   Start `result.yaml` from
+   `skills/release-quality-review/templates/result.yaml`. Every reviewer must
+   score at least `90`; any P0/P1 blocker or redline fails the release, and
+   modified work must be reviewed again.
 6. Validate packets, then run final arbitration against persisted evidence:
 
 ```bash
