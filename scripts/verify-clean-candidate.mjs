@@ -4,9 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { spawnSync } from 'node:child_process';
-import { redactSensitiveText, resolveWithinRoot, writeContainedFile } from '../skills/release-quality-review/lib/security-utils.mjs';
+import {
+  createSubprocessEnv, redactSensitiveText, resolveWithinRoot, writeContainedFile,
+} from '../skills/release-quality-review/lib/security-utils.mjs';
 
 const root = process.cwd();
+const subprocessEnv = createSubprocessEnv();
 const outputIndex = process.argv.indexOf('--output');
 if (outputIndex < 0 || !process.argv[outputIndex + 1]) {
   console.error('Usage: verify-clean-candidate.mjs --output quality-reports/round-NNN/evidence/clean-candidate.json');
@@ -20,7 +23,9 @@ if (!/quality-reports[/\\]round-\d+[/\\]evidence[/\\]clean-candidate\.json$/.tes
 
 function run(command, args, cwd) {
   const startedAt = new Date().toISOString();
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 180000, maxBuffer: 8 * 1024 * 1024 });
+  const result = spawnSync(command, args, {
+    cwd, encoding: 'utf8', timeout: 180000, maxBuffer: 8 * 1024 * 1024, env: subprocessEnv,
+  });
   const raw = `${result.stdout || ''}${result.stderr || ''}`;
   const redacted = redactSensitiveText(raw);
   return {

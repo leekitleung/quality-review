@@ -17,9 +17,9 @@
  */
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
-import { join, dirname, resolve, extname } from 'path';
+import { join, dirname, resolve, extname, relative } from 'path';
 import { fileURLToPath } from 'url';
-import { execSync, execFileSync } from 'child_process';
+import { execSync as nodeExecSync, execFileSync as nodeExecFileSync } from 'child_process';
 import { readFile } from 'fs/promises';
 import { createHash } from 'node:crypto';
 import {
@@ -30,7 +30,7 @@ import {
   matchesTriggerConditions,
 } from '../lib/review-utils.mjs';
 import {
-  containsSensitiveText, ensureContainedDirectorySync, readContainedFileSync,
+  containsSensitiveText, createSubprocessEnv, ensureContainedDirectorySync, readContainedFileSync,
   redactSensitiveText, writeContainedFile, writeContainedFileSync,
 } from '../lib/security-utils.mjs';
 
@@ -39,6 +39,15 @@ const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
+const SUBPROCESS_ENV = createSubprocessEnv();
+
+function execSync(command, options = {}) {
+  return nodeExecSync(command, { ...options, env: SUBPROCESS_ENV });
+}
+
+function execFileSync(file, args, options = {}) {
+  return nodeExecFileSync(file, args, { ...options, env: SUBPROCESS_ENV });
+}
 
 // ANSI colors
 const colors = {
@@ -929,6 +938,47 @@ function reviewerPacketPassed(result, minScore = 90) {
     (result.blockers?.length || 0) === 0;
 }
 
+function scanRoundArtifacts(roundDir) {
+  const findings = [];
+  const queue = [roundDir];
+  let fileCount = 0;
+  let totalBytes = 0;
+  while (queue.length > 0) {
+    const directory = queue.shift();
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const file = join(directory, entry.name);
+      const label = relative(roundDir, file);
+      if (entry.isSymbolicLink()) {
+        findings.push(`${label}: symbolic links are not allowed`);
+        continue;
+      }
+      if (entry.isDirectory()) {
+        queue.push(file);
+        continue;
+      }
+      if (!entry.isFile()) {
+        findings.push(`${label}: unsupported artifact type`);
+        continue;
+      }
+      fileCount++;
+      const size = statSync(file).size;
+      totalBytes += size;
+      if (fileCount > 500 || totalBytes > 20 * 1024 * 1024 || size > 2 * 1024 * 1024) {
+        findings.push(`${label}: artifact scan limit exceeded`);
+        continue;
+      }
+      try {
+        if (containsSensitiveText(readContainedFileSync(roundDir, file, 'utf8'))) {
+          findings.push(`${label}: sensitive text detected`);
+        }
+      } catch (error) {
+        findings.push(`${label}: artifact scan failed (${error.message})`);
+      }
+    }
+  }
+  return findings;
+}
+
 // Generate summary report
 function generateSummary(roundDir, profile, scores, allPassed, evidence = null) {
   const reportPath = join(roundDir, 'summary.md');
@@ -1032,7 +1082,7 @@ function generateSummary(roundDir, profile, scores, allPassed, evidence = null) 
   if (allBlockers.length > 0) {
     content += `## Blockers Detail\n\n`;
     for (const { reviewer, blocker } of allBlockers) {
-      content += `- **${reviewer}:** ${blocker}\n`;
+      content += `- **${reviewer}:** ${redactEvidence(String(blocker))}\n`;
     }
     content += `\n`;
   }
@@ -1055,7 +1105,7 @@ function generateSummary(roundDir, profile, scores, allPassed, evidence = null) 
     if (allBlockers.length > 0) {
       content += `**Top priorities to fix:**\n\n`;
       allBlockers.slice(0, 5).forEach(({ reviewer, blocker }, i) => {
-        content += `${i + 1}. [${reviewer}] ${blocker}\n`;
+        content += `${i + 1}. [${reviewer}] ${redactEvidence(String(blocker))}\n`;
       });
     }
   }
@@ -1676,10 +1726,13 @@ async function runGate() {
         return false;
       }
     }) && cleanCandidateEvidenceValid);
+  const sensitiveArtifactFindings = allHaveScores ? scanRoundArtifacts(roundDir) : [];
+  const generatedArtifactsSafe = sensitiveArtifactFindings.length === 0;
   const arbitrationEligible = !singleReviewer && excludeReviewers.length === 0;
   const gatePassed = allPassed && !hasRedlines && evidenceValidationPassed &&
                      (!checkGoalMode || goalModeViolations.length === 0) &&
-                     goalInstructionValid && artifactCompletenessPassed && automatedChecksPassed && arbitrationEligible;
+                     goalInstructionValid && artifactCompletenessPassed && generatedArtifactsSafe &&
+                     automatedChecksPassed && arbitrationEligible;
 
   // Summary
   log.title('GATE STATUS');
@@ -1754,6 +1807,9 @@ async function runGate() {
       }
       if (!artifactCompletenessPassed) {
         log.error('Required agentic Goal, evidence, risk, and handoff artifacts are incomplete');
+      }
+      if (!generatedArtifactsSafe) {
+        log.error(`Generated artifact security scan failed: ${sensitiveArtifactFindings.join(', ')}`);
       }
       generateSummary(roundDir, profile, existingScores, false, evidence);
       persistFinalArbitration(roundDir, false, 'one or more release gates failed');

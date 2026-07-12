@@ -32,6 +32,7 @@ import {
   resolveWithinRoot,
   shouldIncludeCanonicalFile,
   containsSensitiveText,
+  createSubprocessEnv,
   redactSensitiveText,
   writeContainedFile,
 } from '../lib/security-utils.mjs';
@@ -522,6 +523,20 @@ test.describe('security boundaries', () => {
     }
   });
 
+  test('builds a least-privilege subprocess environment', () => {
+    const env = createSubprocessEnv({
+      PATH: '/usr/bin', HOME: '/tmp/home', LANG: 'en_US.UTF-8', NODE_TEST_CONTEXT: 'child-v8',
+      OPENAI_API_KEY: ['sk', 'proj-abcdefghijklmnopqrstuvwxyz'].join('-'),
+      AMBIENT_SECRET_CANARY: 'must-not-cross',
+    });
+    assertEqual(env.PATH, '/usr/bin');
+    assertEqual(env.HOME, '/tmp/home');
+    assertEqual(env.LANG, 'en_US.UTF-8');
+    assertEqual(env.NODE_TEST_CONTEXT, 'child-v8');
+    assertEqual(env.OPENAI_API_KEY, undefined);
+    assertEqual(env.AMBIENT_SECRET_CANARY, undefined);
+  });
+
   test('rejects a repository output parent symlinked outside the repository', async () => {
     const link = join(TEST_DIR, 'outside-link');
     symlinkSync('/tmp', link, 'dir');
@@ -638,13 +653,16 @@ test.describe('CLI fail-closed integration', () => {
     const round = reportRound(TEST_ROUNDS.parallelTimeout);
     const fakeBin = join(TEST_DIR, 'fake-bin');
     const leakMarker = join(TEST_DIR, 'reviewer-descendant-leak');
+    const canaryMarker = join(TEST_DIR, 'reviewer-env-canary-leak');
     try {
       mkdirSync(fakeBin);
       const fakeCodex = join(fakeBin, 'codex');
+      const descendantCode = `process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(leakMarker)}, 'leaked'), 500)`;
       writeFileSync(fakeCodex, `#!/usr/bin/env node
+if (process.env.AMBIENT_SECRET_CANARY) process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(canaryMarker)}, 'leaked');
 if (process.argv.includes('--version')) process.exit(0);
 process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e',
-  "process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(process.env.LEAK_MARKER, 'leaked'), 500)"
+  ${JSON.stringify(descendantCode)}
 ], { stdio: 'ignore', env: process.env }).unref();
 setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
 `);
@@ -661,13 +679,14 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
           PATH: `${fakeBin}:${process.env.PATH}`,
           RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '100',
           RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
-          LEAK_MARKER: leakMarker,
+          AMBIENT_SECRET_CANARY: 'ambient-secret-must-not-cross',
         },
       });
       assertEqual(result.status, 5, `Expected exit 5, output: ${result.stdout}${result.stderr}`);
       assertTrue(result.stdout.includes('timed out'), 'Expected explicit reviewer timeout diagnostic');
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
       assertEqual(existsSync(leakMarker), false, 'Reviewer descendants must not survive to perform delayed writes');
+      assertEqual(existsSync(canaryMarker), false, 'Reviewer subprocesses must not inherit ambient secrets');
     } finally {
       rmSync(round, { recursive: true, force: true });
     }
@@ -806,6 +825,20 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
       assertTrue(packetSymlink.stdout.includes('Invalid reviewers detected'), 'Expected symlinked packet rejection');
       rmSync(packetPath);
       writeFileSync(packetPath, packetContent);
+
+      const improvementPath = join(round, 'product-flow', 'improvement-list.md');
+      const improvementContent = readFileSync(improvementPath, 'utf8');
+      const secretCanary = ['ghp', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ1234'].join('_');
+      writeFileSync(improvementPath, `${improvementContent}\n${secretCanary}\n`);
+      const sensitivePacket = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(sensitivePacket.status, 1);
+      assertTrue(sensitivePacket.stdout.includes('Generated artifact security scan failed'),
+        'Expected sensitive reviewer packet rejection');
+      assertEqual(sensitivePacket.stdout.includes(secretCanary), false, 'Gate diagnostics must not echo detected secrets');
+      writeFileSync(improvementPath, improvementContent);
 
       writeFileSync(join(round, 'evidence', 'automated-checks.json'), `${automatedContent} `);
       const substituted = spawnSync('node', [

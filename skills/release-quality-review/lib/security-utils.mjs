@@ -26,6 +26,22 @@ export function shouldIncludeCanonicalFile(name) {
   return name !== '.DS_Store';
 }
 
+const SUBPROCESS_ENV_ALLOWLIST = new Set([
+  'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LANGUAGE',
+  'LC_ALL', 'LC_CTYPE', 'TERM', 'COLORTERM', 'TERM_PROGRAM', 'TZ', 'CI', 'NO_COLOR',
+  'FORCE_COLOR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'SYSTEMROOT', 'WINDIR',
+  'COMSPEC', 'PATHEXT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'NODE_TEST_CONTEXT',
+  'NODE_V8_COVERAGE',
+]);
+
+export function createSubprocessEnv(source = process.env) {
+  const result = {};
+  for (const [key, value] of Object.entries(source || {})) {
+    if (typeof value === 'string' && SUBPROCESS_ENV_ALLOWLIST.has(key.toUpperCase())) result[key] = value;
+  }
+  return result;
+}
+
 export function ensureContainedDirectorySync(root, directory) {
   const rootPath = path.resolve(root);
   const target = path.resolve(directory);
