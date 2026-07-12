@@ -13,7 +13,7 @@
  * 5. parseYamlResult - result.yaml parsing (from production code)
  */
 
-import { copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync } from 'fs';
+import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'url';
@@ -48,6 +48,7 @@ const TEST_ROUNDS = {
   runner: ROUND_BASE + 2,
   rehydrate: ROUND_BASE + 3,
   missingEvidence: ROUND_BASE + 4,
+  parallelTimeout: ROUND_BASE + 5,
 };
 const reportRound = round => join(PROJECT_ROOT, 'quality-reports', `round-${String(round).padStart(3, '0')}`);
 
@@ -631,6 +632,38 @@ test.describe('CLI fail-closed integration', () => {
     const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'));
     assertTrue(typeof manifest.scripts?.coverage === 'string', 'Expected a coverage script');
     assertEqual(existsSync(join(PROJECT_ROOT, 'CHANGELOG.md')), true, 'Expected CHANGELOG.md');
+  });
+
+  test('parallel runner terminates hung reviewers and exits with agent failure', () => {
+    const round = reportRound(TEST_ROUNDS.parallelTimeout);
+    const fakeBin = join(TEST_DIR, 'fake-bin');
+    try {
+      mkdirSync(fakeBin);
+      const fakeCodex = join(fakeBin, 'codex');
+      writeFileSync(fakeCodex, `#!/usr/bin/env node
+if (process.argv.includes('--version')) process.exit(0);
+setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
+`);
+      chmodSync(fakeCodex, 0o755);
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel',
+        '--round', String(TEST_ROUNDS.parallelTimeout), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT,
+        encoding: 'utf8',
+        timeout: 3000,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '100',
+          RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+        },
+      });
+      assertEqual(result.status, 5, `Expected exit 5, output: ${result.stdout}${result.stderr}`);
+      assertTrue(result.stdout.includes('timed out'), 'Expected explicit reviewer timeout diagnostic');
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
   });
 
   test('rejects synthetic auto review', () => {

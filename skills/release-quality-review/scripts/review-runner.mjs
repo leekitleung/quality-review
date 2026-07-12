@@ -30,6 +30,14 @@ const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
+const REVIEWER_TIMEOUT_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_TIMEOUT_MS, 15 * 60 * 1000);
+const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS, 5000);
+
+function parsePositiveDuration(value, fallback) {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 // ANSI colors
 const c = {
@@ -737,6 +745,13 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       process.exit(5);
     }
 
+    const activeReviewers = new Map();
+    let parallelAbortReason = null;
+    const abortAll = reason => {
+      if (parallelAbortReason) return;
+      parallelAbortReason = reason;
+      for (const abort of activeReviewers.values()) abort(reason);
+    };
     const parallelResults = await Promise.all(allReviewers.map(reviewer => new Promise(resolve => {
       const reviewerDir = join(roundDir, reviewer);
       ensureContainedDirectorySync(roundDir, reviewerDir);
@@ -751,23 +766,55 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       let diagnostic = '';
+      let settled = false;
+      let aborted = false;
+      let forceTimer = null;
       const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
       proc.stdout.on('data', retainTail);
       proc.stderr.on('data', retainTail);
-      proc.on('close', code => {
+      const finish = (code, eventStatus = null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutTimer);
+        if (forceTimer) clearTimeout(forceTimer);
+        activeReviewers.delete(reviewer);
         const complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
           .every(file => existsSync(join(reviewerDir, file)));
-        const status = code === 0 && complete ? 'completed' : 'failed';
+        const status = eventStatus || (!aborted && code === 0 && complete ? 'completed' : 'failed');
         console.log(`  ${status === 'completed' ? c.green + '✓' : c.red + '✗'}${c.reset} ${reviewer}: ${status}`);
         if (status === 'failed' && diagnostic) console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
         resolve({ name: reviewer, status });
-      });
+      };
+      const abort = reason => {
+        if (settled || aborted) return;
+        aborted = true;
+        diagnostic = `${diagnostic}\n${reason}`.slice(-4000);
+        proc.kill('SIGTERM');
+        forceTimer = setTimeout(() => {
+          if (settled) return;
+          proc.kill('SIGKILL');
+          forceTimer = setTimeout(() => finish(null, 'failed'), 100);
+        }, REVIEWER_KILL_GRACE_MS);
+      };
+      activeReviewers.set(reviewer, abort);
+      const timeoutTimer = setTimeout(() => {
+        const reason = `${reviewer} timed out after ${REVIEWER_TIMEOUT_MS}ms`;
+        console.log(`  ${c.red}✗${c.reset} ${reason}`);
+        abortAll(reason);
+      }, REVIEWER_TIMEOUT_MS);
+      proc.on('close', code => finish(code));
       proc.on('error', error => {
         console.log(`  ${c.red}✗${c.reset} ${reviewer}: ${error.message}`);
-        resolve({ name: reviewer, status: 'error' });
+        finish(null, 'error');
+        abortAll(`${reviewer} process error: ${error.message}`);
       });
     })));
     results.push(...parallelResults);
+    if (parallelResults.some(result => result.status !== 'completed')) {
+      const error = new Error(parallelAbortReason || 'one or more reviewer agents failed');
+      error.exitCode = 5;
+      throw error;
+    }
   } else {
     for (const reviewer of allReviewers) {
       const reviewerDir = join(roundDir, reviewer);
@@ -879,5 +926,5 @@ async function main() {
 
 main().catch(err => {
   console.error(`\n${c.red}Error:${c.reset}`, err.message);
-  process.exit(1);
+  process.exit(err.exitCode || 1);
 });
