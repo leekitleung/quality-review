@@ -329,7 +329,7 @@ test.describe('persistPhasePlan', () => {
     const roundDir = join(TEST_DIR, 'plan-test');
     const planFile = persistPhasePlan(roundDir, 1, ['product-flow', 'destructive-qa'], {
       git: { changedFiles: ['a.ts', 'b.ts'], branch: 'main', commit: 'abc123' },
-      scale: { scale: 'small', files: 2, total: 100 }
+      scale: { scale: 'small', fileCount: 2, totalLines: 100 }
     }, { name: 'test', gate: { min_score: 90 } });
 
     assertTrue(existsSync(planFile), 'Plan file should exist');
@@ -337,6 +337,7 @@ test.describe('persistPhasePlan', () => {
     assertTrue(content.includes('# Phase 1 Plan'), 'Should contain Phase 1 Plan header');
     assertTrue(content.includes('product-flow'), 'Should list product-flow reviewer');
     assertTrue(content.includes('small'), 'Should include scale info');
+    assertTrue(content.includes('2 files, 100 lines'), 'Should include production scale counts');
   });
 });
 
@@ -771,6 +772,7 @@ test.describe('CLI fail-closed integration', () => {
     assertTrue(clean >= 0 && runner >= 0 && clean < runner, 'Clean evidence must precede the collecting runner');
     const workflow = readFileSync(join(PROJECT_ROOT, '.github', 'workflows', 'skill-quality.yml'), 'utf8');
     assertTrue(workflow.includes('runs-on: macos-latest'), 'Sandbox validation requires a Darwin CI runner');
+    assertTrue(workflow.includes('persist-credentials: false'), 'CI checkout credentials must not persist');
   });
 
   test('parallel runner terminates hung reviewers and exits with agent failure', () => {

@@ -23,7 +23,9 @@ export function getReviewerFocus(reviewerName) {
 export function persistPhasePlan(roundDir, phase, reviewers, evidence, profileConfig) {
   ensureContainedDirectorySync(dirname(roundDir), roundDir);
   const planFile = join(roundDir, `phase-${phase}-plan.md`);
-  const scaleInfo = evidence.scale || { scale: 'unknown', files: 0, total: 0 };
+  const scaleInfo = evidence.scale || { scale: 'unknown', fileCount: 0, totalLines: 0 };
+  const fileCount = scaleInfo.fileCount ?? scaleInfo.files ?? 0;
+  const totalLines = scaleInfo.totalLines ?? scaleInfo.total ?? 0;
   const content = `# Phase ${phase} Plan
 
 ## Metadata
@@ -32,7 +34,7 @@ export function persistPhasePlan(roundDir, phase, reviewers, evidence, profileCo
 |-------|-------|
 | Started | ${new Date().toISOString()} |
 | Profile | ${profileConfig.name} |
-| Scale | ${scaleInfo.scale} (${scaleInfo.files} files, ${scaleInfo.total} lines) |
+| Scale | ${scaleInfo.scale} (${fileCount} files, ${totalLines} lines) |
 | Round | ${phase} |
 
 ## Input
