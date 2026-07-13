@@ -50,14 +50,58 @@ export function parseScore(scoreContent) {
   return null;
 }
 
-const VERIFICATION_COMMAND = /^(?:node(?:\.exe)?\s+(?!-e(?:\s|$)|--eval(?:\s|$)|-p(?:\s|$))\S+|(?:tsc|eslint|jest|vitest|playwright|cypress|mocha|ava|nyc|pytest|ruff|mypy)\b|(?:go|cargo|swift|deno|bun|dotnet)\s+(?:test|check|build|lint|vet|clippy)\b|(?:make|cmake|ninja|mvn|gradle|xcodebuild)\b)/i;
+function verificationKind(name) {
+  if (/^test(?::|$)/i.test(name)) return 'test';
+  if (/coverage/i.test(name)) return 'coverage';
+  if (/^(?:typecheck|lint|build)(?::|$)/i.test(name)) return 'code';
+  return 'generic';
+}
+
+function verificationCapabilities(command) {
+  const trimmed = String(command || '').trim();
+  const words = trimmed.split(/\s+/);
+  const executable = words[0]?.toLowerCase();
+  const capabilities = new Set();
+
+  if (/^node(?:\.exe)?$/.test(executable)) {
+    const args = words.slice(1);
+    if (args.some(arg => arg === '--test' || arg.startsWith('--test='))) capabilities.add('test');
+    if (args.some(arg => arg === '--experimental-test-coverage' || arg.startsWith('--test-coverage-'))) {
+      capabilities.add('coverage');
+    }
+    if (args[0] === '--check') capabilities.add('code');
+    if (args[0] === 'scripts/sync-skills.mjs' && args[1] === 'check') capabilities.add('generic');
+    if (args[0] === 'skills/release-quality-review/scripts/review-gate.mjs' && args.includes('--dry-run')) {
+      capabilities.add('generic');
+    }
+    return capabilities;
+  }
+
+  if (/^(?:jest|vitest|playwright|cypress|mocha|ava|pytest)$/.test(executable)) {
+    capabilities.add('test');
+    if (words.some(word => /^--coverage(?:=|$)|^--cov(?:=|$)/.test(word))) capabilities.add('coverage');
+  } else if (/^(?:nyc|c8)$/.test(executable)) {
+    capabilities.add('test');
+    capabilities.add('coverage');
+  } else if (/^(?:tsc|eslint|ruff|mypy)$/.test(executable)) {
+    capabilities.add('code');
+  } else if (/^(?:go|cargo|swift|deno|bun|dotnet)$/.test(executable) &&
+      /^(?:test|check|build|lint|vet|clippy)$/.test(words[1] || '')) {
+    const action = words[1];
+    capabilities.add(action === 'test' ? 'test' : 'code');
+    if (action === 'test' && words.some(word => /^-cover|^--coverage/.test(word))) capabilities.add('coverage');
+  } else if (/^(?:make|cmake|ninja|mvn|gradle|xcodebuild)$/.test(executable)) {
+    capabilities.add('code');
+  }
+  return capabilities;
+}
 
 function scriptNameFromCommand(command) {
   const match = String(command || '').trim().match(/^(?:npm|pnpm|yarn)\s+(?:run\s+)?([A-Za-z0-9:._-]+)(?:\s|$)/);
   return match?.[1] || null;
 }
 
-function hasMeaningfulScript(name, scripts, visiting = new Set()) {
+function hasMeaningfulScript(name, scripts, requiredKind = verificationKind(name), visiting = new Set()) {
   if (!name || visiting.has(name) || typeof scripts?.[name] !== 'string') return false;
   const nextVisiting = new Set(visiting).add(name);
   // A successful left side short-circuits every later `||` branch. Only the
@@ -67,8 +111,9 @@ function hasMeaningfulScript(name, scripts, visiting = new Set()) {
   return segments.some(segment => {
     const trimmed = segment.trim();
     const nested = scriptNameFromCommand(trimmed);
-    if (nested) return hasMeaningfulScript(nested, scripts, nextVisiting);
-    return VERIFICATION_COMMAND.test(trimmed);
+    if (nested) return hasMeaningfulScript(nested, scripts, requiredKind, nextVisiting);
+    const capabilities = verificationCapabilities(trimmed);
+    return requiredKind === 'generic' ? capabilities.size > 0 : capabilities.has(requiredKind);
   });
 }
 

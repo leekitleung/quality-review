@@ -200,6 +200,23 @@ test.describe('verification script integrity', () => {
     const commands = ['npm test', 'npm run coverage', 'npm run lint', 'npm run build'];
     assertEqual(findTrivialVerificationScripts(scripts, commands).length, 4);
   });
+
+  test('rejects arbitrary Node programs, inline evaluation, and mismatched runner capabilities', () => {
+    const commands = ['npm test', 'npm run coverage', 'npm run typecheck', 'npm run lint', 'npm run build'];
+    for (const nodeCommand of [
+      'node fake-verifier.mjs', 'node /dev/null', 'node --eval="0"', 'node -e0',
+      'node --print="0"', 'node -p0', 'node --input-type=module -e 0',
+    ]) {
+      const scripts = Object.fromEntries(['test', 'coverage', 'typecheck', 'lint', 'build']
+        .map(name => [name, nodeCommand]));
+      assertEqual(findTrivialVerificationScripts(scripts, commands).length, 5, nodeCommand);
+    }
+
+    assertEqual(findTrivialVerificationScripts({
+      test: 'node --check app.mjs',
+      coverage: 'node --test test.mjs',
+    }, ['npm test', 'npm run coverage']).length, 2);
+  });
 });
 
 // ============================================================================
@@ -1096,6 +1113,46 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     assertEqual(cleanEvidence.commands[1].status, 'fail');
   });
 
+  test('Gate and clean verifier reject candidate-authored Node summary printers', () => {
+    const repository = join(TEST_DIR, 'fake-node-verifier-repository');
+    const clone = spawnSync('git', ['clone', '--quiet', '--no-local', PROJECT_ROOT, repository], {
+      cwd: TEST_DIR, encoding: 'utf8', timeout: 30000,
+    });
+    assertEqual(clone.status, 0, `Expected fixture clone, output: ${clone.stdout}${clone.stderr}`);
+    const manifestPath = join(repository, 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    for (const name of [
+      'test', 'coverage', 'typecheck', 'build', 'lint', 'skill:check-drift', 'skill:check', 'skill:verify',
+    ]) manifest.scripts[name] = 'node fake-verifier.mjs';
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    writeFileSync(join(repository, 'fake-verifier.mjs'),
+      "console.log('# tests 1\\n# fail 0\\n# start of coverage report');\n");
+    spawnSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository, encoding: 'utf8' });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: repository, encoding: 'utf8' });
+    spawnSync('git', ['add', 'package.json', 'fake-verifier.mjs'], { cwd: repository, encoding: 'utf8' });
+    const commit = spawnSync('git', ['commit', '--quiet', '-m', 'forge Node verification output'], {
+      cwd: repository, encoding: 'utf8',
+    });
+    assertEqual(commit.status, 0, `Expected fixture commit, output: ${commit.stdout}${commit.stderr}`);
+    const fixtureBase = spawnSync('git', ['rev-parse', 'HEAD^'], { cwd: repository, encoding: 'utf8' }).stdout.trim();
+
+    const gate = spawnSync(process.execPath, [
+      join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '1', '--base', fixtureBase,
+    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    assertEqual(gate.status, 1, `Expected forged Node Gate rejection, output: ${gate.stdout}${gate.stderr}`);
+    assertTrue(gate.stdout.includes('trivial or missing verification scripts'), 'Gate must reject forged Node scripts');
+
+    const outputArg = join('quality-reports', 'round-002', 'evidence', 'clean-candidate.json');
+    const output = join(repository, outputArg);
+    const clean = spawnSync(process.execPath, [
+      join(PROJECT_ROOT, 'scripts', 'verify-clean-candidate.mjs'), '--output', outputArg,
+    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    assertEqual(clean.status, 1, `Expected forged Node clean-verifier rejection, output: ${clean.stdout}${clean.stderr}`);
+    const cleanEvidence = JSON.parse(readFileSync(output, 'utf8'));
+    assertEqual(cleanEvidence.commands[1].id, 'script-integrity');
+    assertEqual(cleanEvidence.commands[1].status, 'fail');
+  });
+
   test('keeps blockers.md veto even when result.yaml claims pass', () => {
     const roundNumber = TEST_ROUNDS.veto;
     const round = reportRound(roundNumber);
@@ -1305,9 +1362,11 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       for (const script of ['test', 'typecheck', 'build', 'lint', 'coverage']) {
         packageJson.scripts[script] = 'node --check skills/release-quality-review/scripts/review-gate.mjs';
       }
-      packageJson.scripts.test = 'node fixture-test-runner.mjs';
+      packageJson.scripts.test = 'node --test fixture-test-runner.mjs';
+      packageJson.scripts.coverage = 'node --experimental-test-coverage --test fixture-test-runner.mjs';
       writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
-      writeFileSync(join(cloneRoot, 'fixture-test-runner.mjs'), "console.log('# tests 1\\n# fail 0');\n");
+      writeFileSync(join(cloneRoot, 'fixture-test-runner.mjs'),
+        "import test from 'node:test';\ntest('fixture runner executes', () => {});\n");
       spawnSync('git', ['add', 'package.json', 'fixture-test-runner.mjs', 'skills/release-quality-review'], { cwd: cloneRoot });
       const fixtureCommit = spawnSync('git', ['commit', '-m', 'test: create fast gate fixture'], {
         cwd: cloneRoot, encoding: 'utf8', timeout: 10000,
@@ -1326,10 +1385,13 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
       }
 
+      const fixtureEnv = { ...process.env };
+      delete fixtureEnv.NODE_TEST_CONTEXT;
+
       const firstGate = spawnSync('node', [
         join(cloneRoot, 'skills/release-quality-review/scripts/review-gate.mjs'), '--profile', 'quick',
         '--round', String(roundNumber), '--base', diffBase, '--no-validate-evidence',
-      ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000 });
+      ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000, env: fixtureEnv });
       assertEqual(firstGate.status, 0, `Expected candidate A to pass, output: ${firstGate.stdout}${firstGate.stderr}`);
       const arbitration = JSON.parse(readFileSync(join(round, 'evidence', 'final-arbitration.json'), 'utf8'));
       assertEqual(arbitration.candidate_commit, candidateCommit);
@@ -1346,7 +1408,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       const staleGate = spawnSync('node', [
         join(cloneRoot, 'skills/release-quality-review/scripts/review-gate.mjs'), '--profile', 'quick',
         '--round', String(roundNumber), '--base', diffBase, '--no-validate-evidence',
-      ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000 });
+      ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000, env: fixtureEnv });
       assertEqual(staleGate.status, 1, `Expected stale packets to fail, output: ${staleGate.stdout}${staleGate.stderr}`);
       assertTrue(staleGate.stdout.includes('candidate identity'), 'Expected explicit candidate identity diagnostic');
     } finally {
