@@ -28,6 +28,7 @@ import {
   parseYamlProfile,
   matchesTriggerConditions,
   findTrivialVerificationScripts,
+  hasConcreteVerificationOutput,
   CLEAN_CANDIDATE_COMMANDS,
   ROLLBACK_COMMANDS,
   validateCleanCandidateEvidence,
@@ -178,6 +179,18 @@ test.describe('verification script integrity', () => {
     };
     const commands = ['npm test', 'npm run coverage', 'npm run lint', 'npm run build'];
     assertEqual(findTrivialVerificationScripts(scripts, commands).length, 4);
+  });
+
+  test('rejects equivalent wrappers and requires concrete test output', () => {
+    const scripts = {
+      test: 'sh -c true', coverage: 'command true', lint: 'node -e "0"', build: 'node -e "process.exitCode=0"',
+    };
+    const commands = ['npm test', 'npm run coverage', 'npm run lint', 'npm run build'];
+    assertEqual(findTrivialVerificationScripts(scripts, commands).length, 4);
+    assertEqual(hasConcreteVerificationOutput('test', '# tests 0\n# fail 0'), false);
+    assertEqual(hasConcreteVerificationOutput('test', '# tests 76\n# fail 0'), true);
+    assertEqual(hasConcreteVerificationOutput('coverage', 'command exited 0'), false);
+    assertEqual(hasConcreteVerificationOutput('coverage', '# start of coverage report'), true);
   });
 });
 
@@ -619,10 +632,14 @@ test.describe('security boundaries', () => {
       schema_version: 1, candidate_commit: 'commit', candidate_tree: 'tree',
       isolated_commit: 'commit', isolated_tree: 'tree', source_status: '', final_source_status: '',
       isolated_checkout: true, status: 'pass', exit_code: 0,
-      commands: CLEAN_CANDIDATE_COMMANDS.map(([id, command]) => ({
-        id, command, started_at: now, finished_at: now, exit_code: 0, status: 'pass',
-        output: '', output_bytes: 0, truncated: false,
-      })),
+      commands: CLEAN_CANDIDATE_COMMANDS.map(([id, command]) => {
+        const output = id === 'test' ? '# tests 1\n# fail 0\n'
+          : id === 'coverage' ? '# start of coverage report\n' : '';
+        return {
+          id, command, started_at: now, finished_at: now, exit_code: 0, status: 'pass',
+          output, output_bytes: Buffer.byteLength(output), truncated: false,
+        };
+      }),
     };
     assertEqual(validateCleanCandidateEvidence(clean, 'commit', 'tree'), true);
     assertEqual(validateCleanCandidateEvidence({ ...clean, candidate_tree: 'forged' }, 'commit', 'tree'), false);
@@ -1039,10 +1056,10 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     assertEqual(clone.status, 0, `Expected fixture clone, output: ${clone.stdout}${clone.stderr}`);
     const manifestPath = join(repository, 'package.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-    manifest.scripts.test = 'true';
-    manifest.scripts.coverage = 'echo 100% || npm run test:skill';
+    manifest.scripts.test = 'sh -c true';
+    manifest.scripts.coverage = 'command true';
     manifest.scripts.typecheck = 'true || npm run test:skill';
-    manifest.scripts.build = 'node -e "process.exit(0)" || npm run test:skill';
+    manifest.scripts.build = 'node -e "process.exitCode=0"';
     manifest.scripts.lint = 'exit 0 || npm run test:skill';
     for (const name of ['skill:check-drift', 'skill:check', 'skill:verify']) manifest.scripts[name] = 'true';
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -1139,7 +1156,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         command, started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
         status: statusValue, exit_code: exitCode, output, output_bytes: Buffer.byteLength(output), truncated: false,
       });
-      const testCheck = commandRecord('npm test', 'pass', 0, 'passed');
+      const testCheck = commandRecord('npm test', 'pass', 0, '# tests 1\n# fail 0');
       const typecheckCheck = commandRecord('npm run typecheck', 'pass', 0, 'passed');
       const checkoutIdentity = { commit: fullCommit, tree, status: '' };
       const automatedContent = JSON.stringify({
@@ -1280,8 +1297,10 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       for (const script of ['test', 'typecheck', 'build', 'lint', 'coverage']) {
         packageJson.scripts[script] = 'node --check skills/release-quality-review/scripts/review-gate.mjs';
       }
+      packageJson.scripts.test = 'node fixture-test-runner.mjs';
       writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
-      spawnSync('git', ['add', 'package.json', 'skills/release-quality-review'], { cwd: cloneRoot });
+      writeFileSync(join(cloneRoot, 'fixture-test-runner.mjs'), "console.log('# tests 1\\n# fail 0');\n");
+      spawnSync('git', ['add', 'package.json', 'fixture-test-runner.mjs', 'skills/release-quality-review'], { cwd: cloneRoot });
       const fixtureCommit = spawnSync('git', ['commit', '-m', 'test: create fast gate fixture'], {
         cwd: cloneRoot, encoding: 'utf8', timeout: 10000,
       });

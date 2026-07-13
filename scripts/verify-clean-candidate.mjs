@@ -8,7 +8,9 @@ import {
   createCandidateSubprocessEnv, createSubprocessEnv, redactSensitiveText, resolveWithinRoot, writeContainedFile,
   wrapCandidateCommand,
 } from '../skills/release-quality-review/lib/security-utils.mjs';
-import { findTrivialVerificationScripts } from '../skills/release-quality-review/lib/review-utils.mjs';
+import {
+  findTrivialVerificationScripts, hasConcreteVerificationOutput,
+} from '../skills/release-quality-review/lib/review-utils.mjs';
 
 const root = process.cwd();
 const subprocessEnv = createSubprocessEnv();
@@ -102,6 +104,8 @@ try {
   const isolatedTree = run('isolated-tree', 'git', ['rev-parse', 'HEAD^{tree}'], candidate, candidateEnv, null, sandboxOptions);
   const finalSourceStatus = run('final-source-status', 'git', ['status', '--porcelain', '--untracked-files=all'], root);
   const passed = records.length === 12 && records.every(record => record.exit_code === 0) &&
+    hasConcreteVerificationOutput('test', records.find(record => record.id === 'test')?.output) &&
+    hasConcreteVerificationOutput('coverage', records.find(record => record.id === 'coverage')?.output) &&
     records.at(-1).output.trim() === '' && isolatedCommit.exit_code === 0 && isolatedTree.exit_code === 0 &&
     isolatedCommit.output.trim() === commit.output.trim() && isolatedTree.output.trim() === tree.output.trim() &&
     finalSourceStatus.exit_code === 0 && finalSourceStatus.output.trim() === '';

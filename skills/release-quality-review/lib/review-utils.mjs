@@ -50,7 +50,7 @@ export function parseScore(scoreContent) {
   return null;
 }
 
-const TRIVIAL_SUCCESS_SCRIPT = /^(?::|true|exit\s+0|(?:echo|printf)\b.*|node(?:\.exe)?\s+(?:-e|--eval)\s+["']?(?:process\.exit\(0\)|console\.(?:log|error)\([^)]*\);?(?:\s*process\.exit\(0\))?)["']?)$/i;
+const TRIVIAL_SUCCESS_SCRIPT = /^(?::|(?:command\s+)?true|exit\s+0|(?:echo|printf)\b.*|(?:sh|bash|zsh)\s+-c\s+["']?(?::|true|exit\s+0)["']?|node(?:\.exe)?\s+(?:-e|--eval|-p)\b.*)$/i;
 
 function scriptNameFromCommand(command) {
   const match = String(command || '').trim().match(/^(?:npm|pnpm|yarn)\s+(?:run\s+)?([A-Za-z0-9:._-]+)(?:\s|$)/);
@@ -79,6 +79,21 @@ export function findTrivialVerificationScripts(scripts, commands) {
     if (name && !hasMeaningfulScript(name, scripts)) issues.push({ command, script: name });
   }
   return issues;
+}
+
+export function hasConcreteVerificationOutput(kind, output) {
+  const text = String(output || '');
+  if (kind === 'test') {
+    const total = text.match(/#\s*tests\s+(\d+)/i);
+    const failed = text.match(/#\s*fail\s+(\d+)/i);
+    if (total && failed) return Number(total[1]) > 0 && Number(failed[1]) === 0;
+    const passed = text.match(/\b(\d+)\s+passed\b/i);
+    return Boolean(passed && Number(passed[1]) > 0 && !/\b[1-9]\d*\s+failed\b/i.test(text));
+  }
+  if (kind === 'coverage') {
+    return /(?:start of coverage report|all files\s+\|\s+\d)/i.test(text);
+  }
+  return true;
 }
 
 export const CLEAN_CANDIDATE_COMMANDS = [
@@ -115,7 +130,11 @@ export function validateCleanCandidateEvidence(clean, candidateCommit, candidate
         record.output_bytes < retainedBytes || typeof record.truncated !== 'boolean' ||
         (!record.truncated && record.output_bytes !== retainedBytes)) return false;
   }
-  return clean.commands.at(-1).output.trim() === '';
+  const testRecord = clean.commands.find(record => record.id === 'test');
+  const coverageRecord = clean.commands.find(record => record.id === 'coverage');
+  return clean.commands.at(-1).output.trim() === '' &&
+    hasConcreteVerificationOutput('test', testRecord?.output) &&
+    hasConcreteVerificationOutput('coverage', coverageRecord?.output);
 }
 
 export const ROLLBACK_COMMANDS = [

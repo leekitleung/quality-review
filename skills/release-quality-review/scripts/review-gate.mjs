@@ -30,6 +30,7 @@ import {
   parseYamlProfile as parseYamlProfileShared,
   matchesTriggerConditions,
   findTrivialVerificationScripts,
+  hasConcreteVerificationOutput,
   validateCleanCandidateEvidence,
   validateRollbackEvidence,
 } from '../lib/review-utils.mjs';
@@ -1520,7 +1521,9 @@ async function runGate() {
           expectedCommands.coverageGate = config?.verification?.coverage || 'npm run coverage';
         }
         for (const [name, expectedCommand] of Object.entries(expectedCommands)) {
-          if (!validCommandEvidence(automatedChecks[name], expectedCommand)) {
+          if (!validCommandEvidence(automatedChecks[name], expectedCommand) ||
+              (name === 'testGate' && !hasConcreteVerificationOutput('test', automatedChecks[name]?.output)) ||
+              (name === 'coverageGate' && !hasConcreteVerificationOutput('coverage', automatedChecks[name]?.output))) {
             throw new Error(`invalid ${name} command evidence`);
           }
         }
@@ -1815,12 +1818,15 @@ async function runGate() {
   // Automated checks must pass - test and typecheck are mandatory release gates
   const autoChecks = evidence?.automatedChecks;
   const strictProfile = ['release-gate', 'full', 'agentic-release-gate'].includes(profile);
-  const testGateFailed = autoChecks?.testGate?.status !== 'pass';
+  const testGateFailed = autoChecks?.testGate?.status !== 'pass' ||
+    !hasConcreteVerificationOutput('test', autoChecks?.testGate?.output);
   const typecheckGateFailed = autoChecks?.typecheckGate?.status !== 'pass';
   const buildGateFailed = autoChecks?.buildGate?.status !== 'pass';
   const lintGateFailed = autoChecks?.lintGate?.status !== 'pass';
   const auditGateFailed = autoChecks?.auditGate?.status !== 'pass';
-  const coverageGateFailed = profile === 'agentic-release-gate' && autoChecks?.coverageGate?.status !== 'pass';
+  const coverageGateFailed = profile === 'agentic-release-gate' &&
+    (autoChecks?.coverageGate?.status !== 'pass' ||
+      !hasConcreteVerificationOutput('coverage', autoChecks?.coverageGate?.output));
   const secretsGateFailed = autoChecks?.secrets?.status !== 'pass';
   const circularGateFailed = autoChecks?.circularDeps?.status === 'fail';
   const automatedChecksPassed = strictProfile
