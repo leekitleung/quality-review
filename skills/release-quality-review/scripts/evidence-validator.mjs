@@ -16,6 +16,7 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
 import { parseYamlResult } from '../lib/review-utils.mjs';
+import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
@@ -171,37 +172,6 @@ function verifyFileLineReferences(content, roundDir) {
   return { violations, warnings, totalRefs: refs.length };
 }
 
-// Check for missing evidence output
-function checkMissingEvidenceOutput(content, reviewer) {
-  const violations = [];
-
-  // Claims that need output proof
-  const claims = [
-    { pattern: /测试通过|tests? passed|test.*success/g, need: 'pnpm test 输出' },
-    { pattern: /类型检查通过|typecheck.*passed|tsc.*success/g, need: 'pnpm typecheck 输出' },
-    { pattern: /构建成功|build.*success|build.*pass/g, need: 'pnpm build 输出' },
-    { pattern: /功能正常|功能正确|工作正常/g, need: '实际运行证据' },
-  ];
-
-  for (const { pattern, need } of claims) {
-    if (pattern.test(content)) {
-      // Check if there's actual output cited
-      const hasOutput = /(pnpm|npm|yarn)\s+(test|build|typecheck)/.test(content) ||
-                       /passed|failed|error|success/.test(content);
-      if (!hasOutput) {
-        violations.push({
-          type: 'missing_evidence_output',
-          claim: pattern.source,
-          need,
-          desc: `声称"通过"但没有实际命令输出`
-        });
-      }
-    }
-  }
-
-  return violations;
-}
-
 // Check for file:line references quality
 function checkEvidenceQuality(content) {
   const issues = [];
@@ -209,8 +179,8 @@ function checkEvidenceQuality(content) {
 
   // Count evidence citations
   const fileLineRefs = content.match(/[a-zA-Z][^\s:]+\.(ts|tsx|js|jsx|mjs):\d+/g) || [];
-  const commandOutputs = content.match(/(pnpm|npm|yarn)\s+\w+\s*(2>&1|output)?/g) || [];
-  const testOutputs = content.match(/(\d+\s+(passed|failed|skipped)|✓|✗|PASS|FAIL)/g) || [];
+  const commandOutputs = extractCommandEvidence(content);
+  const testOutputs = extractTestOutputs(content);
 
   // Check for vague evidence
   const vaguePatterns = [
@@ -238,8 +208,8 @@ function checkEvidenceQuality(content) {
 
   // HOLLOW DESCRIPTION DETECTION: Self Assessment, Auto-assessed, N/A patterns
   // NOTE: Auto-generated reviews with real evidence are VALID - only flag if no evidence
-  const hasTestOutput = /(\d+\s+pass|passed|failed)/.test(content);
-  const hasCommandOutput = /(pnpm|npm|yarn)\s+(test|build|typecheck)/.test(content);
+  const hasTestOutput = testOutputs.length > 0;
+  const hasCommandOutput = commandOutputs.length > 0;
   const hasFileRefs = /[a-zA-Z][^\s:]+\.(ts|tsx|js|jsx|mjs):\d+/.test(content);
 
   // Only flag "Auto" patterns if there's no real evidence
@@ -375,7 +345,7 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
   allViolations.push(...checkSelfReferencePatterns(content, reviewer));
   // Independent reviewers may cite candidate diff code for static claims. Runtime
   // claims still require command/test evidence, and self-authored language is rejected.
-  allViolations.push(...checkMissingEvidenceOutput(content, reviewer));
+  allViolations.push(...checkMissingEvidenceOutput(content));
 
   // === NEW: Cross-file reference verification ===
   const fileRefCheck = verifyFileLineReferences(content, roundDir);

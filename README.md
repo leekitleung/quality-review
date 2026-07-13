@@ -58,11 +58,12 @@ test ! -e "quality-reports/$REVIEW_ROUND_DIR"
 For `agentic-release-gate`, use this complete high-assurance workflow:
 
 1. Commit the bounded candidate so evidence can bind an immutable commit/tree.
-2. Persist isolated clean-checkout verification for that same commit before any
-   collecting Gate pass:
+2. Persist isolated clean-checkout and rollback verification for that same
+   commit before any collecting Gate pass:
 
 ```bash
 npm run skill:verify-clean -- --output "quality-reports/$REVIEW_ROUND_DIR/evidence/clean-candidate.json"
+npm run skill:verify-rollback -- --base <base-ref> --output "quality-reports/$REVIEW_ROUND_DIR/evidence/rollback-verification.json"
 ```
 
 3. Run the runner with explicit round/base. It creates `phase-N-plan.md`,

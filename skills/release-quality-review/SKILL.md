@@ -194,6 +194,7 @@ skills/release-quality-review/
 ├── scripts/
 │   ├── review-gate.mjs            # 门禁检查器 (含规模检测)
 │   ├── review-runner.mjs          # 编排器 (含 Phase 持久化)
+│   ├── verify-rollback.mjs         # 隔离回滚验证与结构化证据
 │   └── goal-instruction-gate.mjs  # Goal 指令验收器
 └── templates/
     └── result.yaml                # 结构化结果模板
@@ -264,6 +265,7 @@ Agentic 发布前，先提交候选并持久化隔离检出证据：
 
 ```bash
 npm run skill:verify-clean -- --output quality-reports/round-NNN/evidence/clean-candidate.json
+npm run skill:verify-rollback -- --base <base-ref> --output quality-reports/round-NNN/evidence/rollback-verification.json
 ```
 
 ```mermaid

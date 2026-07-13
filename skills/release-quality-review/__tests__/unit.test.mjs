@@ -28,7 +28,9 @@ import {
   parseYamlProfile,
   matchesTriggerConditions,
   CLEAN_CANDIDATE_COMMANDS,
+  ROLLBACK_COMMANDS,
   validateCleanCandidateEvidence,
+  validateRollbackEvidence,
 } from '../lib/review-utils.mjs';
 import {
   resolveWithinRoot,
@@ -43,6 +45,7 @@ import {
   writeContainedFile,
 } from '../lib/security-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
+import { checkMissingEvidenceOutput, extractCommandEvidence } from '../lib/evidence-utils.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -57,6 +60,7 @@ const TEST_ROUNDS = {
   missingEvidence: ROUND_BASE + 4,
   parallelTimeout: ROUND_BASE + 5,
   parallelSuccess: ROUND_BASE + 6,
+  evidenceForgery: ROUND_BASE + 7,
 };
 const reportRound = round => join(PROJECT_ROOT, 'quality-reports', `round-${String(round).padStart(3, '0')}`);
 
@@ -415,26 +419,6 @@ test.describe('adversarial review detection', () => {
     return violations;
   }
 
-  function checkEvidenceCompleteness(content) {
-    const claims = [
-      { pattern: /测试通过|tests? passed|test.*success/g, need: 'pnpm test 输出' },
-      { pattern: /类型检查通过|typecheck.*passed|tsc.*success/g, need: 'pnpm typecheck 输出' },
-      { pattern: /构建成功|build.*success|build.*pass/g, need: 'pnpm build 输出' },
-    ];
-
-    const violations = [];
-    for (const { pattern, need } of claims) {
-      if (pattern.test(content)) {
-        const hasOutput = /(pnpm|npm|yarn)\s+(test|build|typecheck)/.test(content) ||
-                         /passed|failed|error|success/.test(content);
-        if (!hasOutput) {
-          violations.push({ type: 'missing_output', need });
-        }
-      }
-    }
-    return violations;
-  }
-
   test('detects "我们添加" self-reference', () => {
     const content = '我们添加了这个测试来验证功能';
     const violations = detectSelfReference(content);
@@ -473,22 +457,28 @@ test.describe('adversarial review detection', () => {
 
   test('detects missing test output when claiming pass', () => {
     const content = '测试通过，功能正常';
-    const violations = checkEvidenceCompleteness(content);
-    assertEqual(violations.length, 1);
-    assertEqual(violations[0].need, 'pnpm test 输出');
+    const violations = checkMissingEvidenceOutput(content);
+    assertEqual(violations.length, 2);
+    assertEqual(violations[0].need, 'npm test 的 exit 0 与输出摘要');
   });
 
   test('allows valid test output citation', () => {
-    const content = 'pnpm test 输出: 10 passed\n所有测试通过';
-    const violations = checkEvidenceCompleteness(content);
+    const content = 'pnpm test exited 0; output: 10 passed\n所有测试通过';
+    const violations = checkMissingEvidenceOutput(content);
     assertEqual(violations.length, 0);
+  });
+
+  test('rejects a bare command token and static references as runtime evidence', () => {
+    const content = '功能正常。运行证据：npm test。\na.mjs:1\nb.mjs:1\nc.mjs:1\nd.mjs:1\ne.mjs:1';
+    assertEqual(extractCommandEvidence(content).length, 0);
+    assertEqual(checkMissingEvidenceOutput(content).length, 1);
   });
 
   test('detects missing build output when claiming success', () => {
     const content = '构建成功，代码可以发布';
-    const violations = checkEvidenceCompleteness(content);
+    const violations = checkMissingEvidenceOutput(content);
     assertEqual(violations.length, 1);
-    assertEqual(violations[0].need, 'pnpm build 输出');
+    assertEqual(violations[0].need, 'build 的 exit 0 与输出摘要或绑定证据');
   });
 });
 
@@ -607,6 +597,43 @@ test.describe('security boundaries', () => {
     const substitutedCommand = structuredClone(clean);
     substitutedCommand.commands[2].command = 'printf [REDACTED]';
     assertEqual(validateCleanCandidateEvidence(substitutedCommand, 'commit', 'tree'), false);
+  });
+
+  test('validates structured rollback evidence and rejects forged trees', () => {
+    const now = new Date().toISOString();
+    const outputs = ['', '', 'candidate', 'candidate-tree', '', 'base-tree', '# tests 0\n# pass 0\n', ''];
+    const rollback = {
+      schema_version: 1,
+      candidate_commit: 'candidate',
+      candidate_tree: 'candidate-tree',
+      base_commit: 'base',
+      base_tree: 'base-tree',
+      isolated_commit: 'candidate',
+      isolated_tree: 'candidate-tree',
+      rollback_tree: 'base-tree',
+      source_status: '',
+      final_source_status: '',
+      isolated_checkout: true,
+      status: 'pass',
+      exit_code: 0,
+      commands: ROLLBACK_COMMANDS.map(([id, command], index) => ({
+        id,
+        command,
+        started_at: now,
+        finished_at: now,
+        exit_code: 0,
+        status: 'pass',
+        output: outputs[index],
+        output_bytes: Buffer.byteLength(outputs[index]),
+        truncated: false,
+      })),
+    };
+    assertEqual(validateRollbackEvidence(rollback, 'candidate', 'candidate-tree', 'base', 'base-tree'), true);
+    assertEqual(validateRollbackEvidence({ ...rollback, rollback_tree: 'forged' }, 'candidate', 'candidate-tree', 'base', 'base-tree'), false);
+    const missingTranscript = structuredClone(rollback);
+    missingTranscript.commands[6].output = '';
+    missingTranscript.commands[6].output_bytes = 0;
+    assertEqual(validateRollbackEvidence(missingTranscript, 'candidate', 'candidate-tree', 'base', 'base-tree'), false);
   });
 
   test('filesystem sandbox denies the host home outside allowed roots', { skip: process.platform !== 'darwin' }, t => {
@@ -747,6 +774,8 @@ test.describe('CLI fail-closed integration', () => {
         join(clone, 'skills/release-quality-review/scripts/review-gate.mjs'));
       copyFileSync(join(SKILL_DIR, 'lib', 'security-utils.mjs'),
         join(clone, 'skills/release-quality-review/lib/security-utils.mjs'));
+      copyFileSync(join(SKILL_DIR, 'lib', 'review-utils.mjs'),
+        join(clone, 'skills/release-quality-review/lib/review-utils.mjs'));
       mkdirSync(external);
       rmSync(join(clone, 'quality-reports'), { recursive: true, force: true });
       symlinkSync(external, join(clone, 'quality-reports'), 'dir');
@@ -789,8 +818,10 @@ test.describe('CLI fail-closed integration', () => {
   test('documented agentic workflow binds clean evidence before collection on supported CI', () => {
     const readme = readFileSync(join(PROJECT_ROOT, 'README.md'), 'utf8');
     const clean = readme.indexOf('npm run skill:verify-clean');
+    const rollback = readme.indexOf('npm run skill:verify-rollback');
     const runner = readme.indexOf('npm run review -- --profile agentic-release-gate');
     assertTrue(clean >= 0 && runner >= 0 && clean < runner, 'Clean evidence must precede the collecting runner');
+    assertTrue(rollback >= 0 && rollback < runner, 'Rollback evidence must precede the collecting runner');
     assertTrue(readme.includes('test ! -e "quality-reports/$REVIEW_ROUND_DIR"'), 'Workflow must reject reused rounds');
     assertEqual(readme.includes('quality-reports/round-001'), false, 'Workflow must not target tracked Round 1');
     const workflow = readFileSync(join(PROJECT_ROOT, '.github', 'workflows', 'skill-quality.yml'), 'utf8');
@@ -895,6 +926,40 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     assertEqual(existsSync(join(PROJECT_ROOT, 'marker')), false);
   });
 
+  test('evidence validator rejects a bare command token with static references', () => {
+    const roundNumber = TEST_ROUNDS.evidenceForgery;
+    const round = reportRound(roundNumber);
+    const reviewerDir = join(round, 'product-flow');
+    const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+    const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+    try {
+      mkdirSync(reviewerDir, { recursive: true });
+      writeFileSync(join(round, 'metadata.json'), JSON.stringify({
+        candidate_commit: candidateCommit,
+        candidate_tree: candidateTree,
+      }));
+      writeFileSync(join(reviewerDir, 'result.yaml'), `reviewer: product-flow\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+      writeFileSync(join(reviewerDir, 'score.md'), [
+        '# Product Flow',
+        '## Overall Score: 95/100',
+        '功能正常。运行证据：npm test。',
+        'skills/release-quality-review/scripts/evidence-validator.mjs:1',
+        'skills/release-quality-review/scripts/review-gate.mjs:1',
+        'skills/release-quality-review/scripts/review-runner.mjs:1',
+        'skills/release-quality-review/lib/review-utils.mjs:1',
+        'skills/release-quality-review/lib/security-utils.mjs:1',
+      ].join('\n'));
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'evidence-validator.mjs'), '--round', `round-${String(roundNumber).padStart(3, '0')}`,
+        '--reviewer', 'product-flow', '--base', 'HEAD',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(result.status, 1, `Expected forged evidence rejection, output: ${result.stdout}${result.stderr}`);
+      assertTrue(result.stdout.includes('missing_evidence_output'), 'Expected explicit missing command evidence violation');
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
+  });
+
   test('keeps blockers.md veto even when result.yaml claims pass', () => {
     const roundNumber = TEST_ROUNDS.veto;
     const round = reportRound(roundNumber);
@@ -982,6 +1047,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       writeFileSync(join(round, 'metadata.json'), JSON.stringify({
         profile: 'quick', round: roundNumber, collected_at: new Date().toISOString(),
         git: { commit, status, branch: 'test' }, files: {}, candidate_commit: fullCommit, candidate_tree: tree,
+        base_commit: fullCommit, base_tree: tree,
         automated_checks_sha256: createHash('sha256').update(automatedContent).digest('hex'),
       }));
       const result = spawnSync('node', [
@@ -1092,6 +1158,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         'skills/release-quality-review/scripts/review-gate.mjs',
         'skills/release-quality-review/scripts/evidence-validator.mjs',
         'skills/release-quality-review/lib/review-utils.mjs',
+        'skills/release-quality-review/lib/evidence-utils.mjs',
         'skills/release-quality-review/templates/result.yaml',
       ]) {
         copyFileSync(join(PROJECT_ROOT, relativePath), join(cloneRoot, relativePath));

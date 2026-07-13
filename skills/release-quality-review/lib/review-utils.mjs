@@ -86,6 +86,46 @@ export function validateCleanCandidateEvidence(clean, candidateCommit, candidate
   return clean.commands.at(-1).output.trim() === '';
 }
 
+export const ROLLBACK_COMMANDS = [
+  ['source-status', 'git status --porcelain --untracked-files=all'],
+  ['clone', 'git clone --quiet --no-local <source> <rollback>'],
+  ['isolated-commit', 'git rev-parse HEAD'],
+  ['isolated-tree', 'git rev-parse HEAD^{tree}'],
+  ['revert', 'git revert --no-commit <base>..HEAD'],
+  ['rollback-tree', 'git write-tree'],
+  ['test', 'npm test'],
+  ['final-source-status', 'git status --porcelain --untracked-files=all'],
+];
+
+export function validateRollbackEvidence(rollback, candidateCommit, candidateTree, baseCommit, baseTree) {
+  if (!rollback || rollback.schema_version !== 1 || rollback.status !== 'pass' || rollback.exit_code !== 0 ||
+      rollback.isolated_checkout !== true || rollback.candidate_commit !== candidateCommit ||
+      rollback.candidate_tree !== candidateTree || rollback.isolated_commit !== candidateCommit ||
+      rollback.isolated_tree !== candidateTree || rollback.base_commit !== baseCommit ||
+      rollback.base_tree !== baseTree || rollback.rollback_tree !== baseTree ||
+      rollback.source_status !== '' || rollback.final_source_status !== '' ||
+      !Array.isArray(rollback.commands) || rollback.commands.length !== ROLLBACK_COMMANDS.length) return false;
+  for (let index = 0; index < ROLLBACK_COMMANDS.length; index++) {
+    const record = rollback.commands[index];
+    const [expectedId, expectedCommand] = ROLLBACK_COMMANDS[index];
+    const retainedBytes = Buffer.byteLength(record?.output || '');
+    const started = Date.parse(record?.started_at);
+    const finished = Date.parse(record?.finished_at);
+    if (!record || record.id !== expectedId || record.command !== expectedCommand ||
+        record.exit_code !== 0 || record.status !== 'pass' ||
+        !Number.isFinite(started) || !Number.isFinite(finished) || finished < started ||
+        typeof record.output !== 'string' || !Number.isInteger(record.output_bytes) ||
+        record.output_bytes < retainedBytes || typeof record.truncated !== 'boolean' ||
+        (!record.truncated && record.output_bytes !== retainedBytes)) return false;
+  }
+  return rollback.commands[0].output.trim() === '' &&
+    rollback.commands[2].output.trim() === candidateCommit &&
+    rollback.commands[3].output.trim() === candidateTree &&
+    rollback.commands[5].output.trim() === baseTree &&
+    rollback.commands[6].output.trim() !== '' &&
+    rollback.commands[7].output.trim() === '';
+}
+
 // ============================================================================
 // Blocker Parsing
 // ============================================================================

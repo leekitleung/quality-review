@@ -30,6 +30,7 @@ import {
   parseYamlProfile as parseYamlProfileShared,
   matchesTriggerConditions,
   validateCleanCandidateEvidence,
+  validateRollbackEvidence,
 } from '../lib/review-utils.mjs';
 import {
   containsSensitiveText, ensureContainedDirectorySync, readContainedFileSync,
@@ -575,6 +576,18 @@ async function persistEvidence(roundDir, evidence, profileName, reviewers) {
   const cleanCandidateContent = existsSync(cleanCandidatePath)
     ? readContainedFileSync(roundDir, cleanCandidatePath, 'utf8')
     : null;
+  const rollbackPath = join(evidenceDir, 'rollback-verification.json');
+  const rollbackContent = existsSync(rollbackPath)
+    ? readContainedFileSync(roundDir, rollbackPath, 'utf8')
+    : null;
+  const candidateCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+  const candidateTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+  const baseCommit = execFileSync('git', ['rev-parse', `${resolvedDiffBase}^{commit}`], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+  const baseTree = execFileSync('git', ['rev-parse', `${resolvedDiffBase}^{tree}`], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+  if (profileName === 'agentic-release-gate' &&
+      (!rollbackContent || !validateRollbackEvidence(JSON.parse(rollbackContent), candidateCommit, candidateTree, baseCommit, baseTree))) {
+    throw new Error('valid rollback verification evidence is required before agentic collection');
+  }
   const metadata = {
     profile: profileName,
     round: roundNumber,
@@ -582,12 +595,17 @@ async function persistEvidence(roundDir, evidence, profileName, reviewers) {
     collected_at: evidence.timestamp,
     git: evidence.git,
     files: evidence.files,
-    candidate_commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(),
-    candidate_tree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(),
+    candidate_commit: candidateCommit,
+    candidate_tree: candidateTree,
+    base_commit: baseCommit,
+    base_tree: baseTree,
     automated_checks_sha256: createHash('sha256').update(automatedContent).digest('hex'),
     clean_candidate_sha256: cleanCandidateContent === null
       ? null
       : createHash('sha256').update(cleanCandidateContent).digest('hex'),
+    rollback_verification_sha256: rollbackContent === null
+      ? null
+      : createHash('sha256').update(rollbackContent).digest('hex'),
   };
   await writeContainedFile(PROJECT_ROOT, join(evidenceDir, 'automated-checks.json'), automatedContent);
   await writeContainedFile(PROJECT_ROOT, join(roundDir, 'metadata.json'), `${JSON.stringify(metadata, null, 2)}\n`);
@@ -1463,12 +1481,24 @@ async function runGate() {
         const cleanCandidateDigest = cleanCandidateContent === null
           ? null
           : createHash('sha256').update(cleanCandidateContent).digest('hex');
+        const rollbackContent = profile === 'agentic-release-gate'
+          ? readContainedFileSync(roundDir, join(roundDir, 'evidence', 'rollback-verification.json'), 'utf8')
+          : null;
+        const rollbackDigest = rollbackContent === null
+          ? null
+          : createHash('sha256').update(rollbackContent).digest('hex');
+        const baseCommit = execFileSync('git', ['rev-parse', `${resolvedDiffBase}^{commit}`], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+        const baseTree = execFileSync('git', ['rev-parse', `${resolvedDiffBase}^{tree}`], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
         if (metadata.profile !== profile || metadata.round !== roundNumber ||
             metadata.git?.commit !== currentCommit || metadata.git?.status !== currentStatus ||
             currentStatus !== '' ||
             metadata.candidate_commit !== fullCommit || metadata.candidate_tree !== currentTree ||
+            metadata.base_commit !== baseCommit || metadata.base_tree !== baseTree ||
             metadata.automated_checks_sha256 !== digest ||
-            (profile === 'agentic-release-gate' && metadata.clean_candidate_sha256 !== cleanCandidateDigest)) {
+            (profile === 'agentic-release-gate' &&
+              (metadata.clean_candidate_sha256 !== cleanCandidateDigest ||
+               metadata.rollback_verification_sha256 !== rollbackDigest ||
+               !validateRollbackEvidence(JSON.parse(rollbackContent), fullCommit, currentTree, baseCommit, baseTree)))) {
           throw new Error('persisted evidence does not match the current commit and working-tree status');
         }
         const expectedCommands = {
@@ -1806,9 +1836,10 @@ async function runGate() {
   const requiredAgenticArtifacts = [
     'metadata.json', 'generated-goal.md', 'goal-instruction-validation.md',
     `phase-${roundNumber}-plan.md`, 'changes.md', 'diff-summary.md', 'risk.md', 'handoff.md',
-    'evidence/automated-checks.json', 'evidence/clean-candidate.json',
+    'evidence/automated-checks.json', 'evidence/clean-candidate.json', 'evidence/rollback-verification.json',
   ];
   let cleanCandidateEvidenceValid = !goalRequired;
+  let rollbackEvidenceValid = !goalRequired;
   const cleanCandidatePath = join(roundDir, 'evidence', 'clean-candidate.json');
   if (goalRequired && existsSync(cleanCandidatePath)) {
     try {
@@ -1820,6 +1851,19 @@ async function runGate() {
       cleanCandidateEvidenceValid = false;
     }
   }
+  const rollbackEvidencePath = join(roundDir, 'evidence', 'rollback-verification.json');
+  if (goalRequired && existsSync(rollbackEvidencePath)) {
+    try {
+      const rollback = JSON.parse(readContainedFileSync(roundDir, rollbackEvidencePath, 'utf8'));
+      const currentCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+      const currentTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+      const baseCommit = execFileSync('git', ['rev-parse', `${resolvedDiffBase}^{commit}`], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+      const baseTree = execFileSync('git', ['rev-parse', `${resolvedDiffBase}^{tree}`], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+      rollbackEvidenceValid = validateRollbackEvidence(rollback, currentCommit, currentTree, baseCommit, baseTree);
+    } catch {
+      rollbackEvidenceValid = false;
+    }
+  }
   const artifactCompletenessPassed = !goalRequired ||
     (requiredAgenticArtifacts.every(file => {
       try {
@@ -1828,7 +1872,7 @@ async function runGate() {
       } catch {
         return false;
       }
-    }) && cleanCandidateEvidenceValid);
+    }) && cleanCandidateEvidenceValid && rollbackEvidenceValid);
   const sensitiveArtifactFindings = allHaveScores ? scanRoundArtifacts(roundDir) : [];
   const generatedArtifactsSafe = sensitiveArtifactFindings.length === 0;
   const arbitrationEligible = !singleReviewer && excludeReviewers.length === 0;
