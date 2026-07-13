@@ -35,14 +35,23 @@ reviewers concurrently and fails if any reviewer does not produce all four files
 
 Host workflow:
 
-1. Run `npm run review -- --profile release-gate --round 1` to collect evidence
+Choose an unused round first; never reuse a tracked or previously generated
+round directory:
+
+```bash
+export REVIEW_ROUND=100
+export REVIEW_ROUND_DIR="round-$(printf '%03d' "$REVIEW_ROUND")"
+test ! -e "quality-reports/$REVIEW_ROUND_DIR"
+```
+
+1. Run `npm run review -- --profile release-gate --round "$REVIEW_ROUND"` to collect evidence
    and create prompts.
 2. In Codex/Claude, launch one independent Agent per listed reviewer. Claude
    adapters are in `.claude/agents/`; canonical definitions are in
    `skills/release-quality-review/reviewers/`.
 3. Require each Agent to write `result.yaml`, `score.md`, `blockers.md`, and
    `improvement-list.md` in its round directory.
-4. Run `npm run skill:gate -- --profile release-gate --round 1`. Exit `0` is the
+4. Run `npm run skill:gate -- --profile release-gate --round "$REVIEW_ROUND"`. Exit `0` is the
    only release approval; exit `1` means pending or failed review.
 
 For `agentic-release-gate`, use this complete high-assurance workflow:
@@ -52,7 +61,7 @@ For `agentic-release-gate`, use this complete high-assurance workflow:
    collecting Gate pass:
 
 ```bash
-npm run skill:verify-clean -- --output quality-reports/round-001/evidence/clean-candidate.json
+npm run skill:verify-clean -- --output "quality-reports/$REVIEW_ROUND_DIR/evidence/clean-candidate.json"
 ```
 
 3. Run the runner with explicit round/base. It creates `phase-N-plan.md`,
@@ -61,7 +70,7 @@ npm run skill:verify-clean -- --output quality-reports/round-001/evidence/clean-
    Exit `1` is expected while packets are pending:
 
 ```bash
-npm run review -- --profile agentic-release-gate --round 1 --base <base-ref>
+npm run review -- --profile agentic-release-gate --round "$REVIEW_ROUND" --base <base-ref>
 ```
 
 4. The host writes `generated-goal.md`, `changes.md`, `diff-summary.md`,
@@ -75,8 +84,8 @@ npm run review -- --profile agentic-release-gate --round 1 --base <base-ref>
 
 ```bash
 node skills/release-quality-review/scripts/goal-instruction-gate.mjs \
-  --file quality-reports/round-001/generated-goal.md
-npm run skill:gate -- --profile agentic-release-gate --round 1 --base <base-ref>
+  --file "quality-reports/$REVIEW_ROUND_DIR/generated-goal.md"
+npm run skill:gate -- --profile agentic-release-gate --round "$REVIEW_ROUND" --base <base-ref>
 ```
 
 5. Launch every resident, triggered conditional, and adversarial reviewer.
@@ -90,12 +99,12 @@ npm run skill:gate -- --profile agentic-release-gate --round 1 --base <base-ref>
 6. Validate packets, then run final arbitration against persisted evidence:
 
 ```bash
-node skills/release-quality-review/scripts/evidence-validator.mjs --round round-001 --base <base-ref>
-npm run skill:gate -- --profile agentic-release-gate --round 1 --base <base-ref> --no-collect
+node skills/release-quality-review/scripts/evidence-validator.mjs --round "$REVIEW_ROUND_DIR" --base <base-ref>
+npm run skill:gate -- --profile agentic-release-gate --round "$REVIEW_ROUND" --base <base-ref> --no-collect
 ```
 
 Approval exists only when both commands exit `0`. The authoritative approval
-report is `quality-reports/round-001/final-report.md`; it is never a shared
+report is `quality-reports/$REVIEW_ROUND_DIR/final-report.md`; it is never a shared
 cross-round file.
 
 Troubleshooting:

@@ -770,6 +770,8 @@ test.describe('CLI fail-closed integration', () => {
     const clean = readme.indexOf('npm run skill:verify-clean');
     const runner = readme.indexOf('npm run review -- --profile agentic-release-gate');
     assertTrue(clean >= 0 && runner >= 0 && clean < runner, 'Clean evidence must precede the collecting runner');
+    assertTrue(readme.includes('test ! -e "quality-reports/$REVIEW_ROUND_DIR"'), 'Workflow must reject reused rounds');
+    assertEqual(readme.includes('quality-reports/round-001'), false, 'Workflow must not target tracked Round 1');
     const workflow = readFileSync(join(PROJECT_ROOT, '.github', 'workflows', 'skill-quality.yml'), 'utf8');
     assertTrue(workflow.includes('runs-on: macos-latest'), 'Sandbox validation requires a Darwin CI runner');
     assertTrue(workflow.includes('persist-credentials: false'), 'CI checkout credentials must not persist');
