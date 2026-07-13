@@ -206,6 +206,10 @@ test.describe('verification script integrity', () => {
     for (const nodeCommand of [
       'node fake-verifier.mjs', 'node /dev/null', 'node --eval="0"', 'node -e0',
       'node --print="0"', 'node -p0', 'node --input-type=module -e 0',
+      'node fake-verifier.mjs --test',
+      'node fake-verifier.mjs --test --experimental-test-coverage',
+      'node --eval="0" --test --experimental-test-coverage',
+      'node -p0 --test --experimental-test-coverage',
     ]) {
       const scripts = Object.fromEntries(['test', 'coverage', 'typecheck', 'lint', 'build']
         .map(name => [name, nodeCommand]));
@@ -1121,9 +1125,8 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     assertEqual(clone.status, 0, `Expected fixture clone, output: ${clone.stdout}${clone.stderr}`);
     const manifestPath = join(repository, 'package.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-    for (const name of [
-      'test', 'coverage', 'typecheck', 'build', 'lint', 'skill:check-drift', 'skill:check', 'skill:verify',
-    ]) manifest.scripts[name] = 'node fake-verifier.mjs';
+    manifest.scripts.test = 'node fake-verifier.mjs --test';
+    manifest.scripts.coverage = 'node fake-verifier.mjs --test --experimental-test-coverage';
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     writeFileSync(join(repository, 'fake-verifier.mjs'),
       "console.log('# tests 1\\n# fail 0\\n# start of coverage report');\n");

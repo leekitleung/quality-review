@@ -65,15 +65,26 @@ function verificationCapabilities(command) {
 
   if (/^node(?:\.exe)?$/.test(executable)) {
     const args = words.slice(1);
-    if (args.some(arg => arg === '--test' || arg.startsWith('--test='))) capabilities.add('test');
-    if (args.some(arg => arg === '--experimental-test-coverage' || arg.startsWith('--test-coverage-'))) {
-      capabilities.add('coverage');
-    }
-    if (args[0] === '--check') capabilities.add('code');
     if (args[0] === 'scripts/sync-skills.mjs' && args[1] === 'check') capabilities.add('generic');
     if (args[0] === 'skills/release-quality-review/scripts/review-gate.mjs' && args.includes('--dry-run')) {
       capabilities.add('generic');
     }
+
+    const entryOptions = [];
+    for (const arg of args) {
+      if (arg === '--' || !arg.startsWith('-')) break;
+      entryOptions.push(arg);
+    }
+    if (entryOptions.some(arg => /^(?:-e|-p)(?:.|$)|^--(?:eval|print)(?:=|$)/.test(arg))) return new Set();
+
+    const hasTestRunner = entryOptions.some(arg => arg === '--test' || arg.startsWith('--test='));
+    const hasCoverage = entryOptions.some(arg =>
+      arg === '--experimental-test-coverage' || arg.startsWith('--test-coverage-'));
+    if (hasTestRunner) capabilities.add('test');
+    if (hasTestRunner && hasCoverage) {
+      capabilities.add('coverage');
+    }
+    if (args[0] === '--check') capabilities.add('code');
     return capabilities;
   }
 
