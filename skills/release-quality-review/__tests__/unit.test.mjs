@@ -378,6 +378,25 @@ test.describe('persistPhaseResult', () => {
 // ============================================================================
 
 test.describe('adversarial review detection', () => {
+  test('keeps canonical evidence policy aligned with the production validator', () => {
+    const validator = readFileSync(join(SKILL_DIR, 'scripts', 'evidence-validator.mjs'), 'utf8');
+    const policyFiles = [
+      'rubrics/evidence.md',
+      'rubrics/five-principles.md',
+      'reviewers/adversarial-completion.md',
+      'reviewers/principles-compliance.md',
+      'reviewers/TEMPLATE.md',
+    ].map(file => readFileSync(join(SKILL_DIR, file), 'utf8')).join('\n');
+    assertEqual(validator.includes('checkDiffFileReferences'), false,
+      'Production validator must not retain a contradictory dead diff-citation rule');
+    assertTrue(policyFiles.includes('独立 Reviewer 可以引用候选 diff'),
+      'Canonical policy must explicitly allow independent candidate-diff inspection');
+    assertEqual(policyFiles.includes('引用 diff 中新增代码: -10'), false,
+      'Canonical policy must not penalize candidate-diff citations by themselves');
+    assertEqual(policyFiles.includes('自我验证: 引用 diff 新增代码'), false,
+      'Canonical redlines must target self-authorship rather than candidate inspection');
+  });
+
   function detectSelfReference(content) {
     const patterns = [
       { pattern: /我们添加|我们修改|我们实现/g, desc: '使用"我们"' },

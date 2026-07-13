@@ -4,15 +4,8 @@
  *
  * 检测 reviewer 评分中是否引用了不合规的证据来源
  *
- * 合规来源:
- *   - 历史文件 (不是你刚写的)
- *   - 已有测试输出 (pnpm test)
- *   - 其他 Reviewer 报告
- *
- * 不合规来源 (自我验证):
- *   - git diff 中新增的代码
- *   - "我们添加" / "我写的" / "刚才的"
- *   - 引用自己刚写的测试
+ * 合规来源包括独立 Reviewer 检查的候选 diff、真实命令输出和其他 Reviewer 报告。
+ * 不合规来源是执行者总结、Reviewer 在评审中自行写入的产物，以及缺少运行证据的功能声明。
  *
  * Usage:
  *   node evidence-validator.mjs --round round-001
@@ -95,40 +88,6 @@ function checkSelfReferencePatterns(content, reviewer) {
     const matches = content.match(pattern);
     if (matches) {
       violations.push({ type: 'self_reference', desc, count: matches.length });
-    }
-  }
-
-  return violations;
-}
-
-// Check for diff file references
-function checkDiffFileReferences(content, diffFiles, reviewer) {
-  const violations = [];
-
-  for (const file of diffFiles) {
-    // Normalize path for matching
-    const normalizedFile = file.replace(/\\/g, '/');
-    const fileName = normalizedFile.split('/').pop();
-
-    // Check if file is referenced in content
-    if (content.includes(normalizedFile) || content.includes(fileName)) {
-      // Check context - is it being cited as evidence?
-      const lines = content.split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.includes(normalizedFile) || line.includes(fileName)) {
-          // Check if this looks like evidence citation
-          const context = lines.slice(Math.max(0, i - 2), i + 3).join(' ');
-          if (/\d+行|line \d+|:\d+|存在|有|通过|正确|符合|验证/g.test(context)) {
-            violations.push({
-              type: 'diff_file_reference',
-              file: normalizedFile,
-              line: i + 1,
-              desc: `引用 diff 中新增的文件作为证据`
-            });
-          }
-        }
-      }
     }
   }
 
@@ -414,8 +373,8 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
 
   // Run all checks
   allViolations.push(...checkSelfReferencePatterns(content, reviewer));
-  // Independent reviewers must cite the changed code they inspected. Diff citations
-  // are valid evidence; self-authored claims are handled by self-reference checks.
+  // Independent reviewers may cite candidate diff code for static claims. Runtime
+  // claims still require command/test evidence, and self-authored language is rejected.
   allViolations.push(...checkMissingEvidenceOutput(content, reviewer));
 
   // === NEW: Cross-file reference verification ===

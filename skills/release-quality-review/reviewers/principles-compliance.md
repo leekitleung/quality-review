@@ -109,9 +109,9 @@ grep -rn "file.*:[0-9]\+\|at .*(:[0-9]\+)" quality-reports/round-*/<reviewer>/sc
 **检查证据来源**:
 
 ```bash
-# 3.1 检查是否引用了 git diff 中新增的代码
-git diff --name-only HEAD > /tmp/new_files.txt
-grep -f /tmp/new_files.txt quality-reports/round-*/<reviewer>/score.md
+# 3.1 检查候选 diff 引用是否只支撑静态事实
+# 独立 Reviewer 可以引用候选 diff；运行声明必须有命令输出
+git diff --name-only <base-ref>..HEAD
 
 # 3.2 检查是否有"我们添加"等自我引用
 grep -rn "我们添加|我写的|刚才的|上面的代码" quality-reports/round-*/<reviewer>/score.md
@@ -123,14 +123,15 @@ grep -rn "来源:|证据:|引用:" quality-reports/round-*/<reviewer>/score.md
 **违规模式**:
 ```
 ❌ "我们添加了这个测试" - 自我验证
-❌ 引用 git diff 中新增的文件 - 自我验证
+❌ 把 Reviewer 自己写入的文件当作独立证据
 ❌ "按照上述实现" - 引用刚写的代码
 ✅ 引用项目历史文件
+✅ 独立引用候选 diff，并用命令输出证明运行声明
 ✅ 引用 `pnpm test` 实际输出
 ```
 
 **评分**:
-- 25: 所有证据来自历史文件
+- 25: 所有证据来自独立检查，无执行者总结或 Reviewer 自写产物
 - 21-24: 有 1-2 处轻微违规
 - 17-20: 有 3-5 处违规
 - 13-16: 有 6-10 处违规
@@ -281,7 +282,7 @@ violations:
   - reviewer: "xxx"
     principle: "P3"
     severity: "P0"
-    description: "引用了 diff 中新增的代码"
+    description: "把 Reviewer 自写产物当作独立证据"
     location: "score.md:45"
 
 redlines: []

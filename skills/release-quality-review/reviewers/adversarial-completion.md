@@ -26,12 +26,12 @@
 **核心原则**: 
 ```
 执行者声称的完成 ≠ 实际完成
-引用刚写的代码 ≠ 合规证据
+Reviewer 自己写入的产物 ≠ 独立证据
 ```
 
 **必须输出**:
 1. 每个声称"完成"的功能是否有真实证据
-2. 证据来源是否合规（不能是刚写的代码）
+2. 证据来源是否合规（不能依赖执行者总结或 Reviewer 自写产物）
 3. 是否存在 Happy Path Only、Selective Testing 等伪完成模式
 4. 违反对抗性原则的具体位置
 
@@ -44,12 +44,11 @@
 **这是对抗性审查的核心**。检测证据是否来自合规来源。
 
 ```bash
-# 1.1 获取 git diff 中的新增文件
-git diff --name-only HEAD > /tmp/diff_files.txt
-cat /tmp/diff_files.txt
+# 1.1 获取候选 diff，确认 Reviewer 实际检查了变更范围
+git diff --name-only <base-ref>..HEAD
 
-# 1.2 检测 score.md 是否引用了 diff 中的文件
-# 手动检查：score.md 中引用的文件是否在 diff 中？
+# 1.2 检测 score.md 是否引用了候选代码
+# 允许独立 Reviewer 引用候选 diff；运行声明还必须有命令输出
 grep -E "\.(ts|tsx|js|jsx|md):[0-9]+" quality-reports/round-*/<reviewer>/score.md
 
 # 1.3 检测自我引用模式
@@ -61,9 +60,10 @@ grep -rn "我们添加|我写的|上面的代码|刚才实现" quality-reports/r
 | 来源类型 | 可接受 | 示例 |
 |----------|--------|------|
 | 历史文件 | ✅ | `apps/.../existing-file.ts:45` |
+| 候选 diff | ✅ | 独立 Reviewer 引用变更代码证明静态事实 |
 | 已有测试 | ✅ | `pnpm test` 输出 |
 | 其他 Reviewer | ✅ | `round-001/xxx/score.md` |
-| 新增代码 | ❌ | `git diff` 中新增的内容 |
+| Reviewer 自写产物 | ❌ | Reviewer 在本次评审中新增的代码/测试 |
 | "我们添加" | ❌ | 自我验证 |
 
 **违规模式检测**:
@@ -164,10 +164,9 @@ grep -rn "timeout\|performance\|benchmark" \
 # 4.1 检测"我们添加了测试"模式
 grep -rn "我们添加.*测试|新增.*测试|编写.*测试" quality-reports/round-*/<reviewer>/score.md
 
-# 4.2 检测引用 diff 中新增代码作为证据
-# 对比 score.md 中引用的文件 vs git diff 中的文件
-git diff --name-only HEAD > /tmp/diff.txt
-# 手动检查: score.md 中引用的文件是否在 diff.txt 中?
+# 4.2 检测是否把静态代码引用冒充为运行证据
+# 候选 diff 引用本身合规；功能/测试/构建声明必须有独立命令输出
+grep -rn "通过|成功|passed" quality-reports/round-*/<reviewer>/score.md
 
 # 4.3 检测跳过的测试
 grep -rn "\.skip\|test\.skip\|it\.skip\|describe\.skip" \
@@ -180,7 +179,7 @@ grep -rn "\.skip\|test\.skip\|it\.skip\|describe\.skip" \
 |--------|------|--------|
 | Happy Path Only | 只测正常流程，不测异常 | P1 |
 | Selective Testing | 只测"改了什么"，不测"可能影响什么" | P1 |
-| Self-Generated Evidence | 引用自己刚写的代码/测试作为证据 | P0 |
+| Self-Generated Evidence | Reviewer 引用自己在评审中写入的代码/测试 | P0 |
 | Skipped Tests | 跳过测试或只写占位 | P1 |
 | Vague Claims | "看起来正确"等主观描述 | P2 |
 
@@ -239,7 +238,7 @@ round-XXX/
 
 | ID | 规则 | 严重度 | 证据要求 |
 |----|------|--------|----------|
-| R-AC-01 | 自我验证: 引用 diff 新增代码 | P0 | score.md 中引用的文件必须在 git 历史中 |
+| R-AC-01 | 自我验证: 依赖执行者总结或 Reviewer 自写产物 | P0 | 必须证明 Reviewer 独立检查且未修改候选 |
 | R-AC-02 | 声称测试通过但无测试输出 | P0 | 必须有 `pnpm test` 输出 |
 | R-AC-03 | 使用"我们添加"/"我写的" | P1 | 禁止自我引用 |
 | R-AC-04 | 引用"上面的代码"/"刚才的实现" | P1 | 禁止过程引用 |
@@ -294,7 +293,7 @@ dimensions:
 
 self_verification_patterns:
   self_reference: N  # "我们添加"等
-  diff_file_reference: N  # 引用 diff 中文件
+  self_authored_artifact: N  # Reviewer 自写产物
   missing_output: N  # 声称通过但无输出
   vague_claims: N  # 主观描述
 
@@ -326,11 +325,11 @@ blockers:
 | Violation Type | Count | Severity |
 |----------------|-------|----------|
 | Self-reference ("我们添加") | N | P1 |
-| Diff file reference | N | P0 |
+| Self-authored reviewer artifact | N | P0 |
 | Missing command output | N | P0 |
 
 ### Specific Violations
-1. **[P0]** score.md:45 - 引用了 diff 中新增的 `apps/.../new-file.ts`
+1. **[P0]** score.md:45 - 把 Reviewer 自己写入的测试当作独立证据
 2. **[P1]** score.md:78 - 使用"我们添加了这个测试"
 
 ## 2. Evidence Completeness (XX/25)
@@ -368,7 +367,7 @@ blockers:
 
 ## Recommendations
 
-1. **[P0]** 移除所有对 diff 新增文件的引用，改用历史文件作为证据
+1. **[P0]** 移除执行者总结或 Reviewer 自写产物，改用独立检查证据
 2. **[P1]** 添加 `pnpm test` 和 `pnpm typecheck` 输出作为证据
 3. **[P2]** 增加边界条件测试覆盖
 ```
