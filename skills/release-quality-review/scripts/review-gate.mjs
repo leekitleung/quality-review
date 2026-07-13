@@ -16,14 +16,13 @@
  *   node review-gate.mjs --dry-run               # Validate without running
  */
 
-import { readFileSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join, dirname, resolve, extname, relative } from 'path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'url';
-import { execFileSync as nodeExecFileSync } from 'child_process';
 import { readFile } from 'fs/promises';
 import { createHash } from 'node:crypto';
 import { persistPhasePlan } from '../lib/phase-persistence.mjs';
+import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
 import {
   parseScore as parseScoreShared,
   parseBlockers as parseBlockersShared,
@@ -33,8 +32,8 @@ import {
   validateCleanCandidateEvidence,
 } from '../lib/review-utils.mjs';
 import {
-  containsSensitiveText, createCandidateSubprocessEnv, ensureContainedDirectorySync, readContainedFileSync,
-  redactSensitiveText, wrapCandidateCommand, writeContainedFile, writeContainedFileSync,
+  containsSensitiveText, ensureContainedDirectorySync, readContainedFileSync,
+  redactSensitiveText, writeContainedFile, writeContainedFileSync,
 } from '../lib/security-utils.mjs';
 
 // Use process.cwd() as the reliable project root
@@ -42,61 +41,11 @@ const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
-const ISOLATED_HOME = mkdtempSync(join(tmpdir(), 'release-quality-review-gate-home-'));
-const CHECKOUT_PARENT = mkdtempSync(join(tmpdir(), 'release-quality-review-gate-checkout-'));
-const SUBPROCESS_ENV = createCandidateSubprocessEnv(process.env, ISOLATED_HOME);
-process.on('exit', () => {
-  rmSync(ISOLATED_HOME, { recursive: true, force: true });
-  rmSync(CHECKOUT_PARENT, { recursive: true, force: true });
-});
-
-function execSync(command, options = {}) {
-  const { sandboxReadOnlyRoots = [], sandboxWriteRoots = [ISOLATED_HOME], ...execOptions } = options;
-  const wrapped = wrapCandidateCommand('/bin/sh', ['-c', command], {
-    readOnlyRoots: [PROJECT_ROOT, ...sandboxReadOnlyRoots], writeRoots: sandboxWriteRoots,
-  });
-  return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env: SUBPROCESS_ENV });
-}
-
-function execFileSync(file, args, options = {}) {
-  const { sandboxReadOnlyRoots = [], sandboxWriteRoots = [ISOLATED_HOME], ...execOptions } = options;
-  const wrapped = wrapCandidateCommand(file, args, {
-    readOnlyRoots: [PROJECT_ROOT, ...sandboxReadOnlyRoots], writeRoots: sandboxWriteRoots,
-  });
-  return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env: SUBPROCESS_ENV });
-}
-
-function prepareCandidateCheckout() {
-  const checkout = join(CHECKOUT_PARENT, 'candidate-checkout');
-  if (!existsSync(checkout)) {
-    execFileSync('git', ['clone', '--quiet', '--no-hardlinks', PROJECT_ROOT, checkout], {
-      cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
-      sandboxWriteRoots: [ISOLATED_HOME, CHECKOUT_PARENT],
-    });
-    ensureContainedDirectorySync(checkout, join(checkout, 'quality-reports'));
-  }
-  return checkout;
-}
-
-function readCheckoutIdentity(root) {
-  const options = { cwd: root, encoding: 'utf8', timeout: 10000, sandboxReadOnlyRoots: [root] };
-  return {
-    commit: execFileSync('git', ['rev-parse', 'HEAD'], options).trim(),
-    tree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], options).trim(),
-    status: execFileSync('git', ['status', '--short'], options).trim(),
-  };
-}
-
-function validateCandidateCheckout(root, initial) {
-  const source = readCheckoutIdentity(PROJECT_ROOT);
-  const final = readCheckoutIdentity(root);
-  if (source.status !== '' || initial.status !== '' || final.status !== '' ||
-      initial.commit !== source.commit || initial.tree !== source.tree ||
-      final.commit !== source.commit || final.tree !== source.tree) {
-    throw new Error('automated verification checkout identity changed or source checkout is dirty');
-  }
-  return { status: 'pass', source_commit: source.commit, source_tree: source.tree, initial, final };
-}
+const {
+  isolatedHome: ISOLATED_HOME, execSync, execFileSync,
+  prepareCheckout: prepareCandidateCheckout, readIdentity: readCheckoutIdentity,
+  validateCheckout: validateCandidateCheckout,
+} = createCandidateRuntime(PROJECT_ROOT, 'gate');
 
 // ANSI colors
 const colors = {

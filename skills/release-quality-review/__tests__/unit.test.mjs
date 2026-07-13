@@ -750,15 +750,27 @@ test.describe('CLI fail-closed integration', () => {
     for (const name of ['review-gate.mjs', 'review-runner.mjs']) {
       const source = readFileSync(join(SKILL_DIR, 'scripts', name), 'utf8');
       assertEqual(source.includes('writeRoots: [REPORT_DIR, ISOLATED_HOME]'), false, `${name} exposes report root`);
-      assertEqual(source.includes('sandboxWriteRoots = [ISOLATED_HOME]'), true, `${name} lacks isolated write root`);
-      assertEqual(source.includes('prepareCandidateCheckout()'), true, `${name} lacks isolated checkout`);
+      assertEqual(source.includes('createCandidateRuntime'), true, `${name} bypasses shared candidate runtime`);
     }
+    const gate = readFileSync(join(SKILL_DIR, 'scripts', 'review-gate.mjs'), 'utf8');
+    assertEqual(gate.includes('prepareCandidateCheckout()'), true, 'Gate lacks isolated checkout');
+    const runtime = readFileSync(join(SKILL_DIR, 'lib', 'candidate-runtime.mjs'), 'utf8');
+    assertEqual(runtime.includes('sandboxWriteRoots = [isolatedHome]'), true, 'Shared runtime lacks isolated write root');
   });
 
   test('release evidence exposes a coverage command and versioned changelog', () => {
     const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'));
     assertTrue(typeof manifest.scripts?.coverage === 'string', 'Expected a coverage script');
     assertEqual(existsSync(join(PROJECT_ROOT, 'CHANGELOG.md')), true, 'Expected CHANGELOG.md');
+  });
+
+  test('documented agentic workflow binds clean evidence before collection on supported CI', () => {
+    const readme = readFileSync(join(PROJECT_ROOT, 'README.md'), 'utf8');
+    const clean = readme.indexOf('npm run skill:verify-clean');
+    const runner = readme.indexOf('npm run review -- --profile agentic-release-gate');
+    assertTrue(clean >= 0 && runner >= 0 && clean < runner, 'Clean evidence must precede the collecting runner');
+    const workflow = readFileSync(join(PROJECT_ROOT, '.github', 'workflows', 'skill-quality.yml'), 'utf8');
+    assertTrue(workflow.includes('runs-on: macos-latest'), 'Sandbox validation requires a Darwin CI runner');
   });
 
   test('parallel runner terminates hung reviewers and exits with agent failure', () => {
@@ -894,7 +906,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000 });
       assertEqual(result.status, 1);
       assertEqual(result.stderr.includes('results is not defined'), false);
-      assertEqual(existsSync(join(round, 'metadata.json')), true);
+      assertEqual(existsSync(join(round, 'runner-metadata.json')), true);
       assertEqual(existsSync(join(round, 'product-flow', 'prompt.md')), true);
       assertEqual(existsSync(join(round, 'architecture-maintainer', 'prompt.md')), true);
     } finally {

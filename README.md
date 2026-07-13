@@ -48,15 +48,23 @@ Host workflow:
 For `agentic-release-gate`, use this complete high-assurance workflow:
 
 1. Commit the bounded candidate so evidence can bind an immutable commit/tree.
-2. Run the runner with explicit round/base. It creates `phase-N-plan.md`,
-   reviewer prompts, `metadata.json`, and initial evidence; exit `1` is expected
-   while packets are pending:
+2. Persist isolated clean-checkout verification for that same commit before any
+   collecting Gate pass:
+
+```bash
+npm run skill:verify-clean -- --output quality-reports/round-001/evidence/clean-candidate.json
+```
+
+3. Run the runner with explicit round/base. It creates `phase-N-plan.md`,
+   reviewer prompts, `runner-metadata.json`, and initial prompt evidence; its
+   Gate pass binds `metadata.json` to the already persisted clean evidence.
+   Exit `1` is expected while packets are pending:
 
 ```bash
 npm run review -- --profile agentic-release-gate --round 1 --base <base-ref>
 ```
 
-3. The host writes `generated-goal.md`, `changes.md`, `diff-summary.md`,
+4. The host writes `generated-goal.md`, `changes.md`, `diff-summary.md`,
    `risk.md`, and `handoff.md`. Their contracts are in
    `skills/release-quality-review/SKILL.md` and
    `skills/release-quality-review/rubrics/delivery-packet.schema.yaml`.
@@ -69,12 +77,6 @@ npm run review -- --profile agentic-release-gate --round 1 --base <base-ref>
 node skills/release-quality-review/scripts/goal-instruction-gate.mjs \
   --file quality-reports/round-001/generated-goal.md
 npm run skill:gate -- --profile agentic-release-gate --round 1 --base <base-ref>
-```
-
-4. Persist isolated clean-checkout verification for that same commit:
-
-```bash
-npm run skill:verify-clean -- --output quality-reports/round-001/evidence/clean-candidate.json
 ```
 
 5. Launch every resident, triggered conditional, and adversarial reviewer.
@@ -102,6 +104,8 @@ Troubleshooting:
   `npm run skill:check-drift`.
 - Exit `4`: correct invalid CLI/profile/path input.
 - Exit `5`: the local Codex CLI required for parallel reviewer launch is unavailable.
+- Persisted-evidence mismatch: rerun `skill:verify-clean` first, then rerun the
+  collecting Gate command so `metadata.json` binds the same clean evidence.
 
 `skills.lock.yaml` records canonical and adapter SHA-256 hashes. CI runs the
 drift check, tests, syntax validation, and review-gate dry-run.

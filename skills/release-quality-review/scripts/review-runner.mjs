@@ -17,15 +17,15 @@
  *   node review-runner.mjs --target <dir>  # Review a specific directory (self-review)
  */
 
-import { readFileSync, existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, realpathSync, statSync } from 'fs';
 import { join } from 'path';
-import { tmpdir } from 'node:os';
 import { execFileSync as nodeExecFileSync, spawn } from 'child_process';
 import { matchesTriggerConditions, parseYamlProfile as parseYamlProfileShared } from '../lib/review-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
+import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
 import {
-  createCandidateSubprocessEnv, createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
-  redactSensitiveText, resolveWithinRoot, wrapCandidateCommand, writeContainedFileSync,
+  createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
+  redactSensitiveText, resolveWithinRoot, writeContainedFileSync,
 } from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
@@ -33,52 +33,11 @@ const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 const TOOL_ENV = createSubprocessEnv();
-const ISOLATED_HOME = mkdtempSync(join(tmpdir(), 'release-quality-review-runner-home-'));
-const CHECKOUT_PARENT = mkdtempSync(join(tmpdir(), 'release-quality-review-runner-checkout-'));
-const CANDIDATE_ENV = createCandidateSubprocessEnv(process.env, ISOLATED_HOME);
-process.on('exit', () => {
-  rmSync(ISOLATED_HOME, { recursive: true, force: true });
-  rmSync(CHECKOUT_PARENT, { recursive: true, force: true });
-});
+const {
+  env: CANDIDATE_ENV, execSync, execFileSync,
+} = createCandidateRuntime(PROJECT_ROOT, 'runner');
 const REVIEWER_TIMEOUT_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_TIMEOUT_MS, 15 * 60 * 1000);
 const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS, 5000);
-
-function execSync(command, options = {}) {
-  const { sandboxReadOnlyRoots = [], sandboxWriteRoots = [ISOLATED_HOME], ...execOptions } = options;
-  const wrapped = wrapCandidateCommand('/bin/sh', ['-c', command], {
-    readOnlyRoots: [PROJECT_ROOT, ...sandboxReadOnlyRoots], writeRoots: sandboxWriteRoots,
-  });
-  return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env: CANDIDATE_ENV });
-}
-
-function execFileSync(file, args, options = {}) {
-  const { sandboxReadOnlyRoots = [], sandboxWriteRoots = [ISOLATED_HOME], ...execOptions } = options;
-  const wrapped = wrapCandidateCommand(file, args, {
-    readOnlyRoots: [PROJECT_ROOT, ...sandboxReadOnlyRoots], writeRoots: sandboxWriteRoots,
-  });
-  return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env: CANDIDATE_ENV });
-}
-
-function prepareCandidateCheckout() {
-  const checkout = join(CHECKOUT_PARENT, 'candidate-checkout');
-  if (!existsSync(checkout)) {
-    execFileSync('git', ['clone', '--quiet', '--no-hardlinks', PROJECT_ROOT, checkout], {
-      cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
-      sandboxWriteRoots: [ISOLATED_HOME, CHECKOUT_PARENT],
-    });
-    ensureContainedDirectorySync(checkout, join(checkout, 'quality-reports'));
-  }
-  return checkout;
-}
-
-function readCheckoutIdentity(root) {
-  const options = { cwd: root, encoding: 'utf8', timeout: 10000, sandboxReadOnlyRoots: [root] };
-  return {
-    commit: execFileSync('git', ['rev-parse', 'HEAD'], options).trim(),
-    tree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], options).trim(),
-    status: execFileSync('git', ['status', '--short'], options).trim(),
-  };
-}
 
 function parsePositiveDuration(value, fallback) {
   if (value === undefined) return fallback;
@@ -252,10 +211,6 @@ function collectEvidence(config) {
   const isSelfReview = REVIEW_TARGET !== PROJECT_ROOT;
   const targetName = isSelfReview ? 'Skill Self-Review' : 'Project';
 
-  // Get commands from config or use defaults
-  const testCmd = config?.verification?.test || 'pnpm test';
-  const typecheckCmd = config?.verification?.typecheck || 'pnpm typecheck';
-
   const evidence = {
     timestamp: new Date().toISOString(),
     target: targetName,
@@ -355,64 +310,8 @@ function collectEvidence(config) {
     // Ignore - some checks may fail
   }
 
-  // Run actual tests and typecheck if in project root
-  evidence.testResults = { available: false };
-  if (!isSelfReview && REVIEW_TARGET === PROJECT_ROOT) {
-    const candidateRoot = prepareCandidateCheckout();
-    const candidateReportRoot = join(candidateRoot, 'quality-reports');
-    const initialCheckout = readCheckoutIdentity(candidateRoot);
-    const candidateOptions = {
-      sandboxReadOnlyRoots: [candidateRoot],
-      sandboxWriteRoots: [ISOLATED_HOME, candidateReportRoot],
-    };
-    try {
-      // Run tests
-      log.info(`Running: ${testCmd}`);
-      const testOutput = execSync(`${testCmd} 2>&1`, {
-        encoding: 'utf-8',
-        timeout: 120000,
-        cwd: candidateRoot,
-        env: CANDIDATE_ENV,
-        ...candidateOptions,
-      });
-      evidence.testResults = {
-        available: true,
-        passed: /(\d+)\s+pass/.test(testOutput) ? (testOutput.match(/(\d+)\s+pass/) || ['0', '0'])[1] : '?',
-        failed: /(\d+)\s+fail/.test(testOutput) ? (testOutput.match(/(\d+)\s+fail/) || ['0', '0'])[1] : '0',
-        output: testOutput.slice(0, 2000), // First 2000 chars
-      };
-    } catch (e) {
-      evidence.testResults = {
-        available: true,
-        passed: '0',
-        failed: '?',
-        output: String(e.message).slice(0, 500),
-      };
-    }
-
-    try {
-      // Run typecheck
-      log.info(`Running: ${typecheckCmd}`);
-      const typeOutput = execSync(`${typecheckCmd} 2>&1`, {
-        encoding: 'utf-8',
-        timeout: 60000,
-        cwd: candidateRoot,
-        env: CANDIDATE_ENV,
-        ...candidateOptions,
-      });
-      evidence.typecheckResults = { passed: true, output: typeOutput.slice(0, 1000) };
-    } catch (e) {
-      evidence.typecheckResults = { passed: false, output: String(e.message).slice(0, 500) };
-    }
-    const finalCheckout = readCheckoutIdentity(candidateRoot);
-    const sourceIdentity = readCheckoutIdentity(PROJECT_ROOT);
-    if (sourceIdentity.status !== '' || initialCheckout.status !== '' || finalCheckout.status !== '' ||
-        initialCheckout.commit !== sourceIdentity.commit || initialCheckout.tree !== sourceIdentity.tree ||
-        finalCheckout.commit !== sourceIdentity.commit || finalCheckout.tree !== sourceIdentity.tree) {
-      throw new Error('automated verification checkout identity changed or source checkout is dirty');
-    }
-    evidence.candidateCheckout = { status: 'pass', source: sourceIdentity, initial: initialCheckout, final: finalCheckout };
-  }
+  // Gate is the single producer and validator of automated command evidence.
+  evidence.testResults = { available: false, delegatedToGate: true };
 
   log.success(`Git: ${evidence.git.branch || '?'} @ ${evidence.git.commit || '?'}`);
   log.success(`Changed: ${evidence.git.changedFiles?.length || 0} files`);
@@ -701,7 +600,10 @@ function runGateCheck(roundDir, profileName, round) {
       return { passed: true, roundDir };
     }
   } catch (e) {
-    log.error('Gate check failed');
+    const exit = Number.isInteger(e.status) ? e.status : 'spawn-error';
+    const signal = e.signal ? `, signal ${e.signal}` : '';
+    log.error(`Gate check failed (exit ${exit}${signal})`);
+    return { passed: false, roundDir, exitCode: e.status ?? null, signal: e.signal ?? null };
   }
 
   return { passed: false, roundDir };
@@ -943,7 +845,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       structure: evidence.structure,
     },
   };
-  writeContainedFileSync(roundDir, join(roundDir, 'metadata.json'), JSON.stringify(meta, null, 2));
+  writeContainedFileSync(roundDir, join(roundDir, 'runner-metadata.json'), JSON.stringify(meta, null, 2));
 
   console.log(`\n${c.green}✓${c.reset} Metadata written`);
 
