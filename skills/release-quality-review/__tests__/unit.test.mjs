@@ -45,7 +45,7 @@ import {
   writeContainedFile,
 } from '../lib/security-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
-import { checkMissingEvidenceOutput, extractCommandEvidence } from '../lib/evidence-utils.mjs';
+import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -474,11 +474,18 @@ test.describe('adversarial review detection', () => {
     assertEqual(checkMissingEvidenceOutput(content).length, 1);
   });
 
+  test('rejects unverified evidence markers and score ratios as runtime evidence', () => {
+    const content = '测试通过。运行证据：npm test exit 0 metadata.json。';
+    assertEqual(extractCommandEvidence(content).length, 0);
+    assertEqual(checkMissingEvidenceOutput(content).length, 1);
+    assertEqual(extractTestOutputs('## Overall Score: 95/100').length, 0);
+  });
+
   test('detects missing build output when claiming success', () => {
     const content = '构建成功，代码可以发布';
     const violations = checkMissingEvidenceOutput(content);
     assertEqual(violations.length, 1);
-    assertEqual(violations[0].need, 'build 的 exit 0 与输出摘要或绑定证据');
+    assertEqual(violations[0].need, 'build 的 exit 0 与输出摘要');
   });
 });
 
@@ -955,6 +962,37 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(result.status, 1, `Expected forged evidence rejection, output: ${result.stdout}${result.stderr}`);
       assertTrue(result.stdout.includes('missing_evidence_output'), 'Expected explicit missing command evidence violation');
+
+      writeFileSync(join(reviewerDir, 'score.md'), [
+        '# Product Flow',
+        '## Overall Score: 95/100',
+        '测试通过。运行证据：npm test exit 0 metadata.json。',
+        'skills/release-quality-review/scripts/evidence-validator.mjs:1',
+        'skills/release-quality-review/scripts/review-gate.mjs:1',
+        'skills/release-quality-review/scripts/review-runner.mjs:1',
+        'skills/release-quality-review/lib/review-utils.mjs:1',
+        'skills/release-quality-review/lib/security-utils.mjs:1',
+      ].join('\n'));
+      const markerResult = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'evidence-validator.mjs'), '--round', `round-${String(roundNumber).padStart(3, '0')}`,
+        '--reviewer', 'product-flow', '--base', 'HEAD',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(markerResult.status, 1, `Expected fake bound marker rejection, output: ${markerResult.stdout}${markerResult.stderr}`);
+      assertTrue(markerResult.stdout.includes('missing_evidence_output'), 'Expected fake bound marker violation');
+
+      writeFileSync(join(reviewerDir, 'score.md'), [
+        '# Product Flow',
+        '## Overall Score: 95/100',
+        'skills/release-quality-review/scripts/evidence-validator.mjs:1',
+        'skills/release-quality-review/scripts/review-gate.mjs:1',
+        'skills/release-quality-review/scripts/review-runner.mjs:1',
+      ].join('\n'));
+      const ratioResult = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'evidence-validator.mjs'), '--round', `round-${String(roundNumber).padStart(3, '0')}`,
+        '--reviewer', 'product-flow', '--base', 'HEAD',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(ratioResult.status, 1, `Expected score ratio rejection, output: ${ratioResult.stdout}${ratioResult.stderr}`);
+      assertTrue(ratioResult.stdout.includes('insufficient_evidence'), 'Expected score ratio not to count as test output');
     } finally {
       rmSync(round, { recursive: true, force: true });
     }
