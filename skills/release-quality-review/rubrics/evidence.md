@@ -41,6 +41,7 @@
 - ❌ **禁止**: Reviewer 引用自己在本次评审中写入或修改的代码/测试
 - ❌ **禁止**: 把执行者总结当作独立证据
 - ❌ **禁止**: 把候选自带的任意 Node 程序打印出的 TAP/coverage 摘要当作 test/coverage runner 证据
+- ❌ **禁止**: 用 fallback、pipeline、顺序执行或矛盾摘要掩盖 runner 的失败状态
 
 **检测伪完成的检查点**：
 1. 声称"测试通过"但没有 `pnpm test` 输出

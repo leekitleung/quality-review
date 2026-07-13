@@ -201,6 +201,20 @@ test.describe('verification script integrity', () => {
     assertEqual(findTrivialVerificationScripts(scripts, commands).length, 4);
   });
 
+  test('rejects shell operators that can mask verifier failure and contradictory summaries', () => {
+    const scripts = {
+      test: 'node --test test.mjs || true',
+      coverage: 'node --experimental-test-coverage --test test.mjs | cat',
+      lint: 'node --check app.mjs; true',
+      build: 'node --check app.mjs & true',
+    };
+    assertEqual(findTrivialVerificationScripts(
+      scripts, ['npm test', 'npm run coverage', 'npm run lint', 'npm run build']
+    ).length, 4);
+    assertEqual(hasConcreteVerificationOutput('test', '# tests 1\n# fail 0\n# tests 1\n# fail 1'), false);
+    assertEqual(hasConcreteVerificationOutput('test', '# tests 1\n# fail 0\n# tests 2\n# fail 0'), true);
+  });
+
   test('rejects arbitrary Node programs, inline evaluation, and mismatched runner capabilities', () => {
     const commands = ['npm test', 'npm run coverage', 'npm run typecheck', 'npm run lint', 'npm run build'];
     for (const nodeCommand of [
@@ -1153,6 +1167,48 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     assertEqual(clean.status, 1, `Expected forged Node clean-verifier rejection, output: ${clean.stdout}${clean.stderr}`);
     const cleanEvidence = JSON.parse(readFileSync(output, 'utf8'));
     assertEqual(cleanEvidence.commands[1].id, 'script-integrity');
+    assertEqual(cleanEvidence.commands[1].status, 'fail');
+  });
+
+  test('Gate and clean verifier reject masked runner failures with forged summaries', () => {
+    const repository = join(TEST_DIR, 'masked-runner-failure-repository');
+    const clone = spawnSync('git', ['clone', '--quiet', '--no-local', PROJECT_ROOT, repository], {
+      cwd: TEST_DIR, encoding: 'utf8', timeout: 30000,
+    });
+    assertEqual(clone.status, 0, `Expected fixture clone, output: ${clone.stdout}${clone.stderr}`);
+    const manifestPath = join(repository, 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    manifest.scripts.test = 'node --test failing-verifier.test.mjs >/dev/null 2>&1 || node fake-verifier.mjs';
+    manifest.scripts.coverage = 'node --experimental-test-coverage --test failing-verifier.test.mjs >/dev/null 2>&1 || node fake-verifier.mjs';
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    writeFileSync(join(repository, 'failing-verifier.test.mjs'),
+      "import test from 'node:test';\ntest('fixture fails', () => { throw new Error('expected'); });\n");
+    writeFileSync(join(repository, 'fake-verifier.mjs'),
+      "console.log('# tests 1\\n# fail 0\\n# start of coverage report');\n");
+    spawnSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository, encoding: 'utf8' });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: repository, encoding: 'utf8' });
+    spawnSync('git', ['add', 'package.json', 'failing-verifier.test.mjs', 'fake-verifier.mjs'], {
+      cwd: repository, encoding: 'utf8',
+    });
+    const commit = spawnSync('git', ['commit', '--quiet', '-m', 'mask runner failure'], {
+      cwd: repository, encoding: 'utf8',
+    });
+    assertEqual(commit.status, 0, `Expected fixture commit, output: ${commit.stdout}${commit.stderr}`);
+    const fixtureBase = spawnSync('git', ['rev-parse', 'HEAD^'], { cwd: repository, encoding: 'utf8' }).stdout.trim();
+
+    const gate = spawnSync(process.execPath, [
+      join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '1', '--base', fixtureBase,
+    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    assertEqual(gate.status, 1, `Expected masked-failure Gate rejection, output: ${gate.stdout}${gate.stderr}`);
+    assertTrue(gate.stdout.includes('trivial or missing verification scripts'), 'Gate must reject masking operators');
+
+    const outputArg = join('quality-reports', 'round-002', 'evidence', 'clean-candidate.json');
+    const output = join(repository, outputArg);
+    const clean = spawnSync(process.execPath, [
+      join(PROJECT_ROOT, 'scripts', 'verify-clean-candidate.mjs'), '--output', outputArg,
+    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    assertEqual(clean.status, 1, `Expected masked-failure clean rejection, output: ${clean.stdout}${clean.stderr}`);
+    const cleanEvidence = JSON.parse(readFileSync(output, 'utf8'));
     assertEqual(cleanEvidence.commands[1].status, 'fail');
   });
 

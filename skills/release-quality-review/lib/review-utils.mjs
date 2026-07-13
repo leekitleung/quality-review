@@ -115,10 +115,11 @@ function scriptNameFromCommand(command) {
 function hasMeaningfulScript(name, scripts, requiredKind = verificationKind(name), visiting = new Set()) {
   if (!name || visiting.has(name) || typeof scripts?.[name] !== 'string') return false;
   const nextVisiting = new Set(visiting).add(name);
-  // A successful left side short-circuits every later `||` branch. Only the
-  // first branch can establish that a verifier actually runs on the pass path.
-  const reachableSuccessBranch = scripts[name].split(/\s*\|\|\s*/, 1)[0];
-  const segments = reachableSuccessBranch.split(/\s*(?:&&|;)\s*/).filter(Boolean);
+  // Only `&&` preserves verifier failure. Fallbacks, pipelines, sequential
+  // commands, backgrounding and newlines can replace a failed exit status.
+  const withoutSafeAnd = scripts[name].replaceAll('&&', '');
+  if (/[|;&\r\n]/.test(withoutSafeAnd)) return false;
+  const segments = scripts[name].split(/\s*&&\s*/).filter(Boolean);
   return segments.some(segment => {
     const trimmed = segment.trim();
     const nested = scriptNameFromCommand(trimmed);
@@ -140,9 +141,11 @@ export function findTrivialVerificationScripts(scripts, commands) {
 export function hasConcreteVerificationOutput(kind, output) {
   const text = String(output || '');
   if (kind === 'test') {
-    const total = text.match(/#\s*tests\s+(\d+)/i);
-    const failed = text.match(/#\s*fail\s+(\d+)/i);
-    if (total && failed) return Number(total[1]) > 0 && Number(failed[1]) === 0;
+    const totals = [...text.matchAll(/#\s*tests\s+(\d+)/gi)].map(match => Number(match[1]));
+    const failures = [...text.matchAll(/#\s*fail\s+(\d+)/gi)].map(match => Number(match[1]));
+    if (totals.length > 0 && failures.length > 0) {
+      return totals.some(total => total > 0) && failures.every(failed => failed === 0);
+    }
     const passed = text.match(/\b(\d+)\s+passed\b/i);
     return Boolean(passed && Number(passed[1]) > 0 && !/\b[1-9]\d*\s+failed\b/i.test(text));
   }

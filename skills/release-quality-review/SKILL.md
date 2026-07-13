@@ -33,6 +33,7 @@ description: Run an evidence-backed multi-reviewer release quality gate with ind
 - 可信：宿主/orchestrator、固定 commit 上的 Gate 代码、独立 reviewer、真实 report root。
 - 不可信：候选子进程及其输出；它们不得写真实源码或 report root。
 - 自动门禁只接受与用途匹配的受支持 runner（test、coverage 或 code-check）；候选自带的任意 Node 程序及其摘要输出不能充当验证证据。
+- 验证脚本只允许用 `&&` 组合命令；所有 test 摘要必须一致且不得出现任何非零 failure。
 - SHA-256 用于检测收集到仲裁之间的漂移，不是签名或远端证明。
 - 能同时改写 Gate 代码、证据和相邻 metadata 的宿主写入者已越过本地信任边界；该威胁必须由受保护 CI 或外部签名证据处理。
 - 直接把调用者构造的对象传给纯语义 validator，只能测试 schema/一致性检查，不能单独证明受支持 Gate 流程可被不可信候选绕过。
