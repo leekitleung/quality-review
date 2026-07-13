@@ -192,6 +192,14 @@ test.describe('verification script integrity', () => {
     assertEqual(hasConcreteVerificationOutput('coverage', 'command exited 0'), false);
     assertEqual(hasConcreteVerificationOutput('coverage', '# start of coverage report'), true);
   });
+
+  test('rejects unknown success wrappers by allowlisting verification tools', () => {
+    const scripts = {
+      test: 'env true', coverage: 'command sh -c true', lint: 'bash -lc true', build: 'exec true',
+    };
+    const commands = ['npm test', 'npm run coverage', 'npm run lint', 'npm run build'];
+    assertEqual(findTrivialVerificationScripts(scripts, commands).length, 4);
+  });
 });
 
 // ============================================================================
@@ -1056,12 +1064,12 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     assertEqual(clone.status, 0, `Expected fixture clone, output: ${clone.stdout}${clone.stderr}`);
     const manifestPath = join(repository, 'package.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-    manifest.scripts.test = 'sh -c true';
-    manifest.scripts.coverage = 'command true';
-    manifest.scripts.typecheck = 'true || npm run test:skill';
-    manifest.scripts.build = 'node -e "process.exitCode=0"';
-    manifest.scripts.lint = 'exit 0 || npm run test:skill';
-    for (const name of ['skill:check-drift', 'skill:check', 'skill:verify']) manifest.scripts[name] = 'true';
+    manifest.scripts.test = 'env true';
+    manifest.scripts.coverage = 'command sh -c true';
+    manifest.scripts.typecheck = 'bash -lc true';
+    manifest.scripts.build = 'exec true';
+    manifest.scripts.lint = 'nice true';
+    for (const name of ['skill:check-drift', 'skill:check', 'skill:verify']) manifest.scripts[name] = 'env true';
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     spawnSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository, encoding: 'utf8' });
     spawnSync('git', ['config', 'user.name', 'Test'], { cwd: repository, encoding: 'utf8' });

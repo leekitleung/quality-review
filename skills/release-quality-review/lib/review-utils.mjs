@@ -50,7 +50,7 @@ export function parseScore(scoreContent) {
   return null;
 }
 
-const TRIVIAL_SUCCESS_SCRIPT = /^(?::|(?:command\s+)?true|exit\s+0|(?:echo|printf)\b.*|(?:sh|bash|zsh)\s+-c\s+["']?(?::|true|exit\s+0)["']?|node(?:\.exe)?\s+(?:-e|--eval|-p)\b.*)$/i;
+const VERIFICATION_COMMAND = /^(?:node(?:\.exe)?\s+(?!-e(?:\s|$)|--eval(?:\s|$)|-p(?:\s|$))\S+|(?:tsc|eslint|jest|vitest|playwright|cypress|mocha|ava|nyc|pytest|ruff|mypy)\b|(?:go|cargo|swift|deno|bun|dotnet)\s+(?:test|check|build|lint|vet|clippy)\b|(?:make|cmake|ninja|mvn|gradle|xcodebuild)\b)/i;
 
 function scriptNameFromCommand(command) {
   const match = String(command || '').trim().match(/^(?:npm|pnpm|yarn)\s+(?:run\s+)?([A-Za-z0-9:._-]+)(?:\s|$)/);
@@ -68,7 +68,7 @@ function hasMeaningfulScript(name, scripts, visiting = new Set()) {
     const trimmed = segment.trim();
     const nested = scriptNameFromCommand(trimmed);
     if (nested) return hasMeaningfulScript(nested, scripts, nextVisiting);
-    return !TRIVIAL_SUCCESS_SCRIPT.test(trimmed);
+    return VERIFICATION_COMMAND.test(trimmed);
   });
 }
 
