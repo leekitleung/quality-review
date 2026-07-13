@@ -167,6 +167,18 @@ test.describe('verification script integrity', () => {
     };
     assertEqual(findTrivialVerificationScripts(real, commands).length, 0);
   });
+
+  test('rejects verifier text hidden behind a successful OR branch', () => {
+    const scripts = {
+      test: 'true || npm run unit',
+      coverage: 'echo 100% || npm run unit',
+      lint: 'node -e "process.exit(0)" || npm run unit',
+      build: 'exit 0 || npm run unit',
+      unit: 'node --test test.mjs',
+    };
+    const commands = ['npm test', 'npm run coverage', 'npm run lint', 'npm run build'];
+    assertEqual(findTrivialVerificationScripts(scripts, commands).length, 4);
+  });
 });
 
 // ============================================================================
@@ -1027,9 +1039,12 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     assertEqual(clone.status, 0, `Expected fixture clone, output: ${clone.stdout}${clone.stderr}`);
     const manifestPath = join(repository, 'package.json');
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-    for (const name of ['test', 'coverage', 'typecheck', 'build', 'lint', 'skill:check-drift', 'skill:check', 'skill:verify']) {
-      manifest.scripts[name] = name === 'build' ? 'node -e "process.exit(0)"' : 'true';
-    }
+    manifest.scripts.test = 'true';
+    manifest.scripts.coverage = 'echo 100% || npm run test:skill';
+    manifest.scripts.typecheck = 'true || npm run test:skill';
+    manifest.scripts.build = 'node -e "process.exit(0)" || npm run test:skill';
+    manifest.scripts.lint = 'exit 0 || npm run test:skill';
+    for (const name of ['skill:check-drift', 'skill:check', 'skill:verify']) manifest.scripts[name] = 'true';
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     spawnSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository, encoding: 'utf8' });
     spawnSync('git', ['config', 'user.name', 'Test'], { cwd: repository, encoding: 'utf8' });

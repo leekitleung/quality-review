@@ -60,7 +60,10 @@ function scriptNameFromCommand(command) {
 function hasMeaningfulScript(name, scripts, visiting = new Set()) {
   if (!name || visiting.has(name) || typeof scripts?.[name] !== 'string') return false;
   const nextVisiting = new Set(visiting).add(name);
-  const segments = scripts[name].split(/\s*(?:&&|\|\||;)\s*/).filter(Boolean);
+  // A successful left side short-circuits every later `||` branch. Only the
+  // first branch can establish that a verifier actually runs on the pass path.
+  const reachableSuccessBranch = scripts[name].split(/\s*\|\|\s*/, 1)[0];
+  const segments = reachableSuccessBranch.split(/\s*(?:&&|;)\s*/).filter(Boolean);
   return segments.some(segment => {
     const trimmed = segment.trim();
     const nested = scriptNameFromCommand(trimmed);
