@@ -613,7 +613,29 @@ function validCandidateCheckoutEvidence(record, expectedCommit, expectedTree) {
     record.final?.commit === expectedCommit && record.final?.tree === expectedTree && record.final?.status === '';
 }
 
-function persistFinalArbitration(roundDir, passed, reason) {
+function collectReviewerPacketDigests(roundDir, packetReviewers) {
+  const requiredFiles = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md'];
+  const digests = {};
+  for (const reviewer of packetReviewers) {
+    const reviewerDir = join(roundDir, reviewer);
+    const paths = requiredFiles.map(file => join(reviewerDir, file));
+    if (!paths.every(existsSync)) continue;
+    try {
+      const hash = createHash('sha256');
+      for (let index = 0; index < requiredFiles.length; index++) {
+        const content = readContainedFileSync(roundDir, paths[index]);
+        hash.update(`${requiredFiles[index]}\0${Buffer.byteLength(content)}\0`);
+        hash.update(content);
+      }
+      digests[reviewer] = hash.digest('hex');
+    } catch {
+      digests[reviewer] = null;
+    }
+  }
+  return digests;
+}
+
+function persistFinalArbitration(roundDir, passed, reason, packetReviewers = []) {
   const evidenceDir = join(roundDir, 'evidence');
   ensureContainedDirectorySync(roundDir, evidenceDir);
   const record = {
@@ -624,6 +646,9 @@ function persistFinalArbitration(roundDir, passed, reason) {
     status: passed ? 'pass' : 'fail',
     exit_code: passed ? 0 : 1,
     reason,
+    candidate_commit: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(),
+    candidate_tree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim(),
+    reviewer_packet_sha256: collectReviewerPacketDigests(roundDir, packetReviewers),
   };
   const content = `${JSON.stringify(record, null, 2)}\n`;
   if (containsSensitiveText(content)) throw new Error('final arbitration contains sensitive text');
@@ -821,7 +846,7 @@ function validateReviewerIdentity(reviewer, profile) {
 
 // Load existing scores for a round
 // SECURITY: This function validates score authenticity
-function loadExistingScores(roundDir, reviewers) {
+function loadExistingScores(roundDir, reviewers, expectedCandidateCommit, expectedCandidateTree) {
   const results = {};
 
   for (const reviewer of reviewers) {
@@ -840,6 +865,8 @@ function loadExistingScores(roundDir, reviewers) {
     let declaredReviewer = null;
     let declaredProfile = null;
     let declaredRound = null;
+    let declaredCandidateCommit = null;
+    let declaredCandidateTree = null;
     let packetError = null;
 
     // Priority: result.yaml > score.md (for score)
@@ -859,6 +886,8 @@ function loadExistingScores(roundDir, reviewers) {
         declaredReviewer = yamlResult.reviewer;
         declaredProfile = yamlResult.profile;
         declaredRound = yamlResult.round;
+        declaredCandidateCommit = yamlResult.candidateCommit;
+        declaredCandidateTree = yamlResult.candidateTree;
 
         // Merge blockers from result.yaml (includes nested severity objects)
         const resultBlockers = yamlResult.blockers.map(b =>
@@ -937,6 +966,8 @@ function loadExistingScores(roundDir, reviewers) {
     if (packetPresent && declaredReviewer !== reviewer) packetError = `Reviewer identity mismatch: expected ${reviewer}, got ${declaredReviewer || 'missing'}`;
     if (packetPresent && declaredProfile !== profile) packetError = `Profile mismatch: expected ${profile}, got ${declaredProfile || 'missing'}`;
     if (packetPresent && declaredRound !== roundNumber) packetError = `Round mismatch: expected ${roundNumber}, got ${declaredRound ?? 'missing'}`;
+    if (packetPresent && declaredCandidateCommit !== expectedCandidateCommit) packetError = `Candidate commit mismatch: expected ${expectedCandidateCommit}, got ${declaredCandidateCommit || 'missing'}`;
+    if (packetPresent && declaredCandidateTree !== expectedCandidateTree) packetError = `Candidate tree mismatch: expected ${expectedCandidateTree}, got ${declaredCandidateTree || 'missing'}`;
     if (packetPresent && !['pass', 'fail'].includes(String(status || '').toLowerCase())) packetError = 'result.yaml status must be pass or fail';
     blockers = [...new Set(blockers.map(item => typeof item === 'string' ? item : JSON.stringify(item)))];
 
@@ -1363,7 +1394,40 @@ async function runGate() {
     ensureContainedDirectorySync(REPORT_DIR, roundDir);
     log.info(`Continuing round: ${roundDir}`);
   }
-  persistFinalArbitration(roundDir, false, 'gate evaluation in progress');
+  const currentCandidateCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+  }).trim();
+  const currentCandidateTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], {
+    cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+  }).trim();
+  if (!isNewRound && collectEvidence) {
+    const existingMetadataPath = join(roundDir, 'metadata.json');
+    const existingCleanPath = join(roundDir, 'evidence', 'clean-candidate.json');
+    try {
+      let boundIdentity = null;
+      if (existsSync(existingMetadataPath)) {
+        const existingMetadata = JSON.parse(readContainedFileSync(roundDir, existingMetadataPath, 'utf8'));
+        boundIdentity = {
+          commit: existingMetadata.candidate_commit,
+          tree: existingMetadata.candidate_tree,
+        };
+      } else if (existsSync(existingCleanPath)) {
+        const existingClean = JSON.parse(readContainedFileSync(roundDir, existingCleanPath, 'utf8'));
+        boundIdentity = {
+          commit: existingClean.candidate_commit,
+          tree: existingClean.candidate_tree,
+        };
+      }
+      if (boundIdentity && (boundIdentity.commit !== currentCandidateCommit || boundIdentity.tree !== currentCandidateTree)) {
+        throw new Error('existing round is bound to a different candidate identity; use a fresh round');
+      }
+    } catch (error) {
+      log.error(`Round candidate identity check failed: ${error.message}`);
+      persistFinalArbitration(roundDir, false, 'candidate identity mismatch', reviewers);
+      return false;
+    }
+  }
+  persistFinalArbitration(roundDir, false, 'gate evaluation in progress', reviewers);
 
   // Collect evidence if requested
   let evidence = null;
@@ -1445,7 +1509,7 @@ async function runGate() {
   }
 
   // Load existing scores
-  const existingScores = loadExistingScores(roundDir, reviewers);
+  const existingScores = loadExistingScores(roundDir, reviewers, currentCandidateCommit, currentCandidateTree);
   const minScore = Number(profileConfig.gate?.min_score ?? 90);
   const pendingReviewers = reviewers.filter(r => !existingScores[r].hasReport);
   const completedReviewers = reviewers.filter(r => existingScores[r].hasReport);
@@ -1785,7 +1849,7 @@ async function runGate() {
       }
     }
     generateSummary(roundDir, profile, existingScores, false, evidence);
-    persistFinalArbitration(roundDir, false, 'invalid reviewer packet');
+    persistFinalArbitration(roundDir, false, 'invalid reviewer packet', reviewers);
     return false;
   }
 
@@ -1801,13 +1865,13 @@ async function runGate() {
       const finalArtifactFindings = scanRoundArtifacts(roundDir);
       if (finalArtifactFindings.length > 0) {
         log.error(`Final artifact security scan failed: ${finalArtifactFindings.join(', ')}`);
-        persistFinalArbitration(roundDir, false, 'final artifact security scan failed');
+        persistFinalArbitration(roundDir, false, 'final artifact security scan failed', reviewers);
         return false;
       }
       log.success('All gates PASSED!');
       log.success('Evidence source validation passed');
       log.success('Goal mode constraint satisfied');
-      persistFinalArbitration(roundDir, true, 'all conjunctive gates passed');
+      persistFinalArbitration(roundDir, true, 'all conjunctive gates passed', reviewers);
       console.log('');
       log.success('🎉 Release is ready!');
       return true;
@@ -1856,7 +1920,7 @@ async function runGate() {
         log.error(`Generated artifact security scan failed: ${sensitiveArtifactFindings.join(', ')}`);
       }
       generateSummary(roundDir, profile, existingScores, false, evidence);
-      persistFinalArbitration(roundDir, false, 'one or more release gates failed');
+      persistFinalArbitration(roundDir, false, 'one or more release gates failed', reviewers);
       return false;
     }
   } else {
@@ -1872,7 +1936,7 @@ async function runGate() {
     console.log('');
 
     generateSummary(roundDir, profile, existingScores, false, evidence);
-    persistFinalArbitration(roundDir, false, 'reviewer packets pending');
+    persistFinalArbitration(roundDir, false, 'reviewer packets pending', reviewers);
     return false;
   }
 }

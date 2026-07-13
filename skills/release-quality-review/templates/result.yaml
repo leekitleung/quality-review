@@ -4,6 +4,8 @@
 reviewer: <reviewer-name>
 profile: <quick|default|release-gate|full|agentic-release-gate>
 round: <positive-round-number>
+candidate_commit: <40-character-git-commit-sha>
+candidate_tree: <40-character-git-tree-sha>
 
 # Overall score (0-100)
 score: <0-100>

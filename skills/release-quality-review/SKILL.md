@@ -355,6 +355,10 @@ Round N: 迭代直到通过或放弃
 | `improvement-list.md` | 是 | P2/P3 改进建议 |
 | `result.yaml` | 是 | 机器可读的标准化输出 |
 
+`result.yaml` 必须声明与本轮 `metadata.json` 完全一致的
+`candidate_commit` 和 `candidate_tree`。候选 commit/tree 改变后不得复用旧
+round 或 reviewer packet；必须使用全新 round 重新评审。
+
 ### 证据收集要求
 
 评审必须有实际证据支撑，不能只靠猜测：

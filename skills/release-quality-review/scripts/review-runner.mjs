@@ -529,6 +529,12 @@ function loadConfig() {
 function generateReviewerPrompt(reviewerName, currentRound) {
   const reviewerContent = loadReviewer(reviewerName);
   if (!reviewerContent) return null;
+  const candidateCommit = nodeExecFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+  }).trim();
+  const candidateTree = nodeExecFileSync('git', ['rev-parse', 'HEAD^{tree}'], {
+    cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+  }).trim();
 
   // Extract key sections for the prompt
   const prompt = `
@@ -566,7 +572,7 @@ function generateReviewerPrompt(reviewerName, currentRound) {
 - blockers.md - P0/P1 必须修复的问题
 - improvement-list.md - P2/P3 改进建议
 
-result.yaml 必须声明 reviewer: ${reviewerName}、profile: ${profile}、round: ${currentRound}。
+result.yaml 必须声明 reviewer: ${reviewerName}、profile: ${profile}、round: ${currentRound}、candidate_commit: ${candidateCommit}、candidate_tree: ${candidateTree}。
 实际输出目录必须是 ${REPORT_DIR}/round-${String(currentRound).padStart(3, '0')}/${reviewerName}/。
 
 ## 评分标准

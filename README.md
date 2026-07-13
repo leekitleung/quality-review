@@ -50,7 +50,8 @@ test ! -e "quality-reports/$REVIEW_ROUND_DIR"
    adapters are in `.claude/agents/`; canonical definitions are in
    `skills/release-quality-review/reviewers/`.
 3. Require each Agent to write `result.yaml`, `score.md`, `blockers.md`, and
-   `improvement-list.md` in its round directory.
+   `improvement-list.md` in its round directory. `result.yaml` must bind the
+   exact candidate from `git rev-parse HEAD` and `git rev-parse HEAD^{tree}`.
 4. Run `npm run skill:gate -- --profile release-gate --round "$REVIEW_ROUND"`. Exit `0` is the
    only release approval; exit `1` means pending or failed review.
 
@@ -94,8 +95,9 @@ npm run skill:gate -- --profile agentic-release-gate --round "$REVIEW_ROUND" --b
    `score.md`, `blockers.md`, and `improvement-list.md` under the same round.
    Start `result.yaml` from
    `skills/release-quality-review/templates/result.yaml`. Every reviewer must
-   score at least `90`; any P0/P1 blocker or redline fails the release, and
-   modified work must be reviewed again.
+   declare the exact candidate commit/tree, score at least `90`; any P0/P1
+   blocker or redline fails the release, and modified work must use a fresh
+   round and be reviewed again.
 6. Validate packets, then run final arbitration against persisted evidence:
 
 ```bash

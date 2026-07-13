@@ -155,6 +155,8 @@ export function parseYamlResult(yamlContent) {
       reviewer: null,
       profile: null,
       round: null,
+      candidateCommit: null,
+      candidateTree: null,
       score: null,
       status: null,
       blockers: [],
@@ -167,6 +169,8 @@ export function parseYamlResult(yamlContent) {
     reviewer: null,
     profile: null,
     round: null,
+    candidateCommit: null,
+    candidateTree: null,
     score: null,
     status: null,
     blockers: [],
@@ -279,6 +283,12 @@ export function parseYamlResult(yamlContent) {
           if (roundMatch) result.round = parseInt(roundMatch[1], 10);
           break;
         }
+        case 'candidate_commit':
+          if (/^[0-9a-f]{40}$/i.test(value)) result.candidateCommit = value.toLowerCase();
+          break;
+        case 'candidate_tree':
+          if (/^[0-9a-f]{40}$/i.test(value)) result.candidateTree = value.toLowerCase();
+          break;
         case 'score':
           const scoreMatch = value.match(/^(\d+)(?:\/100)?$/);
           if (scoreMatch) {

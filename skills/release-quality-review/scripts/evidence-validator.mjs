@@ -22,6 +22,7 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
+import { parseYamlResult } from '../lib/review-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
@@ -379,9 +380,10 @@ function checkEvidenceQuality(content) {
 }
 
 // Main validation
-function validateReviewer(roundDir, reviewer, diffFiles) {
+function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
   const reviewerDir = join(roundDir, reviewer);
   const scorePath = join(reviewerDir, 'score.md');
+  const resultPath = join(reviewerDir, 'result.yaml');
 
   if (!existsSync(scorePath)) {
     return {
@@ -397,6 +399,18 @@ function validateReviewer(roundDir, reviewer, diffFiles) {
   const content = readFileSync(scorePath, 'utf-8');
   const allViolations = [];
   const allWarnings = [];
+
+  if (!existsSync(resultPath)) {
+    allViolations.push({ type: 'missing_result_packet', desc: '缺少必需的 result.yaml，无法绑定候选身份' });
+  } else {
+    const packet = parseYamlResult(readFileSync(resultPath, 'utf8'));
+    if (!candidateIdentity.valid || packet.candidateCommit !== candidateIdentity.commit || packet.candidateTree !== candidateIdentity.tree) {
+      allViolations.push({
+        type: 'candidate_identity_mismatch',
+        desc: `reviewer packet 未绑定当前 candidate commit/tree`,
+      });
+    }
+  }
 
   // Run all checks
   allViolations.push(...checkSelfReferencePatterns(content, reviewer));
@@ -581,7 +595,21 @@ function main() {
   console.log(`${c.blue}ℹ${c.reset} Reviewers: ${reviewers.join(', ')}\n`);
 
   // Validate each reviewer
-  const results = reviewers.map(r => validateReviewer(roundDir, r, diffFiles));
+  let candidateIdentity = { commit: null, tree: null, valid: false };
+  try {
+    const metadata = JSON.parse(readFileSync(join(roundDir, 'metadata.json'), 'utf8'));
+    const commit = metadata.candidate_commit;
+    const tree = metadata.candidate_tree;
+    candidateIdentity = {
+      commit,
+      tree,
+      valid: /^[0-9a-f]{40}$/i.test(commit || '') && /^[0-9a-f]{40}$/i.test(tree || ''),
+    };
+  } catch {
+    log.fail('Missing or invalid metadata.json candidate identity');
+  }
+
+  const results = reviewers.map(r => validateReviewer(roundDir, r, diffFiles, candidateIdentity));
 
   // SECURITY: Require minimum reviewer count for gate integrity
   // A delivery packet with 0 reviewers is an incomplete review

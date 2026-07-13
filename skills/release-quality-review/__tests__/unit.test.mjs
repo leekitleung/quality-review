@@ -663,9 +663,11 @@ test.describe('fail-closed result parsing', () => {
   });
 
   test('parses and retains packet profile and round identity', () => {
-    const parsed = parseYamlResult(`reviewer: destructive-qa\nprofile: agentic-release-gate\nround: 5\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+    const parsed = parseYamlResult(`reviewer: destructive-qa\nprofile: agentic-release-gate\nround: 5\ncandidate_commit: 1111111111111111111111111111111111111111\ncandidate_tree: 2222222222222222222222222222222222222222\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
     assertEqual(parsed.profile, 'agentic-release-gate');
     assertEqual(parsed.round, 5);
+    assertEqual(parsed.candidateCommit, '1111111111111111111111111111111111111111');
+    assertEqual(parsed.candidateTree, '2222222222222222222222222222222222222222');
   });
 });
 
@@ -877,10 +879,12 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
   test('keeps blockers.md veto even when result.yaml claims pass', () => {
     const roundNumber = TEST_ROUNDS.veto;
     const round = reportRound(roundNumber);
+    const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+    const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
     for (const reviewer of ['product-flow', 'architecture-maintainer']) {
       const dir = join(round, reviewer);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\nscore: 100\nstatus: pass\nblockers: []\nredlines: []\n`);
+      writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 100\nstatus: pass\nblockers: []\nredlines: []\n`);
       writeFileSync(join(dir, 'score.md'), `# ${reviewer}\n\n## Overall Score: 100/100\n`);
       writeFileSync(join(dir, 'blockers.md'), reviewer === 'product-flow'
         ? '# Blockers\n\n## P1 — veto must survive\n\nEvidence: reproducible\n'
@@ -930,7 +934,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       for (const reviewer of ['product-flow', 'architecture-maintainer']) {
         const dir = join(round, reviewer);
         mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${fullCommit}\ncandidate_tree: ${tree}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
         writeFileSync(join(dir, 'score.md'), `# ${reviewer}\n\n## Overall Score: 95/100\n`);
         writeFileSync(join(dir, 'blockers.md'), '# Blockers\n\nNo P0/P1 blockers.\n');
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
@@ -1053,14 +1057,89 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     }
   });
 
+  test('rejects stale reviewer packets when the candidate changes in the same round', () => {
+    const cloneRoot = join(TEST_DIR, 'candidate-drift-clone');
+    const roundNumber = 991;
+    const round = join(cloneRoot, 'quality-reports', `round-${String(roundNumber).padStart(3, '0')}`);
+    try {
+      const cloned = spawnSync('git', ['clone', '--quiet', '--no-local', PROJECT_ROOT, cloneRoot], {
+        cwd: TEST_DIR, encoding: 'utf8', timeout: 30000,
+      });
+      assertEqual(cloned.status, 0, `Expected fixture clone, output: ${cloned.stdout}${cloned.stderr}`);
+      spawnSync('git', ['config', 'user.email', 'review-test@example.invalid'], { cwd: cloneRoot });
+      spawnSync('git', ['config', 'user.name', 'Review Test'], { cwd: cloneRoot });
+
+      for (const relativePath of [
+        'skills/release-quality-review/scripts/review-gate.mjs',
+        'skills/release-quality-review/scripts/evidence-validator.mjs',
+        'skills/release-quality-review/lib/review-utils.mjs',
+        'skills/release-quality-review/templates/result.yaml',
+      ]) {
+        copyFileSync(join(PROJECT_ROOT, relativePath), join(cloneRoot, relativePath));
+      }
+
+      const packagePath = join(cloneRoot, 'package.json');
+      const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'));
+      for (const script of ['test', 'typecheck', 'build', 'lint', 'coverage']) {
+        packageJson.scripts[script] = 'node -e "process.exit(0)"';
+      }
+      writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+      spawnSync('git', ['add', 'package.json', 'skills/release-quality-review'], { cwd: cloneRoot });
+      const fixtureCommit = spawnSync('git', ['commit', '-m', 'test: create fast gate fixture'], {
+        cwd: cloneRoot, encoding: 'utf8', timeout: 10000,
+      });
+      assertEqual(fixtureCommit.status, 0, `Expected fixture commit, output: ${fixtureCommit.stdout}${fixtureCommit.stderr}`);
+
+      const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: cloneRoot, encoding: 'utf8' }).stdout.trim();
+      const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: cloneRoot, encoding: 'utf8' }).stdout.trim();
+      const diffBase = spawnSync('git', ['rev-parse', 'HEAD^'], { cwd: cloneRoot, encoding: 'utf8' }).stdout.trim();
+      for (const reviewer of ['product-flow', 'architecture-maintainer']) {
+        const dir = join(round, reviewer);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+        writeFileSync(join(dir, 'score.md'), `# ${reviewer}\n\n## Overall Score: 95/100\n\nEvidence: package.json:1 and npm test exit 0.\n`);
+        writeFileSync(join(dir, 'blockers.md'), '# Blockers\n\nNo P0/P1 blockers.\n');
+        writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
+      }
+
+      const firstGate = spawnSync('node', [
+        join(cloneRoot, 'skills/release-quality-review/scripts/review-gate.mjs'), '--profile', 'quick',
+        '--round', String(roundNumber), '--base', diffBase, '--no-validate-evidence',
+      ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000 });
+      assertEqual(firstGate.status, 0, `Expected candidate A to pass, output: ${firstGate.stdout}${firstGate.stderr}`);
+      const arbitration = JSON.parse(readFileSync(join(round, 'evidence', 'final-arbitration.json'), 'utf8'));
+      assertEqual(arbitration.candidate_commit, candidateCommit);
+      assertEqual(arbitration.candidate_tree, candidateTree);
+      assertEqual(Object.keys(arbitration.reviewer_packet_sha256).length, 2);
+
+      writeFileSync(join(cloneRoot, 'README.md'), `${readFileSync(join(cloneRoot, 'README.md'), 'utf8')}\ncandidate B\n`);
+      spawnSync('git', ['add', 'README.md'], { cwd: cloneRoot });
+      const secondCommit = spawnSync('git', ['commit', '-m', 'test: change candidate'], {
+        cwd: cloneRoot, encoding: 'utf8', timeout: 10000,
+      });
+      assertEqual(secondCommit.status, 0, `Expected candidate B commit, output: ${secondCommit.stdout}${secondCommit.stderr}`);
+
+      const staleGate = spawnSync('node', [
+        join(cloneRoot, 'skills/release-quality-review/scripts/review-gate.mjs'), '--profile', 'quick',
+        '--round', String(roundNumber), '--base', diffBase, '--no-validate-evidence',
+      ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000 });
+      assertEqual(staleGate.status, 1, `Expected stale packets to fail, output: ${staleGate.stdout}${staleGate.stderr}`);
+      assertTrue(staleGate.stdout.includes('candidate identity'), 'Expected explicit candidate identity diagnostic');
+    } finally {
+      rmSync(cloneRoot, { recursive: true, force: true });
+    }
+  });
+
   test('quick profile cannot approve without automated test and typecheck evidence', () => {
     const roundNumber = TEST_ROUNDS.missingEvidence;
     const round = reportRound(roundNumber);
+    const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+    const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
     try {
       for (const reviewer of ['product-flow', 'architecture-maintainer']) {
         const dir = join(round, reviewer);
         mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
         writeFileSync(join(dir, 'score.md'), `## Overall Score: 95/100\n`);
         writeFileSync(join(dir, 'blockers.md'), 'No P0/P1 blockers.\n');
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
