@@ -33,6 +33,14 @@ synthesizes reviewer scores. Re-run `skill:gate` to aggregate their results.
 Passing `--parallel` to the runner launches independent ephemeral Codex CLI
 reviewers concurrently and fails if any reviewer does not produce all four files.
 
+Trust boundary: the host/orchestrator, pinned Gate code, independent reviewers,
+and report root are trusted; candidate subprocesses and their output are
+untrusted. Stored SHA-256 values detect drift between collection and
+arbitration, but are not signatures. A party that can rewrite Gate code,
+evidence, and adjacent metadata has crossed the local trust boundary; protect
+against that actor with externally signed CI artifacts or a protected remote
+runner.
+
 Host workflow:
 
 Choose an unused round first; never reuse a tracked or previously generated
