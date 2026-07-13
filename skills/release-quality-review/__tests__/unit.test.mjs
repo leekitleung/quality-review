@@ -27,6 +27,7 @@ import {
   detectChangeScale,
   parseYamlProfile,
   matchesTriggerConditions,
+  findTrivialVerificationScripts,
   CLEAN_CANDIDATE_COMMANDS,
   ROLLBACK_COMMANDS,
   validateCleanCandidateEvidence,
@@ -150,6 +151,21 @@ resident_reviewers:
     const profile = parseYamlProfile(readFileSync(mockPath, 'utf-8'), 'checkbox-test');
     assertTrue(profile.resident_reviewers.includes('product-flow'), 'Should contain product-flow');
     assertEqual(profile.resident_reviewers.length, 1);
+  });
+});
+
+test.describe('verification script integrity', () => {
+  test('rejects explicit success no-ops and accepts meaningful nested scripts', () => {
+    const commands = ['npm test', 'npm run coverage', 'npm run lint', 'npm run build'];
+    const forged = {
+      test: 'true', coverage: 'echo 100%', lint: 'exit 0', build: 'node -e "process.exit(0)"',
+    };
+    assertEqual(findTrivialVerificationScripts(forged, commands).length, 4);
+    const real = {
+      test: 'node --test test.mjs', coverage: 'node --test --experimental-test-coverage test.mjs',
+      typecheck: 'node --check app.mjs', lint: 'npm run typecheck', build: 'npm run typecheck',
+    };
+    assertEqual(findTrivialVerificationScripts(real, commands).length, 0);
   });
 });
 
@@ -1003,6 +1019,43 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     }
   });
 
+  test('Gate and clean verifier reject explicit success no-op scripts', () => {
+    const repository = join(TEST_DIR, 'trivial-verification-repository');
+    const clone = spawnSync('git', ['clone', '--quiet', '--no-local', PROJECT_ROOT, repository], {
+      cwd: TEST_DIR, encoding: 'utf8', timeout: 30000,
+    });
+    assertEqual(clone.status, 0, `Expected fixture clone, output: ${clone.stdout}${clone.stderr}`);
+    const manifestPath = join(repository, 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    for (const name of ['test', 'coverage', 'typecheck', 'build', 'lint', 'skill:check-drift', 'skill:check', 'skill:verify']) {
+      manifest.scripts[name] = name === 'build' ? 'node -e "process.exit(0)"' : 'true';
+    }
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    spawnSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository, encoding: 'utf8' });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: repository, encoding: 'utf8' });
+    spawnSync('git', ['add', 'package.json'], { cwd: repository, encoding: 'utf8' });
+    const commit = spawnSync('git', ['commit', '--quiet', '-m', 'forge verification scripts'], { cwd: repository, encoding: 'utf8' });
+    assertEqual(commit.status, 0, `Expected fixture commit, output: ${commit.stdout}${commit.stderr}`);
+    const fixtureBase = spawnSync('git', ['rev-parse', 'HEAD^'], { cwd: repository, encoding: 'utf8' }).stdout.trim();
+
+    const gate = spawnSync(process.execPath, [
+      join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '1', '--base', fixtureBase,
+    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    assertEqual(gate.status, 1, `Expected no-op Gate rejection, output: ${gate.stdout}${gate.stderr}`);
+    assertTrue(gate.stdout.includes('trivial or missing verification scripts'), 'Gate must name script-integrity failure');
+
+    const outputArg = join('quality-reports', 'round-002', 'evidence', 'clean-candidate.json');
+    const output = join(repository, outputArg);
+    const clean = spawnSync(process.execPath, [
+      join(PROJECT_ROOT, 'scripts', 'verify-clean-candidate.mjs'), '--output', outputArg,
+    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    assertEqual(clean.status, 1, `Expected no-op clean-verifier rejection, output: ${clean.stdout}${clean.stderr}`);
+    assertTrue(existsSync(output), `Expected failed clean evidence, output: ${clean.stdout}${clean.stderr}`);
+    const cleanEvidence = JSON.parse(readFileSync(output, 'utf8'));
+    assertEqual(cleanEvidence.commands[1].id, 'script-integrity');
+    assertEqual(cleanEvidence.commands[1].status, 'fail');
+  });
+
   test('keeps blockers.md veto even when result.yaml claims pass', () => {
     const roundNumber = TEST_ROUNDS.veto;
     const round = reportRound(roundNumber);
@@ -1210,7 +1263,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       const packagePath = join(cloneRoot, 'package.json');
       const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'));
       for (const script of ['test', 'typecheck', 'build', 'lint', 'coverage']) {
-        packageJson.scripts[script] = 'node -e "process.exit(0)"';
+        packageJson.scripts[script] = 'node --check skills/release-quality-review/scripts/review-gate.mjs';
       }
       writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
       spawnSync('git', ['add', 'package.json', 'skills/release-quality-review'], { cwd: cloneRoot });

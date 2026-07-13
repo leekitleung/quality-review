@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -8,6 +8,7 @@ import {
   createCandidateSubprocessEnv, createSubprocessEnv, redactSensitiveText, resolveWithinRoot, writeContainedFile,
   wrapCandidateCommand,
 } from '../skills/release-quality-review/lib/security-utils.mjs';
+import { findTrivialVerificationScripts } from '../skills/release-quality-review/lib/review-utils.mjs';
 
 const root = process.cwd();
 const subprocessEnv = createSubprocessEnv();
@@ -60,25 +61,47 @@ try {
     'git clone --quiet --no-local <source> <candidate>', sandboxOptions);
   records.push(clone);
   if (clone.exit_code === 0) {
-    for (const [id, command, args] of [
-      ['install', 'npm', ['ci', '--ignore-scripts']],
-      ['test', 'npm', ['test']],
-      ['coverage', 'npm', ['run', 'coverage']],
-      ['drift', 'npm', ['run', 'skill:check-drift']],
-      ['lint', 'npm', ['run', 'lint']],
-      ['build', 'npm', ['run', 'build']],
-      ['audit', 'npm', ['audit', '--audit-level=high']],
-      ['skill-check', 'npm', ['run', 'skill:check']],
-      ['skill-verify', 'npm', ['run', 'skill:verify']],
-      ['final-status', 'git', ['status', '--porcelain', '--untracked-files=all']],
-    ]) records.push(run(id, command, args, candidate, candidateEnv, null, sandboxOptions));
+    const startedAt = new Date().toISOString();
+    let scriptIssues = [];
+    try {
+      const manifest = JSON.parse(await readFile(path.join(candidate, 'package.json'), 'utf8'));
+      scriptIssues = findTrivialVerificationScripts(manifest.scripts, [
+        'npm test', 'npm run coverage', 'npm run skill:check-drift', 'npm run lint',
+        'npm run build', 'npm run skill:check', 'npm run skill:verify',
+      ]);
+    } catch {
+      scriptIssues = [{ command: 'package.json', script: 'unreadable' }];
+    }
+    const scriptOutput = scriptIssues.length === 0
+      ? 'verified 7 non-trivial verification scripts'
+      : `trivial or missing verification scripts: ${scriptIssues.map(issue => issue.script).join(', ')}`;
+    records.push({
+      id: 'script-integrity', command: 'verify package verification scripts',
+      started_at: startedAt, finished_at: new Date().toISOString(),
+      exit_code: scriptIssues.length === 0 ? 0 : 1, status: scriptIssues.length === 0 ? 'pass' : 'fail',
+      output: scriptOutput, output_bytes: Buffer.byteLength(scriptOutput), truncated: false,
+    });
+    if (scriptIssues.length === 0) {
+      for (const [id, command, args] of [
+        ['install', 'npm', ['ci', '--ignore-scripts']],
+        ['test', 'npm', ['test']],
+        ['coverage', 'npm', ['run', 'coverage']],
+        ['drift', 'npm', ['run', 'skill:check-drift']],
+        ['lint', 'npm', ['run', 'lint']],
+        ['build', 'npm', ['run', 'build']],
+        ['audit', 'npm', ['audit', '--audit-level=high']],
+        ['skill-check', 'npm', ['run', 'skill:check']],
+        ['skill-verify', 'npm', ['run', 'skill:verify']],
+        ['final-status', 'git', ['status', '--porcelain', '--untracked-files=all']],
+      ]) records.push(run(id, command, args, candidate, candidateEnv, null, sandboxOptions));
+    }
   }
   const commit = run('candidate-commit', 'git', ['rev-parse', 'HEAD'], root);
   const tree = run('candidate-tree', 'git', ['rev-parse', 'HEAD^{tree}'], root);
   const isolatedCommit = run('isolated-commit', 'git', ['rev-parse', 'HEAD'], candidate, candidateEnv, null, sandboxOptions);
   const isolatedTree = run('isolated-tree', 'git', ['rev-parse', 'HEAD^{tree}'], candidate, candidateEnv, null, sandboxOptions);
   const finalSourceStatus = run('final-source-status', 'git', ['status', '--porcelain', '--untracked-files=all'], root);
-  const passed = records.length === 11 && records.every(record => record.exit_code === 0) &&
+  const passed = records.length === 12 && records.every(record => record.exit_code === 0) &&
     records.at(-1).output.trim() === '' && isolatedCommit.exit_code === 0 && isolatedTree.exit_code === 0 &&
     isolatedCommit.output.trim() === commit.output.trim() && isolatedTree.output.trim() === tree.output.trim() &&
     finalSourceStatus.exit_code === 0 && finalSourceStatus.output.trim() === '';

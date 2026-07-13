@@ -50,8 +50,37 @@ export function parseScore(scoreContent) {
   return null;
 }
 
+const TRIVIAL_SUCCESS_SCRIPT = /^(?::|true|exit\s+0|(?:echo|printf)\b.*|node(?:\.exe)?\s+(?:-e|--eval)\s+["']?(?:process\.exit\(0\)|console\.(?:log|error)\([^)]*\);?(?:\s*process\.exit\(0\))?)["']?)$/i;
+
+function scriptNameFromCommand(command) {
+  const match = String(command || '').trim().match(/^(?:npm|pnpm|yarn)\s+(?:run\s+)?([A-Za-z0-9:._-]+)(?:\s|$)/);
+  return match?.[1] || null;
+}
+
+function hasMeaningfulScript(name, scripts, visiting = new Set()) {
+  if (!name || visiting.has(name) || typeof scripts?.[name] !== 'string') return false;
+  const nextVisiting = new Set(visiting).add(name);
+  const segments = scripts[name].split(/\s*(?:&&|\|\||;)\s*/).filter(Boolean);
+  return segments.some(segment => {
+    const trimmed = segment.trim();
+    const nested = scriptNameFromCommand(trimmed);
+    if (nested) return hasMeaningfulScript(nested, scripts, nextVisiting);
+    return !TRIVIAL_SUCCESS_SCRIPT.test(trimmed);
+  });
+}
+
+export function findTrivialVerificationScripts(scripts, commands) {
+  const issues = [];
+  for (const command of commands) {
+    const name = scriptNameFromCommand(command);
+    if (name && !hasMeaningfulScript(name, scripts)) issues.push({ command, script: name });
+  }
+  return issues;
+}
+
 export const CLEAN_CANDIDATE_COMMANDS = [
   ['clone', 'git clone --quiet --no-local <source> <candidate>'],
+  ['script-integrity', 'verify package verification scripts'],
   ['install', 'npm ci --ignore-scripts'],
   ['test', 'npm test'],
   ['coverage', 'npm run coverage'],

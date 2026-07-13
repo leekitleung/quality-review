@@ -29,6 +29,7 @@ import {
   parseYamlResult as parseYamlResultShared,
   parseYamlProfile as parseYamlProfileShared,
   matchesTriggerConditions,
+  findTrivialVerificationScripts,
   validateCleanCandidateEvidence,
   validateRollbackEvidence,
 } from '../lib/review-utils.mjs';
@@ -763,6 +764,13 @@ function runAutomatedChecks(config, candidateRoot, initialCheckout) {
   const lintCmd = config?.verification?.lint || 'pnpm lint';
   const auditCmd = config?.verification?.audit || 'npm audit --audit-level=high';
   const coverageCmd = config?.verification?.coverage || 'npm run coverage';
+  const manifest = JSON.parse(readFileSync(join(candidateRoot, 'package.json'), 'utf8'));
+  const scriptIssues = findTrivialVerificationScripts(manifest.scripts, [
+    testCmd, typecheckCmd, buildCmd, lintCmd, coverageCmd,
+  ]);
+  if (scriptIssues.length > 0) {
+    throw new Error(`trivial or missing verification scripts: ${scriptIssues.map(issue => issue.script).join(', ')}`);
+  }
 
   // Check 1: Oversized files (>2000 lines)
   log.info('Checking for oversized files...');
