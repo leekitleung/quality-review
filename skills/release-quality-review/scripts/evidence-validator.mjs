@@ -123,6 +123,7 @@ function verifyFileLineReferences(content, roundDir) {
       join(projectRoot, 'apps', ref.file),
       join(projectRoot, 'packages', ref.file),
       join(roundDir, '..', '..', ref.file),
+      join(projectRoot, 'skills', 'release-quality-review', ref.file),
     ];
 
     let fileExists = false;
