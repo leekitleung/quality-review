@@ -823,6 +823,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           let diagnostic = '';
           let settled = false;
           let aborted = false;
+          let abortedByTimeout = false;
           let forceTimer = null;
           const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
           const signalProcessTree = signal => {
@@ -862,11 +863,12 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             const status = eventStatus || (!aborted && code === 0 && complete ? 'completed' : 'failed');
             console.log(`  ${status === 'completed' ? c.green + '✓' : c.red + '✗'}${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${status}`);
             if (status === 'failed' && diagnostic) console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
-            innerResolve({ name: reviewer, status, attempt, diagnostic });
+            innerResolve({ name: reviewer, status, attempt, diagnostic, abortedByTimeout });
           };
           const abort = reason => {
             if (settled || aborted) return;
             aborted = true;
+            abortedByTimeout = true;
             diagnostic = `${diagnostic}\n${reason}`.slice(-4000);
             signalProcessTree('SIGTERM');
             forceTimer = setTimeout(() => {
@@ -906,6 +908,12 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           return;
         }
         lastError = result.diagnostic;
+
+        // Timeout-induced abort: do not retry, propagate failure immediately
+        if (result.abortedByTimeout) {
+          resolve(result);
+          return;
+        }
 
         // If not the last attempt, retry
         if (attempt <= REVIEWER_RETRY_MAX) {
