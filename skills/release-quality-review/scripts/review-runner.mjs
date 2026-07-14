@@ -184,6 +184,7 @@ Options:
   --profile <name>   Profile: quick, default, release-gate, full, agentic-release-gate
   --round <N>        Round number (auto-detected if not specified)
   --parallel         Run reviewers in parallel
+  --agent <type>     Agent to use: claude (default) or codex
   --reviewer <name>  Run only this reviewer
   --target <path>    Review target directory (for self-review: skills/release-quality-review)
   --skip-evidence    Skip automatic evidence collection
@@ -195,6 +196,7 @@ Options:
 Examples:
   node review-runner.mjs --profile release-gate
   node review-runner.mjs --profile default --parallel
+  node review-runner.mjs --agent codex
   node review-runner.mjs --reviewer destructive-qa --dry-run
   node review-runner.mjs --target skills/release-quality-review --profile quick
   `);
@@ -635,6 +637,14 @@ function validateResumeArtifacts(reviewerDir, currentCommit) {
   }
 }
 
+// Add delay between reviewer starts to avoid 429 rate limit errors
+// The API key only supports 1 concurrent session, so we run sequentially with delays
+const REVIEWER_START_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_REVIEWER_START_DELAY_MS || '60000', 10);
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
 // Scale-based timeout calculation
 function getScaledTimeout(scale, baseTimeout = REVIEWER_TIMEOUT_MS) {
   const multiplier = SCALE_TIMEOUT_MULTIPLIERS[scale] || 1.0;
@@ -776,7 +786,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     // Use node to run reviewer scripts in isolated CLI context
     cli = process.execPath;
     cliArgs = [`${join(SKILL_DIR, 'scripts', 'review-gate.mjs')}`, '--resume-round', String(currentRound)];
-    log.info(`Parallel mode: launching ${allReviewers.length} independent reviewer agents via ${cli}`);
+    log.info(`Parallel mode: launching ${allReviewers.length} independent reviewer agents via ${process.execPath}`);
   } else if (agentCli === 'codex') {
     // Use codex exec mode (requires --ephemeral and --sandbox)
     cli = 'codex';
@@ -784,7 +794,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     log.info(`Parallel mode: launching ${allReviewers.length} independent ${cli} reviewer agents...`);
   }
   if (parallel) {
-    log.info(`Scale: ${scale}, Timeout: ${scaledTimeout}ms (base: ${REVIEWER_TIMEOUT_MS}ms)`);
+    log.info(`Execution: parallel, Scale: ${scale}, Timeout: ${scaledTimeout}ms`);
     try {
       // Check that the agent CLI is available
       nodeExecFileSync(agentCli, ['--help'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
@@ -816,6 +826,9 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       if (validation.reason) {
         console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: invalidating stale artifacts (${validation.reason}), re-running`);
       }
+
+      // Add delay between reviewer starts to avoid rate limit (API key: 1 concurrent session max)
+      await sleep(REVIEWER_START_DELAY_MS);
 
       const prompt = generateReviewerPrompt(reviewer, currentRound);
       if (!prompt) {
@@ -967,18 +980,112 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       throw error;
     }
   } else {
-    for (const reviewer of allReviewers) {
+    // Sequential mode: execute reviewers one by one with delays
+    log.info(`Execution: sequential with ${REVIEWER_START_DELAY_MS}ms delays`);
+    for (let i = 0; i < allReviewers.length; i++) {
+      const reviewer = allReviewers[i];
       const reviewerDir = join(roundDir, reviewer);
       ensureContainedDirectorySync(roundDir, reviewerDir);
-      const prompt = generateReviewerPrompt(reviewer, currentRound);
-      if (prompt) {
-        writeContainedFileSync(roundDir, join(reviewerDir, 'prompt.md'), prompt);
-        console.log(`  ${c.green}✓${c.reset} ${reviewer}: prompt written`);
-      } else {
-        console.log(`  ${c.red}✗${c.reset} ${reviewer}: definition not found`);
+
+      // Check resume artifacts first
+      const validation = validateResumeArtifacts(reviewerDir, resolvedDiffBase);
+      if (validation.valid) {
+        console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
+        results.push({ name: reviewer, status: 'completed', skipped: true });
+        continue;
       }
-      results.push({ name: reviewer, status: 'pending' });
+      if (validation.reason) {
+        console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: invalidating stale artifacts (${validation.reason}), re-running`);
+      }
+
+      // Add delay between reviewers (skip delay for first reviewer if no previous ran)
+      if (i > 0) {
+        await sleep(REVIEWER_START_DELAY_MS);
+      }
+
+      const prompt = generateReviewerPrompt(reviewer, currentRound);
+      if (!prompt) {
+        console.log(`  ${c.red}✗${c.reset} ${reviewer}: definition not found`);
+        results.push({ name: reviewer, status: 'failed' });
+        continue;
+      }
+      writeContainedFileSync(roundDir, join(reviewerDir, 'prompt.md'), prompt);
+
+      // Execute reviewer via CLI
+      let attempt = 0;
+      let lastError = null;
+      let status = 'pending';
+
+      while (attempt <= REVIEWER_RETRY_MAX && status !== 'completed') {
+        attempt++;
+        if (attempt > 1) {
+          const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 2) + Math.random() * RETRY_MAX_JITTER_MS;
+          log.info(`  Retry ${attempt - 1}/${REVIEWER_RETRY_MAX} for ${reviewer}: waiting ${Math.round(delay)}ms`);
+          await sleep(delay);
+        }
+
+        const proc = spawn('claude', ['-p', prompt], {
+          cwd: PROJECT_ROOT,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          detached: false,
+          env: TOOL_ENV,
+        });
+
+        let diagnostic = '';
+        let settled = false;
+        const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
+        const timeoutTimer = setTimeout(() => {
+          if (!settled) {
+            proc.kill('SIGTERM');
+            setTimeout(() => {
+              if (!settled) { proc.kill('SIGKILL'); settled = true; }
+            }, REVIEWER_KILL_GRACE_MS);
+          }
+        }, scaledTimeout);
+
+        proc.stdout.on('data', retainTail);
+        proc.stderr.on('data', retainTail);
+
+        const exitCode = await new Promise(resolve => {
+          proc.on('close', code => { resolve(code); });
+          proc.on('error', err => { diagnostic = err.message; resolve(-1); });
+        });
+
+        clearTimeout(timeoutTimer);
+        settled = true;
+
+        const complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
+          .every(file => existsSync(join(reviewerDir, file)));
+
+        if (complete && exitCode === 0) {
+          const postValidation = validateResumeArtifacts(reviewerDir, resolvedDiffBase);
+          if (postValidation.valid) {
+            status = 'completed';
+            console.log(`  ${c.green}✓${c.reset} ${reviewer}: completed`);
+          } else {
+            console.log(`  ${c.red}✗${c.reset} ${reviewer}: artifact validation failed`);
+            lastError = postValidation.reason;
+          }
+        } else {
+          if (diagnostic) {
+            console.log(`  ${c.red}✗${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-300)}`);
+          } else {
+            console.log(`  ${c.red}✗${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: failed (exit ${exitCode})`);
+          }
+          lastError = diagnostic;
+        }
+      }
+
+      results.push({ name: reviewer, status, diagnostic: lastError });
       if (onReviewComplete) onReviewComplete(reviewer, reviewerDir, evidence);
+    }
+
+    // Check for failures in sequential mode
+    const failedResults = results.filter(r => r.status !== 'completed' && r.status !== 'skipped');
+    if (failedResults.length > 0) {
+      const error = new Error(`Sequential review failed for: ${failedResults.map(r => r.name).join(', ')}`);
+      error.exitCode = 5;
+      throw error;
     }
   }
 
