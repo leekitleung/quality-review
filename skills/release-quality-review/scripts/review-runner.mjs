@@ -82,7 +82,7 @@ function parseCliArgs(args) {
   const options = {
     profile: 'release-gate', roundNumber: null, parallel: false, dryRun: false,
     skipEvidence: false, reviewerOverride: null, targetDir: null,
-    checkGoalMode: false, diffBase: 'HEAD',
+    checkGoalMode: false, diffBase: 'HEAD', agentCli: 'claude',
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -107,6 +107,14 @@ function parseCliArgs(args) {
   else if (arg === '--target' && args[i + 1]) options.targetDir = args[++i];
   else if (arg === '--check-goal-mode') options.checkGoalMode = true;
   else if (arg === '--base' && args[i + 1]) options.diffBase = args[++i];
+  else if (arg === '--agent' && args[i + 1]) {
+    const agent = args[++i];
+    if (!['claude', 'codex'].includes(agent)) {
+      console.error('Invalid --agent: must be "claude" or "codex"');
+      process.exit(4);
+    }
+    options.agentCli = agent;
+  }
   else if (arg === '--help' || arg === '-h') {
     printHelp();
     process.exit(0);
@@ -121,7 +129,7 @@ function parseCliArgs(args) {
 
 const {
   profile, roundNumber, parallel, dryRun, skipEvidence, reviewerOverride,
-  targetDir, checkGoalMode, diffBase,
+  targetDir, checkGoalMode, diffBase, agentCli,
 } = parseCliArgs(process.argv.slice(2));
 
 if (!/^[a-z0-9-]+$/.test(profile) || (reviewerOverride && !/^[a-z0-9-]+$/.test(reviewerOverride))) {
@@ -760,13 +768,28 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   const scale = evidence.scale?.scale || 'medium';
   const scaledTimeout = getScaledTimeout(scale);
 
+  // Determine CLI wrapper based on agent type
+  let cli = agentCli || 'claude';
+  let cliArgs = null;
+  // Spawn reviewer agents with appropriate CLI
+  if (agentCli === 'claude') {
+    // Use node to run reviewer scripts in isolated CLI context
+    cli = process.execPath;
+    cliArgs = [`${join(SKILL_DIR, 'scripts', 'review-gate.mjs')}`, '--resume-round', String(currentRound)];
+    log.info(`Parallel mode: launching ${allReviewers.length} independent reviewer agents via ${cli}`);
+  } else if (agentCli === 'codex') {
+    // Use codex exec mode (requires --ephemeral and --sandbox)
+    cli = 'codex';
+    cliArgs = ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT];
+    log.info(`Parallel mode: launching ${allReviewers.length} independent ${cli} reviewer agents...`);
+  }
   if (parallel) {
-    log.info(`Parallel mode: launching ${allReviewers.length} independent Codex reviewers...`);
     log.info(`Scale: ${scale}, Timeout: ${scaledTimeout}ms (base: ${REVIEWER_TIMEOUT_MS}ms)`);
     try {
-      nodeExecFileSync('codex', ['--version'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
+      // Check that the agent CLI is available
+      nodeExecFileSync(agentCli, ['--help'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
     } catch {
-      log.error('Parallel mode requires the Codex CLI on PATH; no reviewer agents were launched.');
+      log.error(`Parallel mode requires ${agentCli} CLI on PATH; no reviewer agents were launched.`);
       process.exit(5);
     }
 
@@ -814,12 +837,25 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         }
 
         const result = await new Promise(innerResolve => {
-          const proc = spawn('codex', ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt], {
-            cwd: PROJECT_ROOT,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            detached: process.platform !== 'win32',
-            env: TOOL_ENV,
-          });
+          const proc = (() => {
+            if (agentCli === 'claude') {
+              // claude -p "prompt"
+              return spawn('claude', ['-p', prompt], {
+                cwd: PROJECT_ROOT,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                detached: process.platform !== 'win32',
+                env: TOOL_ENV,
+              });
+            } else {
+              // codex exec with sandbox
+              return spawn('codex', ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt], {
+                cwd: PROJECT_ROOT,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                detached: process.platform !== 'win32',
+                env: TOOL_ENV,
+              });
+            }
+          })();
           let diagnostic = '';
           let settled = false;
           let aborted = false;
@@ -971,8 +1007,6 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   writeContainedFileSync(roundDir, join(roundDir, 'runner-metadata.json'), JSON.stringify(meta, null, 2));
 
   console.log(`\n${c.green}✓${c.reset} Metadata written`);
-
-  return { roundDir, evidence, allReviewers, results };
 }
 
 // Main
