@@ -297,7 +297,7 @@ async function runGate() {
       } catch (error) {
         log.error(`Persisted evidence is invalid: ${error.message}`);
         log.warn('Re-collecting evidence...');
-        evidence = collectEvidence(config, projectRoot, diffBase, resolvedDiffBase, SKILL_DIR);
+        evidence = collectEvidence(config, PROJECT_ROOT, diffBase, resolvedDiffBase, SKILL_DIR);
       }
     }
   }
