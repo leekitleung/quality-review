@@ -296,6 +296,9 @@ async function runGate() {
         log.info('Loaded persisted automated evidence for the current candidate');
       } catch (error) {
         log.error(`Persisted evidence is invalid: ${error.message}`);
+        if (!collectEvidenceOpt) {
+          return false;
+        }
         log.warn('Re-collecting evidence...');
         evidence = collectEvidence(config, PROJECT_ROOT, diffBase, resolvedDiffBase, SKILL_DIR);
       }

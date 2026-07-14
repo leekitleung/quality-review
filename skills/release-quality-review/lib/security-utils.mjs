@@ -122,7 +122,13 @@ export function ensureContainedDirectorySync(root, directory) {
     current = path.join(current, segment);
     if (existsSync(current)) {
       const entry = lstatSync(current);
-      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      if (entry.isSymbolicLink()) {
+        const linkTarget = path.resolve(path.dirname(current), readlinkSync(current));
+        if (!isPathWithin(rootReal, linkTarget)) {
+          throw new Error(`symbolic link escapes repository: ${current} -> ${linkTarget}`);
+        }
+        if (!entry.isDirectory()) throw new Error(`output directory component is not a real directory: ${current}`);
+      } else if (!entry.isDirectory()) {
         throw new Error(`output directory component is not a real directory: ${current}`);
       }
     } else {

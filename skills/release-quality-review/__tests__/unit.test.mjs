@@ -1280,13 +1280,13 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         command, started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
         status: statusValue, exit_code: exitCode, output, output_bytes: Buffer.byteLength(output), truncated: false,
       });
-      const testCheck = commandRecord('npm test', 'pass', 0, '# tests 1\n# fail 0');
-      const typecheckCheck = commandRecord('npm run typecheck', 'pass', 0, 'passed');
+      const testCheck = commandRecord('pnpm test', 'pass', 0, '# tests 1\n# fail 0');
+      const typecheckCheck = commandRecord('pnpm typecheck', 'pass', 0, 'passed');
       const checkoutIdentity = { commit: fullCommit, tree, status: '' };
       const automatedContent = JSON.stringify({
         testGate: testCheck, typecheckGate: typecheckCheck,
-        buildGate: commandRecord('npm run build', 'fail', 1, 'optional failure'),
-        lintGate: commandRecord('npm run lint', 'fail', 1, 'optional failure'),
+        buildGate: commandRecord('pnpm build', 'fail', 1, 'optional failure'),
+        lintGate: commandRecord('pnpm lint', 'fail', 1, 'optional failure'),
         auditGate: commandRecord('npm audit --audit-level=high', 'fail', 1, 'optional failure'),
         secrets: { status: 'fail', issues: ['optional scan failure'] }, oversizedFiles: { status: 'pass', issues: [] },
         circularDeps: { status: 'pass', issues: [] },
