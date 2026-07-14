@@ -13,7 +13,7 @@
  * 5. parseYamlResult - result.yaml parsing (from production code)
  */
 
-import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync } from 'fs';
+import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync, cpSync } from 'fs';
 import { join } from 'path';
 import { tmpdir, userInfo } from 'node:os';
 import { fileURLToPath } from 'url';
@@ -899,7 +899,7 @@ test.describe('CLI fail-closed integration', () => {
       assertEqual(source.includes('createCandidateRuntime'), true, `${name} bypasses shared candidate runtime`);
     }
     const gate = readFileSync(join(SKILL_DIR, 'scripts', 'review-gate.mjs'), 'utf8');
-    assertEqual(gate.includes('prepareCandidateCheckout()'), true, 'Gate lacks isolated checkout');
+    assertEqual(gate.includes('prepareCheckout()'), true, 'Gate lacks isolated checkout');
     const runtime = readFileSync(join(SKILL_DIR, 'lib', 'candidate-runtime.mjs'), 'utf8');
     assertEqual(runtime.includes('sandboxWriteRoots = [isolatedHome]'), true, 'Shared runtime lacks isolated write root');
   });
@@ -1411,10 +1411,12 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         'skills/release-quality-review/scripts/evidence-validator.mjs',
         'skills/release-quality-review/lib/review-utils.mjs',
         'skills/release-quality-review/lib/evidence-utils.mjs',
+        'skills/release-quality-review/lib/candidate-runtime.mjs',
         'skills/release-quality-review/templates/result.yaml',
       ]) {
         copyFileSync(join(PROJECT_ROOT, relativePath), join(cloneRoot, relativePath));
       }
+      cpSync(join(PROJECT_ROOT, 'skills/release-quality-review/scripts/modules'), join(cloneRoot, 'skills/release-quality-review/scripts/modules'), { recursive: true });
 
       const packagePath = join(cloneRoot, 'package.json');
       const packageJson = JSON.parse(readFileSync(packagePath, 'utf8'));

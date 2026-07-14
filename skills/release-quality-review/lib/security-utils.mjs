@@ -9,8 +9,22 @@ import {
 import { open, realpath, rename, rm, stat } from 'node:fs/promises';
 
 export function isPathWithin(root, candidate) {
-  const relative = path.relative(path.resolve(root), path.resolve(candidate));
-  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+  const rootPath = path.resolve(root);
+  const candPath = path.resolve(candidate);
+  const relative = path.relative(rootPath, candPath);
+  // Path is valid if it's within root (relative doesn't start with ..)
+  // Handle both Unix (/) and Windows (\) separators
+  const normalizedRelative = relative.replace(/\\/g, '/');
+  return relative === '' || (!normalizedRelative.startsWith('..') && relative !== '..');
+}
+
+export function isRealDirectory(dir) {
+  try {
+    const stat = lstatSync(dir);
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
 }
 
 export function resolveWithinRoot(root, relative, label = 'path') {
