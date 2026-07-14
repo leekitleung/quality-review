@@ -49,6 +49,66 @@ node scripts/evidence-validator.mjs --round round-001
 | Large | 21-50 | <5000 | 深度检查 + 架构评审 |
 | XLarge | 50+ | 5000+ | 全维度 + 对抗性审查 |
 
+### P6: Efficiency Optimization ⭐ (效率优化)
+**复用共享证据，不引用其他 Reviewer 的结论**
+
+> ⚠️ 在并行评审阶段，**不要**假设其他 Reviewer 的结果已存在。只能引用共享的原始证据。
+
+**共享证据**（可在并行前统一生成）:
+- ✅ Git diff、测试输出、类型检查结果
+- ✅ `npm audit` 输出 (destructive-qa 负责生成)
+- ✅ `pnpm build` 输出 (release-verifier 负责生成)
+- ✅ 循环依赖图 (architecture-maintainer 负责生成)
+- ✅ OWASP 检查结果 (destructive-qa 负责生成)
+
+**禁止行为**:
+- ❌ 在独立评审阶段引用其他 Reviewer 的 score.md/blockers.md
+- ❌ 在独立评审阶段假设"其他 Reviewer 已检查 X"
+- ❌ 用"引用其他 Reviewer 的发现"作为自己的评审结论
+
+**正确做法**:
+- ✅ 直接运行必要的检查命令，不依赖其他 Reviewer
+- ✅ 读取共享的原始证据文件（JSON/YAML 格式）
+- ✅ 如需引用其他 Reviewer 结论，在**复核阶段**进行
+
+**架构说明**:
+```
+Phase 1: 共享证据收集
+    ↓
+Phase 2: 独立并行评审（各自运行检查命令）
+    ↓
+Phase 3: 跨 Reviewer 复核（可选，引用其他结论）
+    ↓
+Gate Check
+```
+
+### P7: Cross-Reviewer Consistency ⭐ (跨Reviewer一致性)
+**评分异常检测机制，而非评分约束**
+
+> ⚠️ 评分趋同是危险信号。合理分歧（如安全 58 vs UX 94）可能反映真实的专项差异。
+
+**评分异常检测**（事后进行，不是评审时的约束）:
+- 检查本 Reviewer 跨轮次评分差异是否 >15 分
+- 检查与其他 Reviewer 评分差异是否 >20 分
+- 重大偏差触发**加强证据要求**而非强制收敛
+
+**禁止行为**:
+- ❌ 为与其他 Reviewer 分数接近而调整自己的评分
+- ❌ 假设"大家的分数差不多，说明没问题"
+- ❌ 用一致性来压制少数派的正确发现
+
+**正确做法**:
+- ✅ 独立评分，基于实际证据
+- ✅ 差异大时，在 `notes` 中解释专业判断的原因
+- ✅ 异常值由专门的 consistency analyzer 处理
+
+**触发人工审核的条件**（由 Gate 处理，非 Reviewer 职责）:
+- 单一 Reviewer 评分 <60 且其他 >80
+- 单次评分变化 >30 分
+- 缺少关键证据的评分
+
+**详见**: `rubrics/scoring-addendum.md`
+
 ---
 
 ## Role Definition

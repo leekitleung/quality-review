@@ -51,6 +51,29 @@ description: Run an evidence-backed multi-reviewer release quality gate with ind
 - Large (>20 文件): release-gate profile
 - XLarge (多模块): full + agentic profile
 - 可用 `--profile` 覆盖自动选择
+- **并行执行稳定性增强**: 根据规模自动调整超时倍率
+
+| 规模 | 超时倍率 | 示例时间 |
+|------|----------|----------|
+| Micro | 0.5x | 7.5 分钟 |
+| Small | 0.75x | 11 分钟 |
+| Medium | 1.0x | 15 分钟 |
+| Large | 1.5x | 22.5 分钟 |
+| XLarge | 2.0x | 30 分钟 |
+
+### P6: 效率优化 ⭐
+- **避免重复检查，复用共享证据**
+- Reviewer 之间共享检查结果（如 npm audit、pnpm build）
+- 优先引用其他 Reviewer 的发现作为输入
+- 不重复执行其他 Reviewer 已完成的检查
+- 详见 `reviewers/TEMPLATE.md` P6 规则
+
+### P7: 跨 Reviewer 一致性 ⭐
+- **评分应该在合理范围内，与其他 Reviewer 保持一致**
+- 同一 Reviewer 跨轮次评分差异应 ≤15 分
+- 同时期不同 Reviewer 评分差异应 ≤20 分
+- 重大偏差需在报告中说明原因
+- 详见 `rubrics/scoring-addendum.md`
 
 ---
 
@@ -164,6 +187,30 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 | D | 60-69 | 不及格 | 需要重构 |
 | F | <60 | 不可接受 | 打回重做 |
 
+### 评分一致性机制
+
+详见 `rubrics/scoring-addendum.md`：
+- **跨轮次一致性**: 同一 Reviewer 评分差异应 ≤15 分
+- **跨 Reviewer 一致性**: 同时期评分差异应 ≤20 分
+- **评分断路器**: 异常波动触发人工审核
+- **自动校准**: 每 5 轮进行一致性检查
+
+### 效率优化规则
+
+详见 `reviewers/TEMPLATE.md` P6 规则：
+
+| 共享检查 | 执行者 | 其他 Reviewer 行为 |
+|----------|--------|-------------------|
+| npm audit | destructive-qa | ❌ 不要重复 |
+| pnpm build | release-verifier | ❌ 不要重复 |
+| 循环依赖检查 | architecture-maintainer | ❌ 不要重复 |
+| OWASP Top 10 | destructive-qa | ❌ 不要重复 |
+
+**正确做法**:
+- ✅ 引用其他 Reviewer 的发现作为输入
+- ✅ 在其他 Reviewer 基础上做专项深入
+- ✅ 独立验证关键证据的正确性
+
 ### 通过条件
 1. **所有 Reviewer >= 90/100**
 2. **无 P0/P1 blocker 或 redline**
@@ -197,13 +244,14 @@ skills/release-quality-review/
 │   ├── goal-instruction-writer.md # Goal 指令生成器
 │   └── handoff-integrity.md       # 交接完整性审查
 ├── rubrics/
-│   ├── scoring.md                  # 评分标准
+│   ├── scoring.md                  # 评分标准 (含一致性规则)
+│   ├── scoring-addendum.md         # 评分一致性增强规则 (断路器、校准)
 │   ├── redlines.md                # 红线规则
 │   ├── evidence.md                 # 证据收集指南
 │   └── right-size-throttle.md      # 规模适配规则
 ├── scripts/
 │   ├── review-gate.mjs            # 门禁检查器 (含规模检测)
-│   ├── review-runner.mjs          # 编排器 (含 Phase 持久化)
+│   ├── review-runner.mjs          # 编排器 (含规模适配超时、重试、断点续传)
 │   ├── verify-rollback.mjs         # 隔离回滚验证与结构化证据
 │   └── goal-instruction-gate.mjs  # Goal 指令验收器
 └── templates/
@@ -270,6 +318,25 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 3. **收集结果** - 等待所有 reviewer 完成
 4. **汇总评分** - 生成 summary.md 和各 reviewer 的 score.md
 5. **判断门禁** - 所有 >= 90 且无红线则通过
+
+### 并行执行稳定性增强
+
+`review-runner.mjs` 在并行模式下提供以下稳定性特性：
+
+| 特性 | 描述 |
+|------|------|
+| **规模适配超时** | 根据变更规模自动调整超时时间，避免大变更超时 |
+| **重试机制** | 失败时自动重试（最多 2 次），使用指数退避 |
+| **断点续传** | 已完成的 Reviewer 结果会被保留，避免重复工作 |
+| **并行执行元数据** | 记录执行时间和状态，便于诊断问题 |
+
+**环境变量配置**:
+```bash
+RELEASE_QUALITY_REVIEWER_TIMEOUT_MS=900000   # 默认 15 分钟
+RELEASE_QUALITY_REVIEWER_RETRY_MAX=2         # 默认重试 2 次
+```
+
+**resume 支持**: 当评审中断后恢复时，已完成 Reviewer 的结果会被跳过，直接继续未完成的 Reviewer。
 
 Agentic 发布前，先提交候选并持久化隔离检出证据：
 

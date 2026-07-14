@@ -23,46 +23,45 @@
 **OWASP Top 10 必须逐项检查:**
 
 ```bash
-# A01 - Broken Access Control
+# A01 - Broken Access Control (通用路径)
 grep -rn "unauthorized\|isAuthorized\|hasPermission\|auth" \
-  --include="*.ts" apps/local-server/src/routes | head -20
+  --include="*.ts" . | head -20
 
 # A02 - Cryptographic Failures
 grep -rn "password\|token\|secret\|key" \
-  --include="*.ts" apps local-server \
+  --include="*.ts" . \
   | grep -v "\.d\.ts\|\.test\.\|node_modules" | head -20
-grep -rn "console\.(log|error).*(token|password|secret|key)" --include="*.ts" | head -10
+grep -rn "console\.(log|error).*(token|password|secret|key)" --include="*.ts" . | head -10
 
 # A03 - Injection
 grep -rn "eval\|new Function\|innerHTML\|document\.write" \
-  --include="*.ts" --include="*.tsx" | head -10
+  --include="*.ts" --include="*.tsx" . | head -10
 grep -rn "exec\|spawn\|execSync" \
-  --include="*.ts" apps/local-server/src | head -10
+  --include="*.ts" . | head -10
 
 # A04 - Insecure Design
-# 检查是否有 CAPTCHA、速率限制、重试锁定
 grep -rn "rateLimit\|captcha\|retry.*lock\|maxAttempts" \
-  --include="*.ts" apps/local-server/src | head -10
+  --include="*.ts" . | head -10
 
 # A05 - Security Misconfiguration
-grep -rn "cors\|helmet\|security" --include="*.ts" | head -10
-grep -rn "process\.env\." --include="*.ts" | head -10
+grep -rn "cors\|helmet\|security" --include="*.ts" . | head -10
+grep -rn "process\.env\." --include="*.ts" . | head -10
 
 # A06 - Vulnerable Components
 npm audit 2>&1 | head -30
 
 # A07 - Auth Failures
-grep -rn "timingSafeEqual\|compare\|hash" --include="*.ts" | head -10
-grep -rn "session\|cookie" --include="*.ts" | head -10
+grep -rn "timingSafeEqual\|compare\|hash" --include="*.ts" . | head -10
+grep -rn "session\|cookie" --include="*.ts" . | head -10
 
 # A08 - Data Integrity
-grep -rn "sanitize\|validate\|whitelist" --include="*.ts" | head -10
+grep -rn "sanitize\|validate\|whitelist" --include="*.ts" . | head -10
 
 # A09 - Logging & Monitoring
-grep -rn "audit\|log.*error\|log.*warn" --include="*.ts" | head -10
+grep -rn "audit\|log.*error\|log.*warn" --include="*.ts" . | head -10
 
-# A10 - SSRF
-grep -rn "fetch\|axios\|http\|request" --include="*.ts" apps/local-server/src \
+# A10 - SSRF (排除 localhost)
+grep -rn "fetch\|axios\|http\|request" --include="*.ts" . \
   | grep -v "localhost\|127\.0\.0\.1" | head -10
 ```
 
@@ -85,16 +84,16 @@ grep -rn "fetch\|axios\|http\|request" --include="*.ts" apps/local-server/src \
 
 ```bash
 # 2.1 空 catch 块
-grep -rn "catch\s*(" --include="*.ts" apps/local-server/src \
+grep -rn "catch\s*(" --include="*.ts" . \
   | xargs -I{} sh -c 'grep -A 3 "{}" apps/local-server/src | grep -q "^\s*}" && echo "{}"' \
   | head -10
 
 # 2.2 未处理的 Promise rejection
-grep -rn "\.then\|\.catch\|async" --include="*.ts" apps/local-server/src \
+grep -rn "\.then\|\.catch\|async" --include="*.ts" . \
   | grep -v "try\|catch" | head -20
 
 # 2.3 资源泄漏
-grep -rn "stream\|connection\|file" --include="*.ts" apps/local-server/src \
+grep -rn "stream\|connection\|file" --include="*.ts" . \
   | grep -v "close\|destroy\|release\|finally" | head -10
 
 # 2.4 边界值测试

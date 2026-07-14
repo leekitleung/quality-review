@@ -38,6 +38,18 @@ const {
 } = createCandidateRuntime(PROJECT_ROOT, 'runner');
 const REVIEWER_TIMEOUT_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_TIMEOUT_MS, 15 * 60 * 1000);
 const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS, 5000);
+const REVIEWER_RETRY_MAX = parseInt(process.env.RELEASE_QUALITY_REVIEWER_RETRY_MAX || '2', 10);
+const RETRY_BASE_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_BASE_DELAY_MS || '1000', 10);
+const RETRY_MAX_JITTER_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_MAX_JITTER_MS || '300', 10);
+
+// Scale-based timeout multipliers (apply to base REVIEWER_TIMEOUT_MS)
+const SCALE_TIMEOUT_MULTIPLIERS = {
+  micro: 0.5,   // 7.5 minutes
+  small: 0.75,   // ~11 minutes
+  medium: 1.0,   // 15 minutes (default)
+  large: 1.5,    // 22.5 minutes
+  xlarge: 2.0,   // 30 minutes
+};
 
 function parsePositiveDuration(value, fallback) {
   if (value === undefined) return fallback;
@@ -588,6 +600,39 @@ result.yaml 必须声明 reviewer: ${reviewerName}、profile: ${profile}、round
   return prompt;
 }
 
+// Validate resume artifacts for credibility
+function validateResumeArtifacts(reviewerDir, currentCommit) {
+  const requiredFiles = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md'];
+  const missingFiles = requiredFiles.filter(f => !existsSync(join(reviewerDir, f)));
+  if (missingFiles.length > 0) return { valid: false, reason: `missing: ${missingFiles.join(', ')}` };
+
+  try {
+    const resultPath = join(reviewerDir, 'result.yaml');
+    const resultContent = readFileSync(resultPath, 'utf-8');
+    const commitMatch = resultContent.match(/^candidate_commit:\s*(.+)$/m);
+    if (commitMatch) {
+      const reportedCommit = commitMatch[1].trim();
+      if (reportedCommit !== currentCommit) {
+        return {
+          valid: false,
+          reason: `commit mismatch: result has ${reportedCommit}, current is ${currentCommit}`,
+        };
+      }
+    }
+    const scoreMatch = resultContent.match(/^score:\s*(\d+)/m);
+    const score = scoreMatch ? parseInt(scoreMatch[1], 10) : null;
+    return { valid: true, score };
+  } catch (e) {
+    return { valid: false, reason: `parse error: ${e.message}` };
+  }
+}
+
+// Scale-based timeout calculation
+function getScaledTimeout(scale, baseTimeout = REVIEWER_TIMEOUT_MS) {
+  const multiplier = SCALE_TIMEOUT_MULTIPLIERS[scale] || 1.0;
+  return Math.round(baseTimeout * multiplier);
+}
+
 // Run gate check and return detailed result
 function runGateCheck(roundDir, profileName, round) {
   log.title('GATE CHECK');
@@ -712,8 +757,12 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   // Run reviewers
   console.log(`\n${c.cyan}═══ Running Reviews ═══${c.reset}\n`);
   const results = [];
+  const scale = evidence.scale?.scale || 'medium';
+  const scaledTimeout = getScaledTimeout(scale);
+
   if (parallel) {
     log.info(`Parallel mode: launching ${allReviewers.length} independent Codex reviewers...`);
+    log.info(`Scale: ${scale}, Timeout: ${scaledTimeout}ms (base: ${REVIEWER_TIMEOUT_MS}ms)`);
     try {
       nodeExecFileSync('codex', ['--version'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
     } catch {
@@ -728,91 +777,144 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       parallelAbortReason = reason;
       for (const abort of activeReviewers.values()) abort(reason);
     };
-    const parallelResults = await Promise.all(allReviewers.map(reviewer => new Promise(resolve => {
+
+    // Parallel execution with retry support
+    const parallelResults = await Promise.all(allReviewers.map(reviewer => new Promise(async (resolve) => {
       const reviewerDir = join(roundDir, reviewer);
       ensureContainedDirectorySync(roundDir, reviewerDir);
+
+      // Check if reviewer already has credible results (resume support)
+      const validation = validateResumeArtifacts(reviewerDir, resolvedDiffBase);
+      if (validation.valid) {
+        console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
+        resolve({ name: reviewer, status: 'completed', skipped: true });
+        return;
+      }
+      if (validation.reason) {
+        console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: invalidating stale artifacts (${validation.reason}), re-running`);
+      }
+
       const prompt = generateReviewerPrompt(reviewer, currentRound);
       if (!prompt) {
         resolve({ name: reviewer, status: 'failed' });
         return;
       }
       writeContainedFileSync(roundDir, join(reviewerDir, 'prompt.md'), prompt);
-      const proc = spawn('codex', ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt], {
-        cwd: PROJECT_ROOT,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32',
-        env: TOOL_ENV,
-      });
-      let diagnostic = '';
-      let settled = false;
-      let aborted = false;
-      let forceTimer = null;
-      const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
-      const signalProcessTree = signal => {
-        if (!proc.pid) return false;
-        try {
-          if (process.platform === 'win32') {
-            const args = ['/pid', String(proc.pid), '/t'];
-            if (signal === 'SIGKILL') args.push('/f');
-            nodeExecFileSync('taskkill', args, { stdio: 'ignore', timeout: REVIEWER_KILL_GRACE_MS, env: CANDIDATE_ENV });
-          } else {
-            process.kill(-proc.pid, signal);
-          }
-          return true;
-        } catch (error) {
-          if (error.code !== 'ESRCH') diagnostic = `${diagnostic}\nprocess-tree ${signal} failed: ${error.message}`.slice(-4000);
-          return false;
+
+      let attempt = 0;
+      let lastError = null;
+
+      while (attempt <= REVIEWER_RETRY_MAX) {
+        attempt++;
+        if (attempt > 1) {
+          const exponentialDelay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 2);
+          const jitter = Math.random() * RETRY_MAX_JITTER_MS;
+          log.info(`  Retry ${attempt - 1}/${REVIEWER_RETRY_MAX} for ${reviewer}: waiting ${Math.round(exponentialDelay + jitter)}ms`);
+          await new Promise(r => setTimeout(r, exponentialDelay + jitter));
         }
-      };
-      proc.stdout.on('data', retainTail);
-      proc.stderr.on('data', retainTail);
-      const finish = (code, eventStatus = null) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeoutTimer);
-        if (forceTimer) clearTimeout(forceTimer);
-        activeReviewers.delete(reviewer);
-        const complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
-          .every(file => existsSync(join(reviewerDir, file)));
-        const status = eventStatus || (!aborted && code === 0 && complete ? 'completed' : 'failed');
-        console.log(`  ${status === 'completed' ? c.green + '✓' : c.red + '✗'}${c.reset} ${reviewer}: ${status}`);
-        if (status === 'failed' && diagnostic) console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
-        resolve({ name: reviewer, status });
-      };
-      const abort = reason => {
-        if (settled || aborted) return;
-        aborted = true;
-        diagnostic = `${diagnostic}\n${reason}`.slice(-4000);
-        signalProcessTree('SIGTERM');
-        forceTimer = setTimeout(() => {
-          if (settled) return;
-          signalProcessTree('SIGKILL');
-          forceTimer = setTimeout(() => finish(null, 'failed'), 100);
-        }, REVIEWER_KILL_GRACE_MS);
-      };
-      activeReviewers.set(reviewer, abort);
-      const timeoutTimer = setTimeout(() => {
-        const reason = `${reviewer} timed out after ${REVIEWER_TIMEOUT_MS}ms`;
-        console.log(`  ${c.red}✗${c.reset} ${reason}`);
-        abortAll(reason);
-      }, REVIEWER_TIMEOUT_MS);
-      proc.on('close', code => {
-        if (aborted) return;
-        clearTimeout(timeoutTimer);
-        if (!signalProcessTree('SIGTERM')) {
-          finish(code);
+
+        const result = await new Promise(innerResolve => {
+          const proc = spawn('codex', ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt], {
+            cwd: PROJECT_ROOT,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: process.platform !== 'win32',
+            env: TOOL_ENV,
+          });
+          let diagnostic = '';
+          let settled = false;
+          let aborted = false;
+          let forceTimer = null;
+          const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
+          const signalProcessTree = signal => {
+            if (!proc.pid) return false;
+            try {
+              if (process.platform === 'win32') {
+                const args = ['/pid', String(proc.pid), '/t'];
+                if (signal === 'SIGKILL') args.push('/f');
+                nodeExecFileSync('taskkill', args, { stdio: 'ignore', timeout: REVIEWER_KILL_GRACE_MS, env: CANDIDATE_ENV });
+              } else {
+                process.kill(-proc.pid, signal);
+              }
+              return true;
+            } catch (error) {
+              if (error.code !== 'ESRCH') diagnostic = `${diagnostic}\nprocess-tree ${signal} failed: ${error.message}`.slice(-4000);
+              return false;
+            }
+          };
+          proc.stdout.on('data', retainTail);
+          proc.stderr.on('data', retainTail);
+          const finish = (code, eventStatus = null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutTimer);
+            if (forceTimer) clearTimeout(forceTimer);
+            activeReviewers.delete(`${reviewer}-${attempt}`);
+            const complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
+              .every(file => existsSync(join(reviewerDir, file)));
+            if (complete && !aborted && code === 0) {
+              const postValidation = validateResumeArtifacts(reviewerDir, resolvedDiffBase);
+              if (!postValidation.valid) {
+                console.log(`  ${c.red}✗${c.reset} ${reviewer}: artifact validation failed (${postValidation.reason})`);
+                innerResolve({ name: reviewer, status: 'failed', attempt, diagnostic: `post-run validation: ${postValidation.reason}` });
+                return;
+              }
+            }
+            const status = eventStatus || (!aborted && code === 0 && complete ? 'completed' : 'failed');
+            console.log(`  ${status === 'completed' ? c.green + '✓' : c.red + '✗'}${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${status}`);
+            if (status === 'failed' && diagnostic) console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
+            innerResolve({ name: reviewer, status, attempt, diagnostic });
+          };
+          const abort = reason => {
+            if (settled || aborted) return;
+            aborted = true;
+            diagnostic = `${diagnostic}\n${reason}`.slice(-4000);
+            signalProcessTree('SIGTERM');
+            forceTimer = setTimeout(() => {
+              if (settled) return;
+              signalProcessTree('SIGKILL');
+              forceTimer = setTimeout(() => finish(null, 'failed'), 100);
+            }, REVIEWER_KILL_GRACE_MS);
+          };
+          activeReviewers.set(`${reviewer}-${attempt}`, abort);
+          const timeoutTimer = setTimeout(() => {
+            const reason = `${reviewer} timed out after ${scaledTimeout}ms (scale: ${scale})`;
+            console.log(`  ${c.red}✗${c.reset} ${reason}`);
+            abortAll(reason);
+          }, scaledTimeout);
+          proc.on('close', code => {
+            if (aborted) return;
+            clearTimeout(timeoutTimer);
+            if (!signalProcessTree('SIGTERM')) {
+              finish(code);
+              return;
+            }
+            forceTimer = setTimeout(() => {
+              signalProcessTree('SIGKILL');
+              forceTimer = setTimeout(() => finish(code), 100);
+            }, REVIEWER_KILL_GRACE_MS);
+          });
+          proc.on('error', error => {
+            console.log(`  ${c.red}✗${c.reset} ${reviewer}: ${error.message}`);
+            finish(null, 'error');
+            abortAll(`${reviewer} process error: ${error.message}`);
+          });
+        });
+
+        // Check if this attempt succeeded
+        if (result.status === 'completed') {
+          resolve(result);
           return;
         }
-        forceTimer = setTimeout(() => {
-          signalProcessTree('SIGKILL');
-          forceTimer = setTimeout(() => finish(code), 100);
-        }, REVIEWER_KILL_GRACE_MS);
-      });
-      proc.on('error', error => {
-        console.log(`  ${c.red}✗${c.reset} ${reviewer}: ${error.message}`);
-        finish(null, 'error');
-        abortAll(`${reviewer} process error: ${error.message}`);
-      });
+        lastError = result.diagnostic;
+
+        // If not the last attempt, retry
+        if (attempt <= REVIEWER_RETRY_MAX) {
+          continue;
+        }
+      }
+
+      // All retries exhausted
+      resolve({ name: reviewer, status: 'failed', attempts: attempt, lastError });
     })));
     results.push(...parallelResults);
     if (parallelResults.some(result => result.status !== 'completed')) {
@@ -846,6 +948,13 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     timestamp: new Date().toISOString(),
     gate: profileConfig.gate,
     scale: scaleInfo, // Change scale detection result
+    parallelExecution: {
+      enabled: parallel,
+      baseTimeout: REVIEWER_TIMEOUT_MS,
+      scaledTimeout: scaledTimeout,
+      scaleMultiplier: SCALE_TIMEOUT_MULTIPLIERS[scale],
+      retryMax: REVIEWER_RETRY_MAX,
+    },
     evidence: {
       git: safeGitEvidence,
       structure: evidence.structure,
