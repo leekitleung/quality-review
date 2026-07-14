@@ -1,0 +1,50 @@
+{
+  "profile": "quick",
+  "round": 50,
+  "reviewers": [
+    "product-flow",
+    "architecture-maintainer"
+  ],
+  "triggeredConditional": [],
+  "timestamp": "2026-07-14T01:22:17.694Z",
+  "gate": {
+    "min_score": 90,
+    "fail_on_redlines": true,
+    "fail_on_p0_p1_blockers": true,
+    "require_adversarial": false
+  },
+  "scale": {
+    "scale": "none",
+    "suggestedProfile": "quick",
+    "reason": "No changes detected",
+    "fileCount": 0,
+    "totalLines": 0,
+    "hasSecurity": false,
+    "hasSchema": false,
+    "hasApi": false
+  },
+  "parallelExecution": {
+    "enabled": false,
+    "baseTimeout": 900000,
+    "scaledTimeout": 900000,
+    "retryMax": 2
+  },
+  "evidence": {
+    "git": {
+      "branch": "master",
+      "commit": "42d9932",
+      "status": "",
+      "diffStats": "",
+      "changedFiles": []
+    },
+    "structure": {
+      "testFiles": "0",
+      "sourceFiles": "0",
+      "testRatio": 0,
+      "ciWorkflows": 1,
+      "hasReadme": true,
+      "oversizedFiles": [],
+      "largeFiles": 0
+    }
+  }
+}

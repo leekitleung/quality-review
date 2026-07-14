@@ -1,0 +1,85 @@
+{
+  "oversizedFiles": {
+    "status": "warn",
+    "issues": [
+      {
+        "path": "skills/release-quality-review/scripts/review-gate.mjs",
+        "lines": 2010
+      }
+    ]
+  },
+  "circularDeps": {
+    "status": "pass",
+    "issues": []
+  },
+  "secrets": {
+    "status": "pass",
+    "issues": []
+  },
+  "testGate": {
+    "command": "npm test",
+    "started_at": "2026-07-14T01:25:43.572Z",
+    "finished_at": "2026-07-14T01:25:56.877Z",
+    "exit_code": 0,
+    "status": "pass",
+    "output": ".\n    # Subtest: rejects forged clean-candidate command and tree evidence\n    ok 8 - rejects forged clean-candidate command and tree evidence\n      ---\n      duration_ms: 0.408042\n      type: 'test'\n      ...\n    # Subtest: validates structured rollback evidence and rejects forged trees\n    ok 9 - validates structured rollback evidence and rejects forged trees\n      ---\n      duration_ms: 0.265042\n      type: 'test'\n      ...\n    # Subtest: filesystem sandbox denies the host home outside allowed roots\n    ok 10 - filesystem sandbox denies the host home outside allowed roots # SKIP Inherited sandbox is already enforcing the outer filesystem policy\n      ---\n      duration_ms: 9.131083\n      type: 'test'\n      ...\n    # Subtest: rejects a repository output parent symlinked outside the repository\n    ok 11 - rejects a repository output parent symlinked outside the repository\n      ---\n      duration_ms: 0.391041\n      type: 'test'\n      ...\n    # Subtest: writes contained files through production filesystem guards\n    ok 12 - writes contained files through production filesystem guards\n      ---\n      duration_ms: 30.050917\n      type: 'test'\n      ...\n    1..12\nok 9 - security boundaries\n  ---\n  duration_ms: 42.534709\n  type: 'suite'\n  ...\n# Subtest: fail-closed result parsing\n    # Subtest: returns an empty result for missing YAML\n    ok 1 - returns an empty result for missing YAML\n      ---\n      duration_ms: 0.08725\n      type: 'test'\n      ...\n    # Subtest: parses inline blocker and redline arrays\n    ok 2 - parses inline blocker and redline arrays\n      ---\n      duration_ms: 0.155042\n      type: 'test'\n      ...\n    # Subtest: parses and retains packet profile and round identity\n    ok 3 - parses and retains packet profile and round identity\n      ---\n      duration_ms: 0.077459\n      type: 'test'\n      ...\n    1..3\nok 10 - fail-closed result parsing\n  ---\n  duration_ms: 0.386666\n  type: 'suite'\n  ...\n# Subtest: no-blocker parsing\n    # Subtest: does not treat canonical empty P0/P1 sections as vetoes\n    ok 1 - does not treat canonical empty P0/P1 sections as vetoes\n      ---\n      duration_ms: 0.20825\n      type: 'test'\n      ...\n    # Subtest: accepts case-insensitive no-blocker sentences\n    ok 2 - accepts case-insensitive no-blocker sentences\n      ---\n      duration_ms: 0.082\n      type: 'test'\n      ...\n    # Subtest: retains titled P0/P1 headings and ignores unrelated checklists\n    ok 3 - retains titled P0/P1 headings and ignores unrelated checklists\n      ---\n      duration_ms: 0.417792\n      type: 'test'\n      ...\n    1..3\nok 11 - no-blocker parsing\n  ---\n  duration_ms: 0.744334\n  type: 'suite'\n  ...\n# Subtest: conditional reviewer triggers\n    # Subtest: triggers from diff content patterns when file globs do not match\n    ok 1 - triggers from diff content patterns when file globs do not match\n      ---\n      duration_ms: 0.153625\n      type: 'test'\n      ...\n    # Subtest: anchors glob patterns to the full path\n    ok 2 - anchors glob patterns to the full path\n      ---\n      duration_ms: 0.046708\n      type: 'test'\n      ...\n    # Subtest: matches globstar directories at the repository root\n    ok 3 - matches globstar directories at the repository root\n      ---\n      duration_ms: 0.044625\n      type: 'test'\n      ...\n    1..3\nok 12 - conditional reviewer triggers\n  ---\n  duration_ms: 0.278709\n  type: 'suite'\n  ...\n# Subtest: CLI fail-closed integration\n    # Subtest: gate rejects a symlinked report root without writing outside the repository\n    ok 1 - gate rejects a symlinked report root without writing outside the repository\n      ---\n      duration_ms: 253.375334\n      type: 'test'\n      ...\n    # Subtest: gate does not invoke an unpinned network-resolved circular scanner\n    ok 2 - gate does not invoke an unpinned network-resolved circular scanner\n      ---\n      duration_ms: 0.455792\n      type: 'test'\n      ...\n    # Subtest: gate and runner keep candidate writes outside the real report root\n    ok 3 - gate and runner keep candidate writes outside the real report root\n      ---\n      duration_ms: 0.449542\n      type: 'test'\n      ...\n    # Subtest: release evidence exposes a coverage command and versioned changelog\n    ok 4 - release evidence exposes a coverage command and versioned changelog\n      ---\n      duration_ms: 0.109292\n      type: 'test'\n      ...\n    # Subtest: documented agentic workflow binds clean evidence before collection on supported CI\n    ok 5 - documented agentic workflow binds clean evidence before collection on supported CI\n      ---\n      duration_ms: 0.189667\n      type: 'test'\n      ...\n    # Subtest: parallel runner terminates hung reviewers and exits with agent failure\n    ok 6 - parallel runner terminates hung reviewers and exits with agent failure\n      ---\n      duration_ms: 1522.000208\n      type: 'test'\n      ...\n    # Subtest: parallel runner cleans descendants after a successful reviewer exit\n    ok 7 - parallel runner cleans descendants after a successful reviewer exit\n      ---\n      duration_ms: 778.130209\n      type: 'test'\n      ...\n    # Subtest: rejects synthetic auto review\n    ok 8 - rejects synthetic auto review\n      ---\n      duration_ms: 45.295166\n      type: 'test'\n      ...\n    # Subtest: rejects review targets outside the repository\n    ok 9 - rejects review targets outside the repository\n      ---\n      duration_ms: 36.855084\n      type: 'test'\n      ...\n    # Subtest: evidence validator rejects a bare command token with static references\n    ok 10 - evidence validator rejects a bare command token with static references\n      ---\n      duration_ms: 165.925\n      type: 'test'\n      ...\n    # Subtest: Gate and clean verifier reject explicit success no-op scripts\n    ok 11 - Gate and clean verifier reject explicit success no-op scripts\n      ---\n      duration_ms: 781.360375\n      type: 'test'\n      ...\n    # Subtest: Gate and clean verifier reject candidate-authored Node summary printers\n    ok 12 - Gate and clean verifier reject candidate-authored Node summary printers\n      ---\n      duration_ms: 797.82875\n      type: 'test'\n      ...\n    # Subtest: Gate and clean verifier reject masked runner failures with forged summaries\n    ok 13 - Gate and clean verifier reject masked runner failures with forged summaries\n      ---\n      duration_ms: 856.92275\n      type: 'test'\n      ...\n    # Subtest: keeps blockers.md veto even when result.yaml claims pass\n    ok 14 - keeps blockers.md veto even when result.yaml claims pass\n      ---\n      duration_ms: 234.184334\n      type: 'test'\n      ...\n    # Subtest: normal runner workflow writes every prompt and metadata without crashing\n    ok 15 - normal runner workflow writes every prompt and metadata without crashing\n      ---\n      duration_ms: 2960.951625\n      type: 'test'\n      ...\n    # Subtest: no-collect rehydrates matching evidence and quick final report avoids agentic claims\n    ok 16 - no-collect rehydrates matching evidence and quick final report avoids agentic claims\n      ---\n      duration_ms: 1934.133\n      type: 'test'\n      ...\n    # Subtest: rejects stale reviewer packets when the candidate changes in the same round\n    ok 17 - rejects stale reviewer packets when the candidate changes in the same round\n      ---\n      duration_ms: 2112.074459\n      type: 'test'\n      ...\n    # Subtest: quick profile cannot approve without automated test and typecheck evidence\n    ok 18 - quick profile cannot approve without automated test and typecheck evidence\n      ---\n      duration_ms: 243.870333\n      type: 'test'\n      ...\n    1..18\nok 13 - CLI fail-closed integration\n  ---\n  duration_ms: 12724.564167\n  type: 'suite'\n  ...\n1..13\n# tests 82\n# suites 13\n# pass 81\n# fail 0\n# cancelled 0\n# skipped 1\n# todo 0\n# duration_ms 12928.104\nnpm notice\nnpm notice New major version of npm available! 10.9.7 -> 12.0.1\nnpm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.1\nnpm notice To update run: npm install -g npm@12.0.1\nnpm notice\n",
+    "output_bytes": 18434,
+    "truncated": true
+  },
+  "typecheckGate": {
+    "command": "npm run typecheck",
+    "started_at": "2026-07-14T01:25:56.877Z",
+    "finished_at": "2026-07-14T01:25:57.286Z",
+    "exit_code": 0,
+    "status": "pass",
+    "output": "\n> quality-review-skills@1.0.0 typecheck\n> node --check scripts/sync-skills.mjs && node --check scripts/verify-clean-candidate.mjs && node --check skills/release-quality-review/scripts/review-gate.mjs && node --check skills/release-quality-review/scripts/review-runner.mjs && node --check skills/release-quality-review/scripts/evidence-validator.mjs && node --check skills/release-quality-review/scripts/verify-rollback.mjs && node --check skills/release-quality-review/lib/review-utils.mjs && node --check skills/release-quality-review/lib/evidence-utils.mjs && node --check skills/release-quality-review/lib/security-utils.mjs && node --check skills/release-quality-review/lib/candidate-runtime.mjs && node --check skills/release-quality-review/lib/phase-persistence.mjs\n\n",
+    "output_bytes": 774,
+    "truncated": false
+  },
+  "buildGate": {
+    "command": "npm run build",
+    "started_at": "2026-07-14T01:25:57.286Z",
+    "finished_at": "2026-07-14T01:25:57.786Z",
+    "exit_code": 0,
+    "status": "pass",
+    "output": "\n> quality-review-skills@1.0.0 build\n> npm run typecheck\n\n\n> quality-review-skills@1.0.0 typecheck\n> node --check scripts/sync-skills.mjs && node --check scripts/verify-clean-candidate.mjs && node --check skills/release-quality-review/scripts/review-gate.mjs && node --check skills/release-quality-review/scripts/review-runner.mjs && node --check skills/release-quality-review/scripts/evidence-validator.mjs && node --check skills/release-quality-review/scripts/verify-rollback.mjs && node --check skills/release-quality-review/lib/review-utils.mjs && node --check skills/release-quality-review/lib/evidence-utils.mjs && node --check skills/release-quality-review/lib/security-utils.mjs && node --check skills/release-quality-review/lib/candidate-runtime.mjs && node --check skills/release-quality-review/lib/phase-persistence.mjs\n\n",
+    "output_bytes": 832,
+    "truncated": false
+  },
+  "lintGate": {
+    "command": "npm run lint",
+    "started_at": "2026-07-14T01:25:57.786Z",
+    "finished_at": "2026-07-14T01:25:58.287Z",
+    "exit_code": 0,
+    "status": "pass",
+    "output": "\n> quality-review-skills@1.0.0 lint\n> npm run typecheck\n\n\n> quality-review-skills@1.0.0 typecheck\n> node --check scripts/sync-skills.mjs && node --check scripts/verify-clean-candidate.mjs && node --check skills/release-quality-review/scripts/review-gate.mjs && node --check skills/release-quality-review/scripts/review-runner.mjs && node --check skills/release-quality-review/scripts/evidence-validator.mjs && node --check skills/release-quality-review/scripts/verify-rollback.mjs && node --check skills/release-quality-review/lib/review-utils.mjs && node --check skills/release-quality-review/lib/evidence-utils.mjs && node --check skills/release-quality-review/lib/security-utils.mjs && node --check skills/release-quality-review/lib/candidate-runtime.mjs && node --check skills/release-quality-review/lib/phase-persistence.mjs\n\n",
+    "output_bytes": 831,
+    "truncated": false
+  },
+  "auditGate": {
+    "command": "npm audit --audit-level=high",
+    "started_at": "2026-07-14T01:25:58.287Z",
+    "finished_at": "2026-07-14T01:25:58.510Z",
+    "exit_code": 0,
+    "status": "pass",
+    "output": "found 0 vulnerabilities\n",
+    "output_bytes": 24,
+    "truncated": false
+  },
+  "coverageGate": null,
+  "candidateCheckout": {
+    "status": "pass",
+    "source_commit": "42d993215a08c8522facd76ca88960a5c196f80a",
+    "source_tree": "c1e9e5c8bf88dcc2abcef24b162ce576e2b763d4",
+    "initial": {
+      "commit": "42d993215a08c8522facd76ca88960a5c196f80a",
+      "tree": "c1e9e5c8bf88dcc2abcef24b162ce576e2b763d4",
+      "status": ""
+    },
+    "final": {
+      "commit": "42d993215a08c8522facd76ca88960a5c196f80a",
+      "tree": "c1e9e5c8bf88dcc2abcef24b162ce576e2b763d4",
+      "status": ""
+    }
+  }
+}

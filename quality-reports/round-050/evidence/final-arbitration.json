@@ -1,0 +1,15 @@
+{
+  "command": "node /Users/namkit/Documents/1.Projects/quality-review/skills/release-quality-review/scripts/review-gate.mjs --profile quick --round 50 --base HEAD",
+  "recorded_at": "2026-07-14T01:25:58.836Z",
+  "profile": "quick",
+  "round": 50,
+  "status": "fail",
+  "exit_code": 1,
+  "reason": "invalid reviewer packet",
+  "candidate_commit": "42d993215a08c8522facd76ca88960a5c196f80a",
+  "candidate_tree": "c1e9e5c8bf88dcc2abcef24b162ce576e2b763d4",
+  "reviewer_packet_sha256": {
+    "product-flow": "f999679c2a9bec797214abe72f6b3fee35635924fac8f6a63d3bc10a7962d6ba",
+    "architecture-maintainer": "9ce1ded01cdd478ff381661c9e4b424e16f43cbaf468d612e622639dd422fc16"
+  }
+}

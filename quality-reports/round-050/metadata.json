@@ -1,0 +1,48 @@
+{
+  "profile": "quick",
+  "round": 50,
+  "reviewers": [
+    "product-flow",
+    "architecture-maintainer"
+  ],
+  "collected_at": "2026-07-14T01:25:43.006Z",
+  "git": {
+    "branch": "master",
+    "commit": "42d99321",
+    "status": "",
+    "diff": ""
+  },
+  "files": {
+    "package": {
+      "name": "quality-review-skills",
+      "version": "1.0.0",
+      "scripts": [
+        "start",
+        "lint",
+        "typecheck",
+        "build",
+        "test",
+        "coverage",
+        "test:skill",
+        "review",
+        "skill:sync",
+        "skill:install",
+        "skill:check-drift",
+        "skill:diff",
+        "skill:update",
+        "skill:check",
+        "skill:verify",
+        "skill:verify-clean",
+        "skill:verify-rollback",
+        "skill:gate"
+      ]
+    }
+  },
+  "candidate_commit": "42d993215a08c8522facd76ca88960a5c196f80a",
+  "candidate_tree": "c1e9e5c8bf88dcc2abcef24b162ce576e2b763d4",
+  "base_commit": "42d993215a08c8522facd76ca88960a5c196f80a",
+  "base_tree": "c1e9e5c8bf88dcc2abcef24b162ce576e2b763d4",
+  "automated_checks_sha256": "90b138fbc3f3520237c2ab49f11cf23cd639879e0c67af0908ab30745c6da0a8",
+  "clean_candidate_sha256": null,
+  "rollback_verification_sha256": null
+}
