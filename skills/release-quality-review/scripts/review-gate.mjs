@@ -321,9 +321,10 @@ async function runGate() {
           }
         }
         // Validate candidate checkout evidence
-        if (automatedChecks.candidateCheckout && !validCandidateCheckoutEvidence(
-          automatedChecks.candidateCheckout, metadata.candidate_commit, metadata.candidate_tree
-        )) {
+        if ((profile === 'agentic-release-gate' && !automatedChecks.candidateCheckout) ||
+            (automatedChecks.candidateCheckout && !validCandidateCheckoutEvidence(
+              automatedChecks.candidateCheckout, metadata.candidate_commit, metadata.candidate_tree
+            ))) {
           throw new Error('invalid automated verification checkout evidence');
         }
         evidence = {

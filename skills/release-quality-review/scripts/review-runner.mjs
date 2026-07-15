@@ -22,6 +22,7 @@ import { join } from 'path';
 import { execFileSync as nodeExecFileSync, spawn } from 'child_process';
 import {
   matchesTriggerConditions, parseYamlProfile as parseYamlProfileShared, parseYamlResult,
+  validateResultYamlContract,
 } from '../lib/review-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
 import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
@@ -791,7 +792,10 @@ function validateResumeArtifacts(reviewerDir, reviewer, expectedProfile, expecte
   if (missingFiles.length > 0) return { valid: false, reason: `missing: ${missingFiles.join(', ')}` };
 
   try {
-    const parsed = parseYamlResult(readFileSync(join(reviewerDir, 'result.yaml'), 'utf-8'));
+    const yamlContent = readFileSync(join(reviewerDir, 'result.yaml'), 'utf-8');
+    const contract = validateResultYamlContract(yamlContent);
+    if (!contract.valid) return { valid: false, reason: contract.error };
+    const parsed = parseYamlResult(yamlContent);
     const mismatches = [];
     if (parsed.reviewer !== reviewer) mismatches.push(`reviewer=${parsed.reviewer ?? 'missing'}`);
     if (parsed.profile !== expectedProfile) mismatches.push(`profile=${parsed.profile ?? 'missing'}`);

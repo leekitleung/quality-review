@@ -15,7 +15,7 @@
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 import { execFileSync } from 'child_process';
-import { parseYamlResult } from '../lib/review-utils.mjs';
+import { parseYamlResult, validateResultYamlContract } from '../lib/review-utils.mjs';
 import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
@@ -331,7 +331,12 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
   if (!existsSync(resultPath)) {
     allViolations.push({ type: 'missing_result_packet', desc: '缺少必需的 result.yaml，无法绑定候选身份' });
   } else {
-    const packet = parseYamlResult(readFileSync(resultPath, 'utf8'));
+    const yamlContent = readFileSync(resultPath, 'utf8');
+    const contract = validateResultYamlContract(yamlContent);
+    if (!contract.valid) {
+      allViolations.push({ type: 'invalid_result_schema', desc: contract.error });
+    }
+    const packet = parseYamlResult(yamlContent);
     if (!candidateIdentity.valid || packet.candidateCommit !== candidateIdentity.commit || packet.candidateTree !== candidateIdentity.tree) {
       allViolations.push({
         type: 'candidate_identity_mismatch',

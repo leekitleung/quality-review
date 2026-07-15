@@ -45,9 +45,15 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
       };
     }, { added: 0, deleted: 0 });
     evidence.git = {
-      branch: execSync('git branch --show-current 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim(),
-      commit: execSync('git rev-parse HEAD 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim().substring(0, 8),
-      status: execSync('git status --short 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim(),
+      branch: execFileSync('git', ['branch', '--show-current'], {
+        encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+      }).trim(),
+      commit: execFileSync('git', ['rev-parse', 'HEAD'], {
+        encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+      }).trim().substring(0, 8),
+      status: execFileSync('git', ['status', '--short'], {
+        encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+      }).trim(),
       diff: execFileSync('git', ['diff', '--stat', resolvedDiffBase], { encoding: 'utf-8' }).trim(),
       changedFiles,
     };
@@ -77,9 +83,9 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
 
   // Automated checks with config - create candidate runtime inline
   const runtime = createCandidateRuntime(projectRoot, 'gate');
-  const { prepareCheckout, readIdentity } = runtime;
+  const { prepareCheckout, readIdentity, validateCheckout } = runtime;
   const candidateRoot = prepareCheckout();
-  readIdentity(candidateRoot); // Validate checkout identity
+  const initialCandidateIdentity = readIdentity(candidateRoot);
   const runCandidateCommand = (command, cwd) => runEvidenceCommand(command, cwd, (cmd, options) =>
     runtime.execSync(cmd, {
       ...options,
@@ -96,6 +102,7 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
   evidence.automatedChecks = runAutomatedChecks(
     config, projectRoot, candidateRoot, runCandidateCommand, runTrustedAudit
   );
+  evidence.automatedChecks.candidateCheckout = validateCheckout(candidateRoot, initialCandidateIdentity);
 
   return evidence;
 }

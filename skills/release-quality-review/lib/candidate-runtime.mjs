@@ -25,7 +25,7 @@ export function createCandidateRuntime(projectRoot, label) {
       sandboxReadOnlyRoots = [], sandboxWriteRoots = [isolatedHome], sandboxAllowNetwork = false, ...execOptions
     } = options;
     const wrapped = wrapCandidateCommand(file, args, {
-      readOnlyRoots: [projectRoot, ...sandboxReadOnlyRoots], writeRoots: sandboxWriteRoots,
+      readOnlyRoots: sandboxReadOnlyRoots, writeRoots: sandboxWriteRoots,
       allowNetwork: sandboxAllowNetwork,
     });
     return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env });
@@ -46,6 +46,7 @@ export function createCandidateRuntime(projectRoot, label) {
     if (!existsSync(checkout)) {
       execFileSync('git', ['clone', '--quiet', '--no-hardlinks', projectRoot, checkout], {
         cwd: projectRoot, encoding: 'utf8', timeout: 30000,
+        sandboxReadOnlyRoots: [projectRoot],
         sandboxWriteRoots: [isolatedHome, checkoutParent],
       });
       ensureContainedDirectorySync(checkout, join(checkout, 'quality-reports'));

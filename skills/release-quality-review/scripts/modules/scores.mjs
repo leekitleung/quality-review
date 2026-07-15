@@ -2,7 +2,9 @@ import { existsSync } from 'fs';
 import { join } from 'path';
 import { log } from './constants.mjs';
 import { readContainedFileSync } from '../../lib/security-utils.mjs';
-import { parseScore, parseBlockers, parseYamlResult } from '../../lib/review-utils.mjs';
+import {
+  parseScore, parseBlockers, parseYamlResult, validateResultYamlContract,
+} from '../../lib/review-utils.mjs';
 
 /**
  * Validate reviewer identity by checking if reviewer definition exists
@@ -56,6 +58,8 @@ export function loadExistingScores(roundDir, reviewers, expectedCandidateCommit,
     if (existsSync(resultYamlPath)) {
       try {
         const yamlContent = readContainedFileSync(roundDir, resultYamlPath, 'utf-8');
+        const contract = validateResultYamlContract(yamlContent);
+        if (!contract.valid) throw new Error(contract.error);
         const yamlResult = parseYamlResult(yamlContent);
 
         if (yamlResult.score !== null) {

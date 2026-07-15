@@ -484,6 +484,34 @@ export function parseYamlResult(yamlContent) {
   return result;
 }
 
+export function validateResultYamlContract(yamlContent) {
+  if (!yamlContent || typeof yamlContent !== 'string') {
+    return { valid: false, error: 'result.yaml is empty' };
+  }
+  const required = new Map([
+    ['reviewer', /^[a-z0-9-]+$/],
+    ['profile', /^(?:quick|default|release-gate|full|agentic-release-gate)$/],
+    ['round', /^[1-9]\d*$/],
+    ['candidate_commit', /^[0-9a-f]{40}$/],
+    ['candidate_tree', /^[0-9a-f]{40}$/],
+    ['score', /^(?:100|[1-9]?\d)$/],
+    ['status', /^(?:pass|fail)$/],
+  ]);
+  const seen = new Map();
+  for (const line of yamlContent.split('\n')) {
+    if (!line || /^\s/.test(line) || line.trimStart().startsWith('#')) continue;
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_-]*):(?:\s*(.*))?$/);
+    if (!match || !required.has(match[1])) continue;
+    if (seen.has(match[1])) return { valid: false, error: `duplicate top-level field: ${match[1]}` };
+    seen.set(match[1], match[2] ?? '');
+  }
+  for (const [key, pattern] of required) {
+    if (!seen.has(key)) return { valid: false, error: `missing top-level field: ${key}` };
+    if (!pattern.test(seen.get(key))) return { valid: false, error: `invalid top-level field: ${key}` };
+  }
+  return { valid: true, error: null };
+}
+
 // ============================================================================
 // Change Scale Detection
 // ============================================================================

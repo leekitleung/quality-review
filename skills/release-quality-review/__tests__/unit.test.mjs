@@ -33,6 +33,7 @@ import {
   ROLLBACK_COMMANDS,
   validateCleanCandidateEvidence,
   validateRollbackEvidence,
+  validateResultYamlContract,
 } from '../lib/review-utils.mjs';
 import {
   resolveWithinRoot,
@@ -51,7 +52,8 @@ import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.m
 import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
 import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
 import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
-import { runAutomatedChecks, runEvidenceCommand } from '../scripts/modules/evidence.mjs';
+import { collectEvidence, runAutomatedChecks, runEvidenceCommand } from '../scripts/modules/evidence.mjs';
+import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -467,6 +469,29 @@ dimensions:
     assertEqual(Object.keys(result.dimensions).length, 2);
     assertEqual(result.dimensions['product-closure'].score, 45);
     assertEqual(result.dimensions['edge-case-handling'].score, 47);
+  });
+});
+
+test.describe('result.yaml machine contract', () => {
+  const canonical = `reviewer: product-flow
+profile: agentic-release-gate
+round: 77
+candidate_commit: 1111111111111111111111111111111111111111
+candidate_tree: 2222222222222222222222222222222222222222
+score: 95
+status: pass
+blockers: []
+`;
+  test('accepts required scalar fields plus optional packet fields', () => {
+    assertEqual(validateResultYamlContract(canonical).valid, true);
+  });
+  test('rejects duplicate, slash-form, nested, and non-lowercase machine fields', () => {
+    for (const invalid of [
+      `${canonical}score: 96\n`,
+      canonical.replace('score: 95', 'score: 95/100'),
+      canonical.replace('score: 95', 'score:\n  total: 95'),
+      canonical.replace('status: pass', 'status: PASS'),
+    ]) assertEqual(validateResultYamlContract(invalid).valid, false);
   });
 });
 
@@ -1005,6 +1030,66 @@ test.describe('CLI fail-closed integration', () => {
     assertEqual(evidence.includes('const candidateRoot = prepareCheckout()'), true, 'Gate evidence collection lacks isolated checkout');
     const runtime = readFileSync(join(SKILL_DIR, 'lib', 'candidate-runtime.mjs'), 'utf8');
     assertEqual(runtime.includes('sandboxWriteRoots = [isolatedHome]'), true, 'Shared runtime lacks isolated write root');
+    assertEqual(runtime.includes('readOnlyRoots: [projectRoot, ...sandboxReadOnlyRoots]'), false,
+      'Candidate runtime exposes the host project root to every command');
+  });
+
+  test('candidate runtime cannot read a real report canary', () => {
+    if (process.platform !== 'darwin') return;
+    const probe = spawnSync('/usr/bin/sandbox-exec', ['-p', '(version 1) (allow default)', '/usr/bin/true'], { encoding: 'utf8' });
+    if (probe.status !== 0) return;
+    const candidateRoot = join(TEST_DIR, `candidate-read-${randomUUID()}`);
+    const canary = join(PROJECT_ROOT, 'quality-reports', `.read-canary-${randomUUID()}`);
+    mkdirSync(candidateRoot, { recursive: true });
+    writeFileSync(join(candidateRoot, 'allowed.txt'), 'allowed');
+    writeFileSync(canary, 'trusted');
+    const runtime = createCandidateRuntime(PROJECT_ROOT, 'read-boundary-test');
+    try {
+      const script = `const fs=require('node:fs');if(fs.readFileSync('allowed.txt','utf8')!=='allowed')process.exit(2);try{fs.readFileSync(${JSON.stringify(canary)});process.exit(3)}catch{}`;
+      const output = runtime.execFileSync(process.execPath, ['-e', script], {
+        cwd: candidateRoot, encoding: 'utf8', sandboxReadOnlyRoots: [candidateRoot],
+      });
+      assertEqual(output, '');
+    } finally {
+      rmSync(canary, { force: true });
+    }
+  });
+
+  test('evidence collection rejects candidate checkout mutation', () => {
+    const repository = join(TEST_DIR, `mutating-candidate-${randomUUID()}`);
+    const cloned = spawnSync('git', ['clone', '--quiet', '--no-local', PROJECT_ROOT, repository], {
+      cwd: TEST_DIR, encoding: 'utf8', timeout: 30000,
+    });
+    assertEqual(cloned.status, 0, `Expected fixture clone, output: ${cloned.stdout}${cloned.stderr}`);
+    const manifestPath = join(repository, 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const mutatingTest = 'env -u NODE_TEST_CONTEXT node --test mutating-candidate.test.mjs';
+    for (const script of ['test', 'typecheck', 'build', 'lint', 'coverage', 'test:e2e']) {
+      manifest.scripts[script] = mutatingTest;
+    }
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    writeFileSync(join(repository, 'mutating-candidate.test.mjs'),
+      "import { appendFileSync } from 'node:fs'; import test from 'node:test'; appendFileSync('README.md', '\\nmutation'); test('passes', () => {});\n");
+    spawnSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository });
+    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: repository });
+    spawnSync('git', ['add', 'package.json', 'mutating-candidate.test.mjs'], { cwd: repository });
+    const committed = spawnSync('git', ['commit', '--quiet', '-m', 'mutating candidate'], {
+      cwd: repository, encoding: 'utf8',
+    });
+    assertEqual(committed.status, 0, committed.stderr);
+    const base = spawnSync('git', ['rev-parse', 'HEAD^'], { cwd: repository, encoding: 'utf8' }).stdout.trim();
+    let rejected = false;
+    let rejectionMessage = '';
+    try {
+      collectEvidence({ verification: {
+        test: mutatingTest, typecheck: mutatingTest, build: mutatingTest, lint: mutatingTest,
+        coverage: mutatingTest, e2e: mutatingTest,
+      } }, repository, base, base, join(repository, 'skills', 'release-quality-review'));
+    } catch (error) {
+      rejectionMessage = error.message;
+      rejected = /checkout identity changed/.test(error.message);
+    }
+    assertEqual(rejected, true, `Candidate checkout mutation must fail evidence collection; got: ${rejectionMessage}`);
   });
 
   test('Claude reviewer invocation accepts report edits without interactive approval', () => {
