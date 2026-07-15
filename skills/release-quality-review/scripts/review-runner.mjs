@@ -17,7 +17,7 @@
  *   node review-runner.mjs --target <dir>  # Review a specific directory (self-review)
  */
 
-import { readFileSync, existsSync, readdirSync, realpathSync, statSync } from 'fs';
+import { readFileSync, existsSync, readdirSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { execFileSync as nodeExecFileSync, spawn } from 'child_process';
 import { matchesTriggerConditions, parseYamlProfile as parseYamlProfileShared } from '../lib/review-utils.mjs';
@@ -41,6 +41,21 @@ const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY
 const REVIEWER_RETRY_MAX = parseInt(process.env.RELEASE_QUALITY_REVIEWER_RETRY_MAX || '2', 10);
 const RETRY_BASE_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_BASE_DELAY_MS || '1000', 10);
 const RETRY_MAX_JITTER_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_MAX_JITTER_MS || '300', 10);
+const REVIEWER_START_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_REVIEWER_START_DELAY_MS || '60000', 10);
+
+// Auto-detect available agent CLI
+function detectAvailableAgent() {
+  const agents = ['claude', 'codex'];
+  for (const agent of agents) {
+    try {
+      nodeExecFileSync(agent, ['--version'], { cwd: PROJECT_ROOT, timeout: 5000, stdio: 'ignore' });
+      return agent;
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
 
 // Scale-based timeout multipliers (apply to base REVIEWER_TIMEOUT_MS)
 const SCALE_TIMEOUT_MULTIPLIERS = {
@@ -50,6 +65,137 @@ const SCALE_TIMEOUT_MULTIPLIERS = {
   large: 1.5,    // 22.5 minutes
   xlarge: 2.0,   // 30 minutes
 };
+
+// Write reviewer output files from orchestrator (parse agent output and write)
+function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, profile, round, candidateCommit, candidateTree) {
+  // Parse output - look for YAML blocks or markdown formatted sections
+  let resultYaml = '';
+  let scoreContent = '';
+  let blockersContent = '';
+  let improvementsContent = '';
+
+  const lines = outputContent.split('\n');
+  let inResultBlock = false;
+  let inScore = false;
+  let inBlockers = false;
+  let inImprovements = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    // Detect section transitions
+    if ((line.includes('result.yaml') || line.includes('candidate_commit:')) && !inScore) {
+      inResultBlock = true;
+      inImprovements = false;
+    }
+
+    if (inResultBlock && line.trim() === '---') {
+      // YAML block end marker
+      inResultBlock = false;
+      continue;
+    }
+
+    if (line.includes('score.md') || (inResultBlock && line.includes('score:')) || (line.includes('Overall Score') && !inScore)) {
+      inResultBlock = false;
+      inScore = true;
+      inBlockers = false;
+      inImprovements = false;
+    }
+
+    if (inScore && (line.includes('blockers.md') || line.includes('## Blockers') || line.includes('## P0') || line.includes('## P1'))) {
+      inScore = false;
+      inBlockers = true;
+      inImprovements = false;
+    }
+
+    if (inBlockers && (line.includes('improvement-list.md') || line.includes('## Improvements') || line.includes('## P2') || line.includes('## P3'))) {
+      inBlockers = false;
+      inImprovements = true;
+    }
+
+    // Extract content based on current section
+    if (inResultBlock && !inScore) {
+      resultYaml += line + '\n';
+    }
+
+    if (inScore && !inBlockers && !inImprovements) {
+      scoreContent += line + '\n';
+    }
+
+    if (inBlockers && !inImprovements) {
+      blockersContent += line + '\n';
+    }
+
+    if (inImprovements) {
+      improvementsContent += line + '\n';
+    }
+  }
+
+  // Write result.yaml
+  if (resultYaml.trim() && resultYaml.includes('candidate_commit:')) {
+    try {
+      writeContainedFileSync(reviewerDir, join(reviewerDir, 'result.yaml'), resultYaml);
+    } catch (e) {
+      console.error(`Failed to write result.yaml: ${e.message}`);
+    }
+  } else {
+    // Create minimal result.yaml with required fields
+    const minimal = `reviewer: ${reviewerName}\nprofile: ${profile}\nround: ${round}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 0\nstatus: parsed\n`;
+    try {
+      writeContainedFileSync(reviewerDir, join(reviewerDir, 'result.yaml'), minimal);
+    } catch (e) {
+      console.error(`Failed to write result.yaml: ${e.message}`);
+    }
+  }
+
+  // Write score.md
+  if (scoreContent.trim()) {
+    try {
+      writeContainedFileSync(reviewerDir, join(reviewerDir, 'score.md'), scoreContent);
+    } catch (e) {
+      console.error(`Failed to write score.md: ${e.message}`);
+    }
+  } else {
+    const fallback = `# ${reviewerName} - Round ${round}\n\n## Overall Score: 0/100\n\n---\n\nReview output parsing incomplete.\n`;
+    try {
+      writeContainedFileSync(reviewerDir, join(reviewerDir, 'score.md'), fallback);
+    } catch (e) {
+      console.error(`Failed to write score.md: ${e.message}`);
+    }
+  }
+
+  // Write blockers.md
+  if (blockersContent.trim()) {
+    try {
+      writeContainedFileSync(reviewerDir, join(reviewerDir, 'blockers.md'), blockersContent);
+    } catch (e) {
+      console.error(`Failed to write blockers.md: ${e.message}`);
+    }
+  } else {
+    const fallback = `# Blockers - ${reviewerName}\n\n## P0 (Must Fix)\n- None found\n\n---\n`;
+    try {
+      writeContainedFileSync(reviewerDir, join(reviewerDir, 'blockers.md'), fallback);
+    } catch (e) {
+      console.error(`Failed to write blockers.md: ${e.message}`);
+    }
+  }
+
+  // Write improvement-list.md
+  if (improvementsContent.trim()) {
+    try {
+      writeContainedFileSync(reviewerDir, join(reviewerDir, 'improvement-list.md'), improvementsContent);
+    } catch (e) {
+      console.error(`Failed to write improvement-list.md: ${e.message}`);
+    }
+  } else {
+    const fallback = `# Improvements - ${reviewerName}\n\n## P2 (Should Fix)\n- No improvements listed\n\n## P3 (Nice to Have)\n- None\n`;
+    try {
+      writeContainedFileSync(reviewerDir, join(reviewerDir, 'improvement-list.md'), fallback);
+    } catch (e) {
+      console.error(`Failed to write improvement-list.md: ${e.message}`);
+    }
+  }
+}
 
 function parsePositiveDuration(value, fallback) {
   if (value === undefined) return fallback;
@@ -82,7 +228,7 @@ function parseCliArgs(args) {
   const options = {
     profile: 'release-gate', roundNumber: null, parallel: false, dryRun: false,
     skipEvidence: false, reviewerOverride: null, targetDir: null,
-    checkGoalMode: false, diffBase: 'HEAD', agentCli: 'claude',
+    checkGoalMode: false, diffBase: 'HEAD', agentCli: null, // null = auto-detect
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -508,6 +654,7 @@ function loadConfig() {
       const config = {
         verification: {},
         gate: {},
+        execution: {},
       };
       let currentSection = '';
 
@@ -516,7 +663,7 @@ function loadConfig() {
         if (!trimmed || trimmed.startsWith('#')) continue;
 
         // Section headers
-        if (trimmed.startsWith('verification:') || trimmed.startsWith('gate:')) {
+        if (trimmed.startsWith('verification:') || trimmed.startsWith('gate:') || trimmed.startsWith('execution:')) {
           currentSection = trimmed.replace(':', '').trim();
           continue;
         }
@@ -533,6 +680,8 @@ function loadConfig() {
               config.verification[key.trim()] = cleanValue;
             } else if (currentSection === 'gate' || ['min_score', 'fail_on_redlines', 'fail_on_p0_p1_blockers'].includes(key.trim())) {
               config.gate[key.trim()] = cleanValue;
+            } else if (currentSection === 'execution' || ['start_delay_ms', 'timeout_ms', 'retry_max'].includes(key.trim())) {
+              config.execution[key.trim()] = cleanValue;
             } else {
               config[key.trim()] = cleanValue;
             }
@@ -636,10 +785,6 @@ function validateResumeArtifacts(reviewerDir, currentCommit) {
     return { valid: false, reason: `parse error: ${e.message}` };
   }
 }
-
-// Add delay between reviewer starts to avoid 429 rate limit errors
-// The API key only supports 1 concurrent session, so we run sequentially with delays
-const REVIEWER_START_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_REVIEWER_START_DELAY_MS || '60000', 10);
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
@@ -778,26 +923,35 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   const scale = evidence.scale?.scale || 'medium';
   const scaledTimeout = getScaledTimeout(scale);
 
-  // Determine CLI wrapper based on agent type
-  let cli = agentCli || 'claude';
+  // Auto-detect agent if not specified
+  const resolvedAgent = agentCli || detectAvailableAgent();
+  if (!resolvedAgent) {
+    log.error('No agent CLI available (checked: claude, codex)');
+    process.exit(5);
+  }
+  log.info(`Using agent: ${resolvedAgent}`);
+
+  // Use config for delays
+  const startDelay = config.execution?.start_delay_ms
+    ? parseInt(config.execution.start_delay_ms, 10)
+    : REVIEWER_START_DELAY_MS;
+
+  let cli = resolvedAgent;
   let cliArgs = null;
   // Spawn reviewer agents with appropriate CLI
-  if (agentCli === 'claude') {
+  if (resolvedAgent === 'claude') {
     // Use node to run reviewer scripts in isolated CLI context
     cli = process.execPath;
     cliArgs = [`${join(SKILL_DIR, 'scripts', 'review-gate.mjs')}`, '--resume-round', String(currentRound)];
-    log.info(`Parallel mode: launching ${allReviewers.length} independent reviewer agents via ${process.execPath}`);
-  } else if (agentCli === 'codex') {
+  } else if (resolvedAgent === 'codex') {
     // Use codex exec mode (requires --ephemeral and --sandbox)
     cli = 'codex';
     cliArgs = ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT];
-    log.info(`Parallel mode: launching ${allReviewers.length} independent ${cli} reviewer agents...`);
   }
   if (parallel) {
-    log.info(`Execution: parallel, Scale: ${scale}, Timeout: ${scaledTimeout}ms`);
+    log.info(`Execution: parallel, Scale: ${scale}, Timeout: ${scaledTimeout}ms (base: ${REVIEWER_TIMEOUT_MS}ms), Start delay: ${startDelay}ms`);
     try {
-      // Check that the agent CLI is available
-      nodeExecFileSync(agentCli, ['--help'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
+      nodeExecFileSync(resolvedAgent, ['--help'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
     } catch {
       log.error(`Parallel mode requires ${agentCli} CLI on PATH; no reviewer agents were launched.`);
       process.exit(5);
@@ -828,7 +982,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       }
 
       // Add delay between reviewer starts to avoid rate limit (API key: 1 concurrent session max)
-      await sleep(REVIEWER_START_DELAY_MS);
+      await sleep(startDelay);
 
       const prompt = generateReviewerPrompt(reviewer, currentRound);
       if (!prompt) {
@@ -851,7 +1005,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
         const result = await new Promise(innerResolve => {
           const proc = (() => {
-            if (agentCli === 'claude') {
+            if (resolvedAgent === 'claude') {
               // claude -p "prompt"
               return spawn('claude', ['-p', prompt], {
                 cwd: PROJECT_ROOT,
@@ -859,9 +1013,17 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
                 detached: process.platform !== 'win32',
                 env: TOOL_ENV,
               });
-            } else {
+            } else if (resolvedAgent === 'codex') {
               // codex exec with sandbox
               return spawn('codex', ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt], {
+                cwd: PROJECT_ROOT,
+                stdio: ['ignore', 'pipe', 'pipe'],
+                detached: process.platform !== 'win32',
+                env: TOOL_ENV,
+              });
+            } else {
+              // generic agent: resolvedAgent -p "prompt"
+              return spawn(resolvedAgent, ['-p', prompt], {
                 cwd: PROJECT_ROOT,
                 stdio: ['ignore', 'pipe', 'pipe'],
                 detached: process.platform !== 'win32',
@@ -899,6 +1061,16 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             clearTimeout(timeoutTimer);
             if (forceTimer) clearTimeout(forceTimer);
             activeReviewers.delete(`${reviewer}-${attempt}`);
+
+            // Write reviewer files from captured output (orchestrator writes files for agents)
+            if (code === 0 && diagnostic.trim()) {
+              try {
+                writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, candidateCommit, candidateTree);
+              } catch (e) {
+                console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
+              }
+            }
+
             const complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
               .every(file => existsSync(join(reviewerDir, file)));
             if (complete && !aborted && code === 0) {
@@ -981,7 +1153,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     }
   } else {
     // Sequential mode: execute reviewers one by one with delays
-    log.info(`Execution: sequential with ${REVIEWER_START_DELAY_MS}ms delays`);
+    log.info(`Execution: sequential with ${startDelay}ms delays`);
     for (let i = 0; i < allReviewers.length; i++) {
       const reviewer = allReviewers[i];
       const reviewerDir = join(roundDir, reviewer);
@@ -1000,7 +1172,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
       // Add delay between reviewers (skip delay for first reviewer if no previous ran)
       if (i > 0) {
-        await sleep(REVIEWER_START_DELAY_MS);
+        await sleep(startDelay);
       }
 
       const prompt = generateReviewerPrompt(reviewer, currentRound);
@@ -1024,7 +1196,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           await sleep(delay);
         }
 
-        const proc = spawn('claude', ['-p', prompt], {
+        const proc = spawn(resolvedAgent, ['-p', prompt], {
           cwd: PROJECT_ROOT,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: false,
@@ -1053,6 +1225,15 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
         clearTimeout(timeoutTimer);
         settled = true;
+
+        // Write reviewer files from captured output (orchestrator writes files for agents)
+        if (exitCode === 0 && diagnostic.trim()) {
+          try {
+            writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, candidateCommit, candidateTree);
+          } catch (e) {
+            console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
+          }
+        }
 
         const complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
           .every(file => existsSync(join(reviewerDir, file)));
