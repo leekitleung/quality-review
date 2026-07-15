@@ -1326,7 +1326,12 @@ setInterval(() => {}, 1000);
     const output = join(repository, outputArg);
     const clean = spawnSync(process.execPath, [
       join(PROJECT_ROOT, 'scripts', 'verify-clean-candidate.mjs'), '--output', outputArg,
-    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    ], {
+      cwd: repository,
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { ...process.env, RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED: '1' },
+    });
     assertEqual(clean.status, 1, `Expected forged Node clean-verifier rejection, output: ${clean.stdout}${clean.stderr}`);
     const cleanEvidence = JSON.parse(readFileSync(output, 'utf8'));
     assertEqual(cleanEvidence.commands[1].id, 'script-integrity');
@@ -1361,7 +1366,12 @@ setInterval(() => {}, 1000);
 
     const gate = spawnSync(process.execPath, [
       join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '1', '--base', fixtureBase,
-    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    ], {
+      cwd: repository,
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { ...process.env, RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED: '1' },
+    });
     assertEqual(gate.status, 1, `Expected masked-failure Gate rejection, output: ${gate.stdout}${gate.stderr}`);
     assertTrue(gate.stdout.includes('trivial or missing verification scripts'), 'Gate must reject masking operators');
 
@@ -1369,7 +1379,12 @@ setInterval(() => {}, 1000);
     const output = join(repository, outputArg);
     const clean = spawnSync(process.execPath, [
       join(PROJECT_ROOT, 'scripts', 'verify-clean-candidate.mjs'), '--output', outputArg,
-    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    ], {
+      cwd: repository,
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { ...process.env, RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED: '1' },
+    });
     assertEqual(clean.status, 1, `Expected masked-failure clean rejection, output: ${clean.stdout}${clean.stderr}`);
     const cleanEvidence = JSON.parse(readFileSync(output, 'utf8'));
     assertEqual(cleanEvidence.commands[1].status, 'fail');
