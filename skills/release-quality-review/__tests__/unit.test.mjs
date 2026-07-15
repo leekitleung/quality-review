@@ -1116,6 +1116,11 @@ test.describe('CLI fail-closed integration', () => {
     assertEqual(config.includes('max_concurrent'), false);
   });
 
+  test('runner resolves the diff base with read-only project access', () => {
+    const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
+    assertTrue(runner.includes('sandboxReadOnlyRoots: [PROJECT_ROOT]'));
+  });
+
   test('release evidence exposes a coverage command and versioned changelog', () => {
     const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'));
     assertTrue(typeof manifest.scripts?.coverage === 'string', 'Expected a coverage script');
