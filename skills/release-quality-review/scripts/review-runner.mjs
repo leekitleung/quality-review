@@ -140,7 +140,7 @@ function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, 
     }
   } else {
     // Create minimal result.yaml with required fields
-    const minimal = `reviewer: ${reviewerName}\nprofile: ${profile}\nround: ${round}\ncandidate_commit: ${resolvedDiffBase}\ncandidate_tree: ${candidateTree}\nscore: 0\nstatus: parsed\n`;
+    const minimal = `reviewer: ${reviewerName}\nprofile: ${profile}\nround: ${round}\ncandidate_commit: ${resolvedDiffBase === 'HEAD' ? candidateCommit : resolvedDiffBase}\ncandidate_tree: ${candidateTree}\nscore: 0\nstatus: parsed\n`;
     try {
       writeContainedFileSync(reviewerDir, join(reviewerDir, 'result.yaml'), minimal);
     } catch (e) {
