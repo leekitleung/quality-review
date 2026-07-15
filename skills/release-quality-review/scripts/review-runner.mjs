@@ -28,7 +28,7 @@ import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.m
 import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
 import {
   createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
-  readContainedFileSync, redactSensitiveText, resolveWithinRoot, writeContainedFileSync,
+  readContainedFile, readContainedFileSync, redactSensitiveText, resolveWithinRoot, writeContainedFile,
 } from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
@@ -73,7 +73,7 @@ const SCALE_TIMEOUT_MULTIPLIERS = {
 };
 
 // Write reviewer output files from orchestrator (parse agent output and write)
-function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, profile, round, candidateCommit, candidateTree) {
+async function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, profile, round, candidateCommit, candidateTree) {
   // Parse output - look for YAML blocks or markdown formatted sections
   let resultYaml = '';
   let scoreContent = '';
@@ -140,7 +140,7 @@ function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, 
   // Write result.yaml
   if (resultYaml.trim() && resultYaml.includes('candidate_commit:')) {
     try {
-      writeContainedFileSync(reviewerDir, join(reviewerDir, 'result.yaml'), resultYaml);
+      await writeContainedFile(reviewerDir, join(reviewerDir, 'result.yaml'), resultYaml);
     } catch (e) {
       console.error(`Failed to write result.yaml: ${e.message}`);
     }
@@ -148,7 +148,7 @@ function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, 
     // Create minimal result.yaml with required fields
     const minimal = `reviewer: ${reviewerName}\nprofile: ${profile}\nround: ${round}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 0\nstatus: parsed\n`;
     try {
-      writeContainedFileSync(reviewerDir, join(reviewerDir, 'result.yaml'), minimal);
+      await writeContainedFile(reviewerDir, join(reviewerDir, 'result.yaml'), minimal);
     } catch (e) {
       console.error(`Failed to write result.yaml: ${e.message}`);
     }
@@ -157,14 +157,14 @@ function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, 
   // Write score.md
   if (scoreContent.trim()) {
     try {
-      writeContainedFileSync(reviewerDir, join(reviewerDir, 'score.md'), scoreContent);
+      await writeContainedFile(reviewerDir, join(reviewerDir, 'score.md'), scoreContent);
     } catch (e) {
       console.error(`Failed to write score.md: ${e.message}`);
     }
   } else {
     const fallback = `# ${reviewerName} - Round ${round}\n\n## Overall Score: 0/100\n\n---\n\nReview output parsing incomplete.\n`;
     try {
-      writeContainedFileSync(reviewerDir, join(reviewerDir, 'score.md'), fallback);
+      await writeContainedFile(reviewerDir, join(reviewerDir, 'score.md'), fallback);
     } catch (e) {
       console.error(`Failed to write score.md: ${e.message}`);
     }
@@ -173,14 +173,14 @@ function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, 
   // Write blockers.md
   if (blockersContent.trim()) {
     try {
-      writeContainedFileSync(reviewerDir, join(reviewerDir, 'blockers.md'), blockersContent);
+      await writeContainedFile(reviewerDir, join(reviewerDir, 'blockers.md'), blockersContent);
     } catch (e) {
       console.error(`Failed to write blockers.md: ${e.message}`);
     }
   } else {
     const fallback = `# Blockers - ${reviewerName}\n\n## P0 (Must Fix)\n- None found\n\n---\n`;
     try {
-      writeContainedFileSync(reviewerDir, join(reviewerDir, 'blockers.md'), fallback);
+      await writeContainedFile(reviewerDir, join(reviewerDir, 'blockers.md'), fallback);
     } catch (e) {
       console.error(`Failed to write blockers.md: ${e.message}`);
     }
@@ -189,14 +189,14 @@ function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, 
   // Write improvement-list.md
   if (improvementsContent.trim()) {
     try {
-      writeContainedFileSync(reviewerDir, join(reviewerDir, 'improvement-list.md'), improvementsContent);
+      await writeContainedFile(reviewerDir, join(reviewerDir, 'improvement-list.md'), improvementsContent);
     } catch (e) {
       console.error(`Failed to write improvement-list.md: ${e.message}`);
     }
   } else {
     const fallback = `# Improvements - ${reviewerName}\n\n## P2 (Should Fix)\n- No improvements listed\n\n## P3 (Nice to Have)\n- None\n`;
     try {
-      writeContainedFileSync(reviewerDir, join(reviewerDir, 'improvement-list.md'), fallback);
+      await writeContainedFile(reviewerDir, join(reviewerDir, 'improvement-list.md'), fallback);
     } catch (e) {
       console.error(`Failed to write improvement-list.md: ${e.message}`);
     }
@@ -720,10 +720,10 @@ function getGitInfo() {
 }
 
 // Generate reviewer prompt
-function generateReviewerPrompt(reviewerName, currentRound) {
+function generateReviewerPrompt(reviewerName, currentRound, candidateIdentity) {
   const reviewerContent = loadReviewer(reviewerName);
   if (!reviewerContent) return null;
-  const { commit: candidateCommit, tree: candidateTree } = getGitInfo();
+  const { commit: candidateCommit, tree: candidateTree } = candidateIdentity;
 
   // Extract key sections for the prompt
   const prompt = `
@@ -787,13 +787,15 @@ status: <pass|fail>
 }
 
 // Validate resume artifacts for credibility
-function validateResumeArtifacts(reviewerDir, reviewer, expectedProfile, expectedRound, currentIdentity) {
+async function validateResumeArtifacts(reviewerDir, reviewer, expectedProfile, expectedRound, currentIdentity) {
   const requiredFiles = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md'];
-  const missingFiles = requiredFiles.filter(f => !existsSync(join(reviewerDir, f)));
-  if (missingFiles.length > 0) return { valid: false, reason: `missing: ${missingFiles.join(', ')}` };
-
   try {
-    const yamlContent = readFileSync(join(reviewerDir, 'result.yaml'), 'utf-8');
+    const contents = await Promise.all(requiredFiles.map(file =>
+      readContainedFile(reviewerDir, join(reviewerDir, file), 'utf8').catch(error => ({ error, file }))
+    ));
+    const missingFiles = contents.filter(value => typeof value !== 'string').map(value => value.file);
+    if (missingFiles.length > 0) return { valid: false, reason: `missing: ${missingFiles.join(', ')}` };
+    const yamlContent = contents[0];
     const contract = validateResultYamlContract(yamlContent);
     if (!contract.valid) return { valid: false, reason: contract.error };
     const parsed = parseYamlResult(yamlContent);
@@ -805,7 +807,7 @@ function validateResumeArtifacts(reviewerDir, reviewer, expectedProfile, expecte
     if (parsed.candidateTree !== currentIdentity.tree) mismatches.push(`candidate_tree=${parsed.candidateTree ?? 'missing'}`);
     if (!Number.isInteger(parsed.score) || parsed.score < 0 || parsed.score > 100) mismatches.push('score=invalid');
     if (!['pass', 'fail'].includes(parsed.status)) mismatches.push(`status=${parsed.status ?? 'missing'}`);
-    const emptyFiles = requiredFiles.filter(file => readFileSync(join(reviewerDir, file), 'utf8').trim() === '');
+    const emptyFiles = requiredFiles.filter((_file, index) => contents[index].trim() === '');
     if (emptyFiles.length > 0) mismatches.push(`empty=${emptyFiles.join(',')}`);
     if (mismatches.length > 0) return { valid: false, reason: mismatches.join('; ') };
     return { valid: true, score: parsed.score, status: parsed.status };
@@ -918,6 +920,24 @@ function persistRoundEvidenceBeforeReview(roundDir, profileName, round) {
   }
 }
 
+function loadPersistedRoundScope(roundDir) {
+  const metadataFile = join(roundDir, 'metadata.json');
+  if (!existsSync(metadataFile)) throw new Error('cannot skip evidence without candidate-bound metadata.json');
+  const metadata = JSON.parse(readContainedFileSync(roundDir, metadataFile, 'utf8'));
+  const identity = getGitInfo();
+  if (metadata.candidate_commit !== identity.commit || metadata.candidate_tree !== identity.tree ||
+      metadata.base_commit !== resolvedDiffBase) {
+    throw new Error('persisted round scope does not match the current candidate or diff base');
+  }
+  return {
+    timestamp: metadata.collected_at,
+    git: metadata.git || {},
+    files: metadata.files || {},
+    scale: metadata.scale || {},
+    structure: {},
+  };
+}
+
 // Extract scores from review results
 function extractScoresFromRound(roundDir) {
   const scores = [];
@@ -977,10 +997,20 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
   // Collect evidence with config
   const config = loadConfig();
-  const evidence = skipEvidence ? { timestamp: new Date().toISOString(), git: {}, structure: {} } : collectEvidence(config);
+  const evidence = skipEvidence
+    ? (profile === 'agentic-release-gate'
+        ? loadPersistedRoundScope(roundDir)
+        : { timestamp: new Date().toISOString(), git: {}, structure: {} })
+    : collectEvidence(config);
 
   // Detect change scale (right-size throttle)
-  const scaleInfo = detectChangeScale(evidence);
+  const scaleInfo = skipEvidence && evidence.scale?.scale
+    ? {
+        ...evidence.scale,
+        fileCount: evidence.scale.fileCount ?? evidence.scale.files ?? evidence.git.changedFiles?.length ?? 0,
+        totalLines: evidence.scale.totalLines ?? evidence.scale.total ?? 0,
+      }
+    : detectChangeScale(evidence);
   evidence.scale = scaleInfo; // Attach scale info to evidence
 
   // Log scale detection result
@@ -1030,6 +1060,10 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   }
   bindRoundBackend(roundDir, resolvedAgent);
   log.info(`Using agent: ${resolvedAgent}`);
+  const candidateIdentity = getGitInfo();
+  const reviewerPrompts = new Map(allReviewers.map(reviewer => [
+    reviewer, generateReviewerPrompt(reviewer, currentRound, candidateIdentity),
+  ]));
 
   // Use config for delays
   const startDelay = config.execution?.start_delay_ms
@@ -1059,7 +1093,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       ensureContainedDirectorySync(roundDir, reviewerDir);
 
       // Check if reviewer already has credible results (resume support)
-      const validation = validateResumeArtifacts(reviewerDir, reviewer, profile, currentRound, getGitInfo());
+      const validation = await validateResumeArtifacts(reviewerDir, reviewer, profile, currentRound, candidateIdentity);
       if (validation.valid) {
         console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
         resolve({ name: reviewer, status: 'completed', skipped: true });
@@ -1072,12 +1106,12 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       // Optional operator-configured start staggering; zero means fully parallel launch.
       await sleep(startDelay);
 
-      const prompt = generateReviewerPrompt(reviewer, currentRound);
+      const prompt = reviewerPrompts.get(reviewer);
       if (!prompt) {
         resolve({ name: reviewer, status: 'failed' });
         return;
       }
-      writeContainedFileSync(roundDir, join(reviewerDir, 'prompt.md'), prompt);
+      await writeContainedFile(roundDir, join(reviewerDir, 'prompt.md'), prompt);
 
       let attempt = 0;
       let lastError = null;
@@ -1111,7 +1145,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
               if (process.platform === 'win32') {
                 const args = ['/pid', String(proc.pid), '/t'];
                 if (signal === 'SIGKILL') args.push('/f');
-                nodeExecFileSync('taskkill', args, { stdio: 'ignore', timeout: REVIEWER_KILL_GRACE_MS, env: CANDIDATE_ENV });
+                spawn('taskkill', args, { stdio: 'ignore', env: CANDIDATE_ENV }).unref();
               } else {
                 process.kill(-proc.pid, signal);
               }
@@ -1123,36 +1157,33 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           };
           proc.stdout.on('data', retainTail);
           proc.stderr.on('data', retainTail);
-          const finish = (code, eventStatus = null) => {
+          const finish = async (code, eventStatus = null) => {
             if (settled) return;
             settled = true;
             clearTimeout(timeoutTimer);
             if (forceTimer) clearTimeout(forceTimer);
             activeReviewers.delete(`${reviewer}-${attempt}`);
 
-            let complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
-              .every(file => existsSync(join(reviewerDir, file)));
+            let postValidation = await validateResumeArtifacts(
+              reviewerDir, reviewer, profile, currentRound, candidateIdentity
+            );
 
             // Preserve canonical files written by the reviewer; parse stdout only as a fallback.
-            if (!complete && code === 0 && diagnostic.trim()) {
+            if (!postValidation.valid && code === 0 && diagnostic.trim()) {
               try {
-                const { commit, tree } = getGitInfo();
-                writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree);
+                await writeReviewerFilesFromOutput(
+                  reviewerDir, diagnostic, reviewer, profile, currentRound,
+                  candidateIdentity.commit, candidateIdentity.tree
+                );
+                postValidation = await validateResumeArtifacts(
+                  reviewerDir, reviewer, profile, currentRound, candidateIdentity
+                );
               } catch (e) {
                 console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
               }
             }
 
-            complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
-              .every(file => existsSync(join(reviewerDir, file)));
-            if (complete && !aborted && code === 0) {
-              const postValidation = validateResumeArtifacts(reviewerDir, reviewer, profile, currentRound, getGitInfo());
-              if (!postValidation.valid) {
-                console.log(`  ${c.red}✗${c.reset} ${reviewer}: artifact validation failed (${postValidation.reason})`);
-                innerResolve({ name: reviewer, status: 'failed', attempt, diagnostic: `post-run validation: ${postValidation.reason}` });
-                return;
-              }
-            }
+            const complete = postValidation.valid;
             const status = eventStatus || (!aborted && code === 0 && complete ? 'completed' : 'failed');
             console.log(`  ${status === 'completed' ? c.green + '✓' : c.red + '✗'}${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${status}`);
             if (status === 'failed' && diagnostic) console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
@@ -1167,7 +1198,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             forceTimer = setTimeout(() => {
               if (settled) return;
               signalProcessTree('SIGKILL');
-              forceTimer = setTimeout(() => finish(null, 'failed'), 100);
+              forceTimer = setTimeout(() => void finish(null, 'failed'), 100);
             }, REVIEWER_KILL_GRACE_MS);
           };
           activeReviewers.set(`${reviewer}-${attempt}`, abort);
@@ -1180,17 +1211,17 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             if (aborted) return;
             clearTimeout(timeoutTimer);
             if (!signalProcessTree('SIGTERM')) {
-              finish(code);
+              void finish(code);
               return;
             }
             forceTimer = setTimeout(() => {
               signalProcessTree('SIGKILL');
-              forceTimer = setTimeout(() => finish(code), 100);
+              forceTimer = setTimeout(() => void finish(code), 100);
             }, REVIEWER_KILL_GRACE_MS);
           });
           proc.on('error', error => {
             console.log(`  ${c.red}✗${c.reset} ${reviewer}: ${error.message}`);
-            finish(null, 'error');
+            void finish(null, 'error');
             abortAll(`${reviewer} process error: ${error.message}`);
           });
         });
@@ -1232,7 +1263,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       ensureContainedDirectorySync(roundDir, reviewerDir);
 
       // Check resume artifacts first
-      const validation = validateResumeArtifacts(reviewerDir, reviewer, profile, currentRound, getGitInfo());
+      const validation = await validateResumeArtifacts(reviewerDir, reviewer, profile, currentRound, candidateIdentity);
       if (validation.valid) {
         console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
         results.push({ name: reviewer, status: 'completed', skipped: true });
@@ -1247,13 +1278,13 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         await sleep(startDelay);
       }
 
-      const prompt = generateReviewerPrompt(reviewer, currentRound);
+      const prompt = reviewerPrompts.get(reviewer);
       if (!prompt) {
         console.log(`  ${c.red}✗${c.reset} ${reviewer}: definition not found`);
         results.push({ name: reviewer, status: 'failed' });
         continue;
       }
-      writeContainedFileSync(roundDir, join(reviewerDir, 'prompt.md'), prompt);
+      await writeContainedFile(roundDir, join(reviewerDir, 'prompt.md'), prompt);
 
       // Execute reviewer via CLI
       let attempt = 0;
@@ -1286,7 +1317,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             if (process.platform === 'win32') {
               const args = ['/pid', String(proc.pid), '/t'];
               if (signal === 'SIGKILL') args.push('/f');
-              nodeExecFileSync('taskkill', args, { stdio: 'ignore', timeout: REVIEWER_KILL_GRACE_MS, env: CANDIDATE_ENV });
+              spawn('taskkill', args, { stdio: 'ignore', env: CANDIDATE_ENV }).unref();
             } else {
               process.kill(-proc.pid, signal);
             }
@@ -1331,31 +1362,29 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         clearTimeout(timeoutTimer);
         if (forceTimer) clearTimeout(forceTimer);
 
-        let complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
-          .every(file => existsSync(join(reviewerDir, file)));
+        let postValidation = await validateResumeArtifacts(
+          reviewerDir, reviewer, profile, currentRound, candidateIdentity
+        );
 
         // Preserve canonical files written by the reviewer; parse stdout only as a fallback.
-        if (!complete && exitCode === 0 && diagnostic.trim()) {
+        if (!postValidation.valid && exitCode === 0 && diagnostic.trim()) {
           try {
-            const { commit, tree } = getGitInfo();
-            writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree);
+            await writeReviewerFilesFromOutput(
+              reviewerDir, diagnostic, reviewer, profile, currentRound,
+              candidateIdentity.commit, candidateIdentity.tree
+            );
+            postValidation = await validateResumeArtifacts(
+              reviewerDir, reviewer, profile, currentRound, candidateIdentity
+            );
           } catch (e) {
             console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
           }
         }
 
-        complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
-          .every(file => existsSync(join(reviewerDir, file)));
-
+        const complete = postValidation.valid;
         if (complete && exitCode === 0) {
-          const postValidation = validateResumeArtifacts(reviewerDir, reviewer, profile, currentRound, getGitInfo());
-          if (postValidation.valid) {
-            status = 'completed';
-            console.log(`  ${c.green}✓${c.reset} ${reviewer}: completed`);
-          } else {
-            console.log(`  ${c.red}✗${c.reset} ${reviewer}: artifact validation failed`);
-            lastError = postValidation.reason;
-          }
+          status = 'completed';
+          console.log(`  ${c.green}✓${c.reset} ${reviewer}: completed`);
         } else {
           if (diagnostic) {
             console.log(`  ${c.red}✗${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-300)}`);
@@ -1402,7 +1431,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       structure: evidence.structure,
     },
   };
-  writeContainedFileSync(roundDir, join(roundDir, 'runner-metadata.json'), JSON.stringify(meta, null, 2));
+  await writeContainedFile(roundDir, join(roundDir, 'runner-metadata.json'), JSON.stringify(meta, null, 2));
 
   console.log(`\n${c.green}✓${c.reset} Metadata written`);
   if (reviewFailure) throw reviewFailure;

@@ -6,7 +6,7 @@ import {
   closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
   realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
-import { open, realpath, rename, rm, stat } from 'node:fs/promises';
+import { lstat, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 
 export function isPathWithin(root, candidate) {
   const rootPath = path.resolve(root);
@@ -150,6 +150,17 @@ export function readContainedFileSync(root, file, encoding = 'utf8') {
   const fileReal = realpathSync(resolved);
   if (!isPathWithin(rootReal, fileReal)) throw new Error(`input resolves outside report root: ${file}`);
   return readFileSync(fileReal, encoding);
+}
+
+export async function readContainedFile(root, file, encoding = 'utf8') {
+  const rootReal = await realpath(root);
+  const resolved = path.resolve(file);
+  if (!isPathWithin(root, resolved)) throw new Error(`input escapes report root: ${file}`);
+  const entry = await lstat(resolved);
+  if (entry.isSymbolicLink() || !entry.isFile()) throw new Error(`input is not a regular file: ${file}`);
+  const fileReal = await realpath(resolved);
+  if (!isPathWithin(rootReal, fileReal)) throw new Error(`input resolves outside report root: ${file}`);
+  return readFile(fileReal, encoding);
 }
 
 export function writeContainedFileSync(root, file, content) {

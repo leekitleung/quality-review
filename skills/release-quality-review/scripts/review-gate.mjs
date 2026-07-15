@@ -55,6 +55,7 @@ import {
   hasConcreteVerificationOutput,
   validateCleanCandidateEvidence,
   validateRollbackEvidence,
+  strictAutomatedChecksPassed,
 } from '../lib/review-utils.mjs';
 import {
   containsSensitiveText,
@@ -439,7 +440,7 @@ async function runGate() {
   const strictProfile = ['release-gate', 'full', 'agentic-release-gate'].includes(profile);
 
   const automatedChecksPassed = strictProfile
-    ? Boolean(autoChecks) && autoChecks.testGate?.status === 'pass' && autoChecks.typecheckGate?.status === 'pass' && autoChecks.buildGate?.status === 'pass' && autoChecks.lintGate?.status === 'pass' && autoChecks.auditGate?.status === 'pass' && autoChecks.e2eGate?.status === 'pass' && autoChecks.secrets?.status === 'pass' && autoChecks.circularDeps?.status !== 'fail' && evidenceValidationPassed
+    ? strictAutomatedChecksPassed(autoChecks, evidenceValidationPassed)
     : Boolean(autoChecks) && autoChecks.testGate?.status === 'pass' && hasConcreteVerificationOutput('test', autoChecks?.testGate?.output);
 
   const vetoFindingsPresent = Object.values(existingScores).some(r => r.blockers?.some(b =>

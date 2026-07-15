@@ -49,16 +49,28 @@ function parseArgs(args) {
   let stdin = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--input' && args[i + 1]) goalText = args[++i];
-    else if (arg === '--file' && args[i + 1]) filePath = args[++i];
-    else if (arg === '--check-round' && args[i + 1]) roundNumber = args[++i];
+    const takeValue = option => {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) configurationError(`${option} requires a value`);
+      i++;
+      return value;
+    };
+    if (arg === '--input') goalText = takeValue(arg);
+    else if (arg === '--file') filePath = takeValue(arg);
+    else if (arg === '--check-round') roundNumber = takeValue(arg);
     else if (arg === '--stdin') stdin = true;
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
-    }
+    } else configurationError(`unknown option: ${arg}`);
   }
   return Object.freeze({ goalText, filePath, roundNumber, stdin });
+}
+
+function configurationError(message) {
+  console.error(`Configuration error: ${message}`);
+  console.error('Use --help for usage.');
+  process.exit(4);
 }
 const options = parseArgs(process.argv.slice(2));
 
@@ -83,7 +95,7 @@ Options:
 Exit Codes:
   0 = Valid goal instruction
   1 = Invalid goal instruction
-  2 = Configuration error
+  4 = Configuration error
   `);
 }
 

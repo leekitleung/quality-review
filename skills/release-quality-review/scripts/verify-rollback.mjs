@@ -30,7 +30,14 @@ if (!baseRef || !outputArg || !/^[A-Za-z0-9._/@-]+$/.test(baseRef)) {
   console.error('Usage: verify-rollback.mjs --base <ref> --output quality-reports/round-NNN/evidence/rollback-verification.json');
   process.exit(4);
 }
-const outputPath = resolveWithinRoot(root, outputArg, 'rollback evidence output');
+let outputPath;
+try {
+  outputPath = resolveWithinRoot(root, outputArg, 'rollback evidence output');
+} catch {
+  console.error('Invalid rollback evidence output path: it must stay inside the repository.');
+  console.error('Usage: verify-rollback.mjs --base <ref> --output quality-reports/round-NNN/evidence/rollback-verification.json');
+  process.exit(4);
+}
 if (!/quality-reports[/\\]round-\d+[/\\]evidence[/\\]rollback-verification\.json$/.test(outputPath)) {
   console.error('Rollback evidence must be written under quality-reports/round-NNN/evidence/');
   process.exit(4);

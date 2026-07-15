@@ -497,19 +497,45 @@ export function validateResultYamlContract(yamlContent) {
     ['score', /^(?:100|[1-9]?\d)$/],
     ['status', /^(?:pass|fail)$/],
   ]);
+  const optional = new Set([
+    'blockers', 'blocking_reason', 'contexts', 'dimension_scores', 'dimensions', 'evaluated_at',
+    'evidence', 'evidence_files', 'evidence_summary', 'gate_requirements', 'historical_evidence',
+    'notes', 'owasp_check', 'pending', 'recommendation', 'redlines', 'reviewed_at',
+    'reviewer_type', 'self_verification_patterns', 'standards_met', 'timestamp', 'total',
+    'triggered_by', 'verdict', 'verified_fixes', 'weighted_breakdown',
+  ]);
+  const topLevel = [];
   const seen = new Map();
   for (const line of yamlContent.split('\n')) {
     if (!line || /^\s/.test(line) || line.trimStart().startsWith('#')) continue;
     const match = line.match(/^([A-Za-z_][A-Za-z0-9_-]*):(?:\s*(.*))?$/);
-    if (!match || !required.has(match[1])) continue;
-    if (seen.has(match[1])) return { valid: false, error: `duplicate top-level field: ${match[1]}` };
-    seen.set(match[1], match[2] ?? '');
+    if (!match) return { valid: false, error: 'invalid top-level YAML entry' };
+    const key = match[1];
+    if (!required.has(key) && !optional.has(key)) return { valid: false, error: `unknown top-level field: ${key}` };
+    topLevel.push(key);
+    if (required.has(key)) {
+      if (seen.has(key)) return { valid: false, error: `duplicate top-level field: ${key}` };
+      seen.set(key, match[2] ?? '');
+    }
+  }
+  const requiredKeys = [...required.keys()];
+  if (topLevel.slice(0, requiredKeys.length).some((key, index) => key !== requiredKeys[index])) {
+    return { valid: false, error: 'required top-level fields are out of order' };
   }
   for (const [key, pattern] of required) {
     if (!seen.has(key)) return { valid: false, error: `missing top-level field: ${key}` };
     if (!pattern.test(seen.get(key))) return { valid: false, error: `invalid top-level field: ${key}` };
   }
   return { valid: true, error: null };
+}
+
+export function strictAutomatedChecksPassed(autoChecks, evidenceValidationPassed) {
+  return Boolean(autoChecks) && autoChecks.testGate?.status === 'pass' &&
+    autoChecks.typecheckGate?.status === 'pass' && autoChecks.buildGate?.status === 'pass' &&
+    autoChecks.lintGate?.status === 'pass' && autoChecks.auditGate?.status === 'pass' &&
+    autoChecks.coverageGate?.status === 'pass' && autoChecks.e2eGate?.status === 'pass' &&
+    autoChecks.secrets?.status === 'pass' && autoChecks.circularDeps?.status !== 'fail' &&
+    evidenceValidationPassed;
 }
 
 // ============================================================================

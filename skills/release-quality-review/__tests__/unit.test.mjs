@@ -34,6 +34,7 @@ import {
   validateCleanCandidateEvidence,
   validateRollbackEvidence,
   validateResultYamlContract,
+  strictAutomatedChecksPassed,
 } from '../lib/review-utils.mjs';
 import {
   resolveWithinRoot,
@@ -52,7 +53,7 @@ import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.m
 import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
 import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
 import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
-import { collectEvidence, runAutomatedChecks, runEvidenceCommand } from '../scripts/modules/evidence.mjs';
+import { collectEvidence, prepareTrustedAuditWorkspace, runAutomatedChecks, runEvidenceCommand } from '../scripts/modules/evidence.mjs';
 import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -493,6 +494,22 @@ blockers: []
       canonical.replace('status: pass', 'status: PASS'),
     ]) assertEqual(validateResultYamlContract(invalid).valid, false);
   });
+  test('rejects reordered required fields and unknown top-level fields', () => {
+    const reversed = canonical.split('\n').slice(0, 7).reverse().join('\n');
+    assertEqual(validateResultYamlContract(`${reversed}\n`).valid, false);
+    assertEqual(validateResultYamlContract(canonical.replace('profile:', 'unexpected_authority: trusted\nprofile:')).valid, false);
+  });
+});
+
+test('strict automated checks reject failed coverage', () => {
+  const pass = { status: 'pass' };
+  const checks = {
+    testGate: pass, typecheckGate: pass, buildGate: pass, lintGate: pass, auditGate: pass,
+    coverageGate: { status: 'fail' }, e2eGate: pass, secrets: pass, circularDeps: pass,
+  };
+  assertEqual(strictAutomatedChecksPassed(checks, true), false);
+  checks.coverageGate = pass;
+  assertEqual(strictAutomatedChecksPassed(checks, true), true);
 });
 
 // ============================================================================
@@ -889,6 +906,21 @@ test.describe('security boundaries', () => {
     assertEqual(checks.auditGate.command, 'npm audit --audit-level=high');
   });
 
+  test('trusted audit workspace excludes candidate npm configuration', () => {
+    const candidate = join(TEST_DIR, 'audit-candidate');
+    const isolatedHome = join(TEST_DIR, 'audit-home');
+    mkdirSync(candidate, { recursive: true });
+    mkdirSync(isolatedHome, { recursive: true });
+    writeFileSync(join(candidate, 'package.json'), '{"name":"fixture","version":"1.0.0"}');
+    writeFileSync(join(candidate, 'package-lock.json'), '{"name":"fixture","lockfileVersion":3,"packages":{}}');
+    writeFileSync(join(candidate, '.npmrc'), 'registry=http://169.254.169.254/candidate-prefix/');
+    const prepared = prepareTrustedAuditWorkspace(candidate, isolatedHome);
+    assertEqual(existsSync(join(prepared.auditRoot, '.npmrc')), false);
+    assertEqual(readFileSync(prepared.userConfig, 'utf8'), '');
+    assertEqual(readFileSync(prepared.globalConfig, 'utf8'), '');
+    assertEqual(existsSync(join(prepared.auditRoot, 'package-lock.json')), true);
+  });
+
   test('rejects a repository output parent symlinked outside the repository', async () => {
     const link = join(TEST_DIR, 'outside-link');
     symlinkSync('/tmp', link, 'dir');
@@ -1114,6 +1146,81 @@ test.describe('CLI fail-closed integration', () => {
     assertTrue(runner.includes("RELEASE_QUALITY_REVIEWER_START_DELAY_MS || '0'"));
     assertTrue(runner.includes('Promise.all(allReviewers.map'));
     assertEqual(config.includes('max_concurrent'), false);
+  });
+
+  test('validator CLIs reject unknown or incomplete options with configuration exit 4', () => {
+    const cases = [
+      ['goal-instruction-gate.mjs', ['--input', '/goal bounded result', '--definitely-invalid']],
+      ['goal-mode-validator.mjs', ['--file', 'README.md', '--definitely-invalid']],
+      ['validate-delivery-packet.mjs', ['--packet', '.', '--definitely-invalid']],
+      ['goal-instruction-gate.mjs', ['--file']],
+      ['goal-mode-validator.mjs', ['--round']],
+      ['validate-delivery-packet.mjs', ['--mode']],
+    ];
+    for (const [script, args] of cases) {
+      const result = spawnSync('node', [join(SKILL_DIR, 'scripts', script), ...args], {
+        cwd: PROJECT_ROOT, encoding: 'utf8',
+      });
+      assertEqual(result.status, 4, `${script}: ${result.stdout}${result.stderr}`);
+      assertTrue(result.stderr.includes('Configuration error:'));
+      assertEqual(result.stderr.includes('\n    at '), false);
+    }
+  });
+
+  test('evidence CLIs redact invalid output paths and use configuration exit 4', () => {
+    for (const [script, args] of [
+      [join(PROJECT_ROOT, 'scripts', 'verify-clean-candidate.mjs'), ['--output', '../outside/clean-candidate.json']],
+      [join(SKILL_DIR, 'scripts', 'verify-rollback.mjs'), ['--base', 'HEAD', '--output', '../outside/rollback-verification.json']],
+    ]) {
+      const result = spawnSync('node', [script, ...args], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(result.status, 4, `${result.stdout}${result.stderr}`);
+      assertEqual(result.stderr.includes('\n    at '), false);
+      assertEqual(result.stderr.includes(PROJECT_ROOT), false);
+    }
+  });
+
+  test('changed validator CLIs cover success and failure boundaries', () => {
+    const validGoal = join(TEST_DIR, 'valid-goal.md');
+    const invalidGoal = join(TEST_DIR, 'invalid-goal.md');
+    const validMode = join(TEST_DIR, 'valid-mode.md');
+    const invalidMode = join(TEST_DIR, 'invalid-mode.md');
+    writeFileSync(validGoal, '/goal release-quality-review 达到可发布状态。验证标准：测试、覆盖率与 Gate 均通过。边界：不降低门槛。证据：输出退出码与提交哈希。停止条件：达成即停止。');
+    writeFileSync(invalidGoal, '/goal 首先修改代码，然后跳过测试，最后宣布完成。');
+    writeFileSync(validMode, '发布状态已由独立证据确认。');
+    writeFileSync(invalidMode, '先执行测试，然后发布。我们添加这段代码，并按照步骤逐步完成。');
+    const run = (script, args) => spawnSync('node', [join(SKILL_DIR, 'scripts', script), ...args], {
+      cwd: PROJECT_ROOT, encoding: 'utf8',
+    });
+    assertEqual(run('goal-instruction-gate.mjs', ['--file', validGoal]).status, 0);
+    assertEqual(run('goal-instruction-gate.mjs', ['--file', invalidGoal]).status, 1);
+    assertEqual(run('goal-mode-validator.mjs', ['--file', validMode]).status, 0);
+    assertEqual(run('goal-mode-validator.mjs', ['--file', invalidMode]).status, 1);
+    const missingPacket = join(TEST_DIR, 'missing-packet');
+    assertEqual(run('validate-delivery-packet.mjs', ['--packet', missingPacket, '--mode', 'strict']).status, 1);
+    assertEqual(run('validate-delivery-packet.mjs', ['--packet', missingPacket, '--mode', 'assisted']).status, 2);
+    assertEqual(run('validate-delivery-packet.mjs', ['--packet', missingPacket, '--mode', 'legacy']).status, 3);
+  });
+
+  test('goal-mode round validation covers reviewer success and verbose failure', () => {
+    const roundNumber = TEST_ROUNDS.runner + 300;
+    const round = reportRound(roundNumber);
+    const reviewer = join(round, 'product-flow');
+    mkdirSync(reviewer, { recursive: true });
+    writeFileSync(join(reviewer, 'score.md'), '发布状态已由独立证据确认。');
+    writeFileSync(join(reviewer, 'blockers.md'), '未发现阻塞项。');
+    writeFileSync(join(reviewer, 'improvement-list.md'), '后续改进项已明确记录。');
+    const run = args => spawnSync('node', [
+      join(SKILL_DIR, 'scripts', 'goal-mode-validator.mjs'), '--round', String(roundNumber), ...args,
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+    try {
+      assertEqual(run([]).status, 0);
+      writeFileSync(join(reviewer, 'score.md'), '先执行测试，然后发布。我们添加这段代码，并按照步骤逐步完成。');
+      const failed = run(['--verbose']);
+      assertEqual(failed.status, 1, `${failed.stdout}${failed.stderr}`);
+      assertTrue(failed.stdout.includes('Top Violation Types'));
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
   });
 
   test('runner resolves the diff base with read-only project access', () => {
@@ -1666,6 +1773,52 @@ process.exit(3);
       });
       assertEqual(mixedBackend.status, 4, `Expected backend-mixing rejection: ${mixedBackend.stdout}${mixedBackend.stderr}`);
       assertTrue(mixedBackend.stderr.includes('round backend is locked to codex, cannot use claude'));
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
+  });
+
+  test('E2E agentic skip-evidence preserves candidate-bound phase scope', () => {
+    const roundNumber = TEST_ROUNDS.runner + 200;
+    const round = reportRound(roundNumber);
+    const fakeBin = join(TEST_DIR, 'fake-bin-agentic-scope');
+    const reviewerDir = join(round, 'product-flow');
+    const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+    const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+    try {
+      mkdirSync(fakeBin);
+      mkdirSync(round, { recursive: true });
+      writeFileSync(join(round, 'metadata.json'), JSON.stringify({
+        profile: 'agentic-release-gate', round: roundNumber, collected_at: new Date().toISOString(),
+        git: { branch: 'test', commit: candidateCommit.slice(0, 8), status: '', diff: '+ changed\n- old', changedFiles: ['a.mjs', 'b.mjs'] },
+        files: {}, scale: { scale: 'small', files: 2, additions: 1, deletions: 1, total: 2 },
+        candidate_commit: candidateCommit, candidate_tree: candidateTree,
+        base_commit: candidateCommit, base_tree: candidateTree,
+      }));
+      const fakeCodex = join(fakeBin, 'codex');
+      writeFileSync(fakeCodex, `#!/usr/bin/env node
+if (process.argv.includes('--help') || process.argv.includes('--version')) process.exit(0);
+const fs = process.getBuiltinModule('node:fs');
+fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: agentic-release-gate\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nblockers: []\\nredlines: []\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, '# Blockers\\n\\nNo P0/P1 blockers.\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
+`);
+      chmodSync(fakeCodex, 0o755);
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'agentic-release-gate',
+        '--agent', 'codex', '--reviewer', 'product-flow', '--round', String(roundNumber),
+        '--base', candidateCommit, '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0' },
+      });
+      assertEqual(result.status, 1, `${result.stdout}${result.stderr}`);
+      const plan = readFileSync(join(round, `phase-${roundNumber}-plan.md`), 'utf8');
+      assertTrue(plan.includes('small (2 files, 2 lines)'));
+      assertTrue(plan.includes('Changed files:** 2'));
+      assertTrue(plan.includes(`Git commit:** ${candidateCommit.slice(0, 8)}`));
     } finally {
       rmSync(round, { recursive: true, force: true });
     }

@@ -50,15 +50,28 @@ function parseArgs(args) {
   let verbose = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--packet' && args[i + 1]) packetPath = args[++i];
-    else if (arg === '--mode' && args[i + 1]) mode = args[++i];
+    const takeValue = option => {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) configurationError(`${option} requires a value`);
+      i++;
+      return value;
+    };
+    if (arg === '--packet') packetPath = takeValue(arg);
+    else if (arg === '--mode') mode = takeValue(arg);
     else if (arg === '--verbose' || arg === '-v') verbose = true;
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
-    }
+    } else configurationError(`unknown option: ${arg}`);
   }
+  if (!['strict', 'assisted', 'legacy'].includes(mode)) configurationError(`invalid mode: ${mode}`);
   return Object.freeze({ packetPath, mode, verbose });
+}
+
+function configurationError(message) {
+  console.error(`Configuration error: ${message}`);
+  console.error('Use --help for usage.');
+  process.exit(4);
 }
 const options = parseArgs(process.argv.slice(2));
 const { mode, verbose } = options;
@@ -86,6 +99,7 @@ Exit Codes:
   1 = INVALID (has immediate fails)
   2 = INCOMPLETE (missing files or fields)
   3 = CONDITIONAL_PASS (legacy mode, no packet)
+  4 = Configuration error
 `);
 }
 

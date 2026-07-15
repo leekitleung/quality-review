@@ -47,19 +47,31 @@ function parseArgs(args) {
   let verbose = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg === '--round' && args[i + 1]) {
-      const roundArg = args[++i];
+    const takeValue = option => {
+      const value = args[i + 1];
+      if (!value || value.startsWith('-')) configurationError(`${option} requires a value`);
+      i++;
+      return value;
+    };
+    if (arg === '--round') {
+      const roundArg = takeValue(arg);
       const match = roundArg.match(/^round-(\d+)$/i);
       targetRound = match ? `round-${match[1].padStart(3, '0')}` : `round-${roundArg.padStart(3, '0')}`;
-    } else if (arg === '--reviewer' && args[i + 1]) targetReviewer = args[++i];
-    else if (arg === '--file' && args[i + 1]) targetFile = args[++i];
+    } else if (arg === '--reviewer') targetReviewer = takeValue(arg);
+    else if (arg === '--file') targetFile = takeValue(arg);
     else if (arg === '--verbose' || arg === '-v') verbose = true;
     else if (arg === '--help' || arg === '-h') {
       printHelp();
       process.exit(0);
-    }
+    } else configurationError(`unknown option: ${arg}`);
   }
   return Object.freeze({ targetRound, targetReviewer, targetFile, verbose });
+}
+
+function configurationError(message) {
+  console.error(`Configuration error: ${message}`);
+  console.error('Use --help for usage.');
+  process.exit(4);
 }
 const options = parseArgs(process.argv.slice(2));
 

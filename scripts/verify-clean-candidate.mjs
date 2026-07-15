@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -14,12 +14,19 @@ import {
 
 const root = process.cwd();
 const subprocessEnv = createSubprocessEnv();
-const outputIndex = process.argv.indexOf('--output');
-if (outputIndex < 0 || !process.argv[outputIndex + 1]) {
+const args = process.argv.slice(2);
+if (args.length !== 2 || args[0] !== '--output' || !args[1] || args[1].startsWith('-')) {
   console.error('Usage: verify-clean-candidate.mjs --output quality-reports/round-NNN/evidence/clean-candidate.json');
   process.exit(4);
 }
-const outputPath = resolveWithinRoot(root, process.argv[outputIndex + 1], 'evidence output');
+let outputPath;
+try {
+  outputPath = resolveWithinRoot(root, args[1], 'evidence output');
+} catch {
+  console.error('Invalid evidence output path: it must stay inside the repository.');
+  console.error('Usage: verify-clean-candidate.mjs --output quality-reports/round-NNN/evidence/clean-candidate.json');
+  process.exit(4);
+}
 if (!/quality-reports[/\\]round-\d+[/\\]evidence[/\\]clean-candidate\.json$/.test(outputPath)) {
   console.error('Clean-candidate evidence must be written under quality-reports/round-NNN/evidence/');
   process.exit(4);
@@ -84,6 +91,17 @@ try {
       output: scriptOutput, output_bytes: Buffer.byteLength(scriptOutput), truncated: false,
     });
     if (scriptIssues.length === 0) {
+      const auditRoot = path.join(isolatedHome, 'trusted-audit');
+      await mkdir(auditRoot, { recursive: true });
+      for (const file of ['package.json', 'package-lock.json', 'npm-shrinkwrap.json']) {
+        try { await copyFile(path.join(candidate, file), path.join(auditRoot, file)); } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
+      const userConfig = path.join(isolatedHome, 'trusted-user.npmrc');
+      const globalConfig = path.join(isolatedHome, 'trusted-global.npmrc');
+      await writeFile(userConfig, '');
+      await writeFile(globalConfig, '');
       for (const [id, command, args] of [
         ['install', 'npm', ['ci', '--ignore-scripts']],
         ['test', 'npm', ['test']],
@@ -91,11 +109,20 @@ try {
         ['drift', 'npm', ['run', 'skill:check-drift']],
         ['lint', 'npm', ['run', 'lint']],
         ['build', 'npm', ['run', 'build']],
-        ['audit', 'npm', ['audit', '--audit-level=high']],
+        ['audit', 'npm', [
+          'audit', '--audit-level=high', '--registry=https://registry.npmjs.org/',
+          `--userconfig=${userConfig}`, `--globalconfig=${globalConfig}`,
+        ]],
         ['skill-check', 'npm', ['run', 'skill:check']],
         ['skill-verify', 'npm', ['run', 'skill:verify']],
         ['final-status', 'git', ['status', '--porcelain', '--untracked-files=all']],
-      ]) records.push(run(id, command, args, candidate, candidateEnv, null, sandboxOptions));
+      ]) records.push(run(
+        id, command, args, id === 'audit' ? auditRoot : candidate, candidateEnv,
+        id === 'audit' ? 'npm audit --audit-level=high' : null,
+        id === 'audit'
+          ? { readOnlyRoots: [auditRoot], writeRoots: [isolatedHome], allowNetwork: true }
+          : sandboxOptions
+      ));
     }
   }
   const commit = run('candidate-commit', 'git', ['rev-parse', 'HEAD'], root);

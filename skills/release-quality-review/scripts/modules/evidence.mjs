@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { dirname, extname, join, resolve } from 'path';
-import { existsSync, readFileSync, statSync } from 'fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { execSync, execFileSync } from 'child_process';
 import { log } from './constants.mjs';
@@ -9,6 +9,19 @@ import {
   detectChangeScale, findTrivialVerificationScripts, validateCleanCandidateEvidence, validateRollbackEvidence,
 } from '../../lib/review-utils.mjs';
 import { createCandidateRuntime } from '../../lib/candidate-runtime.mjs';
+
+export function prepareTrustedAuditWorkspace(candidateRoot, isolatedHome) {
+  const auditRoot = join(isolatedHome, 'trusted-audit');
+  mkdirSync(auditRoot, { recursive: true });
+  for (const file of ['package.json', 'package-lock.json', 'npm-shrinkwrap.json']) {
+    if (existsSync(join(candidateRoot, file))) copyFileSync(join(candidateRoot, file), join(auditRoot, file));
+  }
+  const userConfig = join(isolatedHome, 'trusted-user.npmrc');
+  const globalConfig = join(isolatedHome, 'trusted-global.npmrc');
+  writeFileSync(userConfig, '');
+  writeFileSync(globalConfig, '');
+  return { auditRoot, userConfig, globalConfig };
+}
 
 /**
  * Collect evidence for the current review round
@@ -92,11 +105,15 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
       sandboxReadOnlyRoots: [candidateRoot],
       sandboxWriteRoots: [runtime.isolatedHome, candidateRoot],
     }));
-  const runTrustedAudit = cwd => runEvidenceCommand('npm audit --audit-level=high', cwd, (_cmd, options) =>
-    runtime.execFileSync('npm', ['audit', '--audit-level=high'], {
+  const { auditRoot, userConfig, globalConfig } = prepareTrustedAuditWorkspace(candidateRoot, runtime.isolatedHome);
+  const runTrustedAudit = () => runEvidenceCommand('npm audit --audit-level=high', auditRoot, (_cmd, options) =>
+    runtime.execFileSync('npm', [
+      'audit', '--audit-level=high', '--registry=https://registry.npmjs.org/',
+      `--userconfig=${userConfig}`, `--globalconfig=${globalConfig}`,
+    ], {
       ...options,
-      sandboxReadOnlyRoots: [candidateRoot],
-      sandboxWriteRoots: [runtime.isolatedHome, candidateRoot],
+      sandboxReadOnlyRoots: [auditRoot],
+      sandboxWriteRoots: [runtime.isolatedHome],
       sandboxAllowNetwork: true,
     }));
   evidence.automatedChecks = runAutomatedChecks(
