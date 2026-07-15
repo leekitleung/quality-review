@@ -1264,7 +1264,12 @@ setInterval(() => {}, 1000);
 
     const gate = spawnSync(process.execPath, [
       join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '1', '--base', fixtureBase,
-    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    ], {
+      cwd: repository,
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { ...process.env, RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED: '1' },
+    });
     assertEqual(gate.status, 1, `Expected no-op Gate rejection, output: ${gate.stdout}${gate.stderr}`);
     assertTrue(gate.stdout.includes('trivial or missing verification scripts'), 'Gate must name script-integrity failure');
 
@@ -1272,7 +1277,12 @@ setInterval(() => {}, 1000);
     const output = join(repository, outputArg);
     const clean = spawnSync(process.execPath, [
       join(PROJECT_ROOT, 'scripts', 'verify-clean-candidate.mjs'), '--output', outputArg,
-    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    ], {
+      cwd: repository,
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { ...process.env, RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED: '1' },
+    });
     assertEqual(clean.status, 1, `Expected no-op clean-verifier rejection, output: ${clean.stdout}${clean.stderr}`);
     assertTrue(existsSync(output), `Expected failed clean evidence, output: ${clean.stdout}${clean.stderr}`);
     const cleanEvidence = JSON.parse(readFileSync(output, 'utf8'));
@@ -1304,7 +1314,12 @@ setInterval(() => {}, 1000);
 
     const gate = spawnSync(process.execPath, [
       join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', '1', '--base', fixtureBase,
-    ], { cwd: repository, encoding: 'utf8', timeout: 30000 });
+    ], {
+      cwd: repository,
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { ...process.env, RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED: '1' },
+    });
     assertEqual(gate.status, 1, `Expected forged Node Gate rejection, output: ${gate.stdout}${gate.stderr}`);
     assertTrue(gate.stdout.includes('trivial or missing verification scripts'), 'Gate must reject forged Node scripts');
 
@@ -1449,13 +1464,13 @@ console.log('review completed');
         command, started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
         status: statusValue, exit_code: exitCode, output, output_bytes: Buffer.byteLength(output), truncated: false,
       });
-      const testCheck = commandRecord('pnpm test', 'pass', 0, '# tests 1\n# fail 0');
-      const typecheckCheck = commandRecord('pnpm typecheck', 'pass', 0, 'passed');
+      const testCheck = commandRecord('npm test', 'pass', 0, '# tests 1\n# fail 0');
+      const typecheckCheck = commandRecord('npm run typecheck', 'pass', 0, 'passed');
       const checkoutIdentity = { commit: fullCommit, tree, status: '' };
       const automatedContent = JSON.stringify({
         testGate: testCheck, typecheckGate: typecheckCheck,
-        buildGate: commandRecord('pnpm build', 'fail', 1, 'optional failure'),
-        lintGate: commandRecord('pnpm lint', 'fail', 1, 'optional failure'),
+        buildGate: commandRecord('npm run build', 'fail', 1, 'optional failure'),
+        lintGate: commandRecord('npm run lint', 'fail', 1, 'optional failure'),
         auditGate: commandRecord('npm audit --audit-level=high', 'fail', 1, 'optional failure'),
         secrets: { status: 'fail', issues: ['optional scan failure'] }, oversizedFiles: { status: 'pass', issues: [] },
         circularDeps: { status: 'pass', issues: [] },
@@ -1582,6 +1597,7 @@ console.log('review completed');
         'skills/release-quality-review/lib/review-utils.mjs',
         'skills/release-quality-review/lib/evidence-utils.mjs',
         'skills/release-quality-review/lib/candidate-runtime.mjs',
+        'skills/release-quality-review/review-config.yaml',
         'skills/release-quality-review/templates/result.yaml',
       ]) {
         copyFileSync(join(PROJECT_ROOT, relativePath), join(cloneRoot, relativePath));
