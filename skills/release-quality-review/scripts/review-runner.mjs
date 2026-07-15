@@ -801,6 +801,17 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function getAgentInvocation(agent, prompt) {
+  if (agent === 'claude') return { command: 'claude', args: ['-p', prompt] };
+  if (agent === 'codex') {
+    return {
+      command: 'codex',
+      args: ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt],
+    };
+  }
+  return { command: agent, args: ['-p', prompt] };
+}
+
 // Scale-based timeout calculation
 function getScaledTimeout(scale, baseTimeout = REVIEWER_TIMEOUT_MS) {
   const multiplier = SCALE_TIMEOUT_MULTIPLIERS[scale] || 1.0;
@@ -832,6 +843,32 @@ function runGateCheck(roundDir, profileName, round) {
   }
 
   return { passed: false, roundDir };
+}
+
+function persistRoundEvidenceBeforeReview(roundDir, profileName, round) {
+  const gateScript = join(SKILL_DIR, 'scripts', 'review-gate.mjs');
+  const args = [gateScript, '--profile', profileName, '--round', String(round)];
+  if (diffBase !== 'HEAD') args.push('--base', diffBase);
+  try {
+    nodeExecFileSync('node', args, {
+      cwd: PROJECT_ROOT,
+      env: TOOL_ENV,
+      encoding: 'utf8',
+      timeout: 10 * 60 * 1000,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+  } catch (error) {
+    if (error.status !== 1) throw error;
+  }
+
+  const required = [
+    join(roundDir, 'metadata.json'),
+    join(roundDir, 'evidence', 'automated-checks.json'),
+  ];
+  const missing = required.filter(file => !existsSync(file));
+  if (missing.length > 0) {
+    throw new Error(`round evidence persistence failed: missing ${missing.map(file => file.replace(`${roundDir}/`, '')).join(', ')}`);
+  }
 }
 
 // Extract scores from review results
@@ -918,6 +955,9 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
   // Persist phase plan BEFORE running reviews
   persistPhasePlan(roundDir, currentRound, allReviewers, evidence, profileConfig);
+  if (!skipEvidence) {
+    persistRoundEvidenceBeforeReview(roundDir, profile, currentRound);
+  }
 
   console.log(`\n${c.cyan}Reviewers:${c.reset}`);
   console.log(`  Resident: ${profileConfig.resident_reviewers.join(', ')}`);
@@ -947,18 +987,6 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     ? parseInt(config.execution.start_delay_ms, 10)
     : REVIEWER_START_DELAY_MS;
 
-  let cli = resolvedAgent;
-  let cliArgs = null;
-  // Spawn reviewer agents with appropriate CLI
-  if (resolvedAgent === 'claude') {
-    // Use node to run reviewer scripts in isolated CLI context
-    cli = process.execPath;
-    cliArgs = [`${join(SKILL_DIR, 'scripts', 'review-gate.mjs')}`, '--resume-round', String(currentRound)];
-  } else if (resolvedAgent === 'codex') {
-    // Use codex exec mode (requires --ephemeral and --sandbox)
-    cli = 'codex';
-    cliArgs = ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT];
-  }
   if (parallel) {
     log.info(`Execution: parallel, Scale: ${scale}, Timeout: ${scaledTimeout}ms (base: ${REVIEWER_TIMEOUT_MS}ms), Start delay: ${startDelay}ms`);
     try {
@@ -1015,33 +1043,13 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         }
 
         const result = await new Promise(innerResolve => {
-          const proc = (() => {
-            if (resolvedAgent === 'claude') {
-              // claude -p "prompt"
-              return spawn('claude', ['-p', prompt], {
-                cwd: PROJECT_ROOT,
-                stdio: ['ignore', 'pipe', 'pipe'],
-                detached: process.platform !== 'win32',
-                env: TOOL_ENV,
-              });
-            } else if (resolvedAgent === 'codex') {
-              // codex exec with sandbox
-              return spawn('codex', ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt], {
-                cwd: PROJECT_ROOT,
-                stdio: ['ignore', 'pipe', 'pipe'],
-                detached: process.platform !== 'win32',
-                env: TOOL_ENV,
-              });
-            } else {
-              // generic agent: resolvedAgent -p "prompt"
-              return spawn(resolvedAgent, ['-p', prompt], {
-                cwd: PROJECT_ROOT,
-                stdio: ['ignore', 'pipe', 'pipe'],
-                detached: process.platform !== 'win32',
-                env: TOOL_ENV,
-              });
-            }
-          })();
+          const invocation = getAgentInvocation(resolvedAgent, prompt);
+          const proc = spawn(invocation.command, invocation.args, {
+            cwd: PROJECT_ROOT,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: process.platform !== 'win32',
+            env: TOOL_ENV,
+          });
           let diagnostic = '';
           let settled = false;
           let aborted = false;
@@ -1073,8 +1081,11 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             if (forceTimer) clearTimeout(forceTimer);
             activeReviewers.delete(`${reviewer}-${attempt}`);
 
-            // Write reviewer files from captured output (orchestrator writes files for agents)
-            if (code === 0 && diagnostic.trim()) {
+            let complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
+              .every(file => existsSync(join(reviewerDir, file)));
+
+            // Preserve canonical files written by the reviewer; parse stdout only as a fallback.
+            if (!complete && code === 0 && diagnostic.trim()) {
               try {
                 const { commit, tree } = getGitInfo();
                 writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree);
@@ -1083,7 +1094,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
               }
             }
 
-            const complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
+            complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
               .every(file => existsSync(join(reviewerDir, file)));
             if (complete && !aborted && code === 0) {
               const postValidation = validateResumeArtifacts(reviewerDir, getGitInfo().commit);
@@ -1208,7 +1219,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           await sleep(delay);
         }
 
-        const proc = spawn(resolvedAgent, ['-p', prompt], {
+        const invocation = getAgentInvocation(resolvedAgent, prompt);
+        const proc = spawn(invocation.command, invocation.args, {
           cwd: PROJECT_ROOT,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: false,
@@ -1238,8 +1250,11 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         clearTimeout(timeoutTimer);
         settled = true;
 
-        // Write reviewer files from captured output (orchestrator writes files for agents)
-        if (exitCode === 0 && diagnostic.trim()) {
+        let complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
+          .every(file => existsSync(join(reviewerDir, file)));
+
+        // Preserve canonical files written by the reviewer; parse stdout only as a fallback.
+        if (!complete && exitCode === 0 && diagnostic.trim()) {
           try {
             const { commit, tree } = getGitInfo();
             writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree);
@@ -1248,7 +1263,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           }
         }
 
-        const complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
+        complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
           .every(file => existsSync(join(reviewerDir, file)));
 
         if (complete && exitCode === 0) {

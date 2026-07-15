@@ -4,7 +4,7 @@
  * Main entry point that orchestrates all modules
  */
 
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync, execFileSync } from 'child_process';
@@ -81,6 +81,16 @@ const {
   checkGoalMode,
   diffBase,
 } = options;
+
+function detectNextRoundNumber() {
+  if (!existsSync(REPORT_DIR)) return 1;
+  return readdirSync(REPORT_DIR).reduce((maxRound, entry) => {
+    const match = entry.match(/^round-(\d+)$/);
+    return match ? Math.max(maxRound, Number(match[1])) : maxRound;
+  }, 0) + 1;
+}
+
+const effectiveRoundNumber = roundNumber ?? detectNextRoundNumber();
 
 // Resolve diff base
 let resolvedDiffBase = diffBase;
@@ -182,7 +192,7 @@ async function runGate() {
     log.info(`Dry run mode - validating configuration`);
     log.info(`Profile: ${profile}`);
     log.info(`Reviewers: ${reviewers.join(', ')}`);
-    log.info(`Round: ${roundNumber}`);
+    log.info(`Round: ${effectiveRoundNumber}`);
     for (const reviewer of reviewers) {
       const exists = existsSync(join(SKILL_DIR, 'reviewers', `${reviewer}.md`));
       log.info(` ${exists ? '✓' : '✗'} ${reviewer}: ${exists ? 'found' : 'MISSING'}`);
@@ -198,7 +208,7 @@ async function runGate() {
   console.log('');
 
   ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR);
-  let roundDir = join(REPORT_DIR, `round-${String(roundNumber).padStart(3, '0')}`);
+  let roundDir = join(REPORT_DIR, `round-${String(effectiveRoundNumber).padStart(3, '0')}`);
 
   const isNewRound = !existsSync(roundDir);
   if (isNewRound) {
@@ -244,7 +254,7 @@ async function runGate() {
   if (collectEvidenceOpt) {
     try {
       evidence = collectEvidence(config, PROJECT_ROOT, resolvedDiffBase, resolvedDiffBase, SKILL_DIR);
-      await persistEvidence(PROJECT_ROOT, roundDir, evidence, profile, roundNumber, reviewers, resolvedDiffBase);
+      await persistEvidence(PROJECT_ROOT, roundDir, evidence, profile, effectiveRoundNumber, reviewers, resolvedDiffBase);
       log.success(`Evidence collected`);
     } catch (e) {
       log.error(`Evidence collection failed: ${e.message}`);
@@ -308,14 +318,14 @@ async function runGate() {
   // Persist phase plan for Gate-owned rounds
   try {
     if (evidence) {
-      persistPhasePlan(roundDir, roundNumber, reviewers, evidence, profileConfig);
+      persistPhasePlan(roundDir, effectiveRoundNumber, reviewers, evidence, profileConfig);
     }
   } catch {
     // Phase plan is best-effort
   }
 
   // Load scores for validated reviewers
-  const existingScores = loadExistingScores(roundDir, reviewers, currentCandidateCommit, currentCandidateTree, profile, roundNumber, (r, p) => validateReviewerIdentity(SKILL_DIR, r));
+  const existingScores = loadExistingScores(roundDir, reviewers, currentCandidateCommit, currentCandidateTree, profile, effectiveRoundNumber, (r, p) => validateReviewerIdentity(SKILL_DIR, r));
 
   const minScore = Number((profileConfig.gate?.min_score) ?? 90);
   const allValid = reviewers.every(r => existingScores[r].isValidReviewer !== false);
@@ -328,7 +338,7 @@ async function runGate() {
     try {
       const evidenceValidatorScript = join(SKILL_DIR, 'scripts', 'evidence-validator.mjs');
       if (existsSync(evidenceValidatorScript)) {
-        const roundName = `round-${String(roundNumber).padStart(3, '0')}`;
+        const roundName = `round-${String(effectiveRoundNumber).padStart(3, '0')}`;
         const validatorOutput = execSync(`node "${evidenceValidatorScript}" --round ${roundName} --base ${resolvedDiffBase}`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 60000 });
         evidenceValidationPassed = validatorOutput.includes('✅ All reviewers passed');
         if (evidenceValidationPassed) {
@@ -425,14 +435,14 @@ async function runGate() {
         log.error(` - ${reviewer}: ${result.validationError}`);
       }
     }
-    generateSummary(roundDir, profile, roundNumber, existingScores, false, evidence, reviewerPacketPassed);
+    generateSummary(roundDir, profile, effectiveRoundNumber, existingScores, false, evidence, reviewerPacketPassed);
     persistFinalArbitration(roundDir, false, 'invalid reviewer packet', reviewers, process.argv);
     return false;
   }
 
   if (allHaveScores && allPassed && gatePassed) {
-    writePhaseBoundary(roundDir, roundNumber, String(roundNumber).padStart(3, '0'), 'END (Release Complete)');
-    generateSummary(roundDir, profile, roundNumber, existingScores, true, evidence, reviewerPacketPassed);
+    writePhaseBoundary(roundDir, effectiveRoundNumber, String(effectiveRoundNumber).padStart(3, '0'), 'END (Release Complete)');
+    generateSummary(roundDir, profile, effectiveRoundNumber, existingScores, true, evidence, reviewerPacketPassed);
     generateFinalReport(roundDir, existingScores, evidence, profile, reviewerPacketPassed);
 
     const finalArtifactFindings = scanRoundArtifacts(roundDir);
@@ -460,7 +470,7 @@ async function runGate() {
     if (!artifactCompletenessPassed) log.error('Required agentic Goal, evidence, risk, and handoff artifacts are incomplete');
     if (!generatedArtifactsSafe) log.error(`Generated artifact security scan failed: ${sensitiveArtifactFindings.join(', ')}`);
 
-    generateSummary(roundDir, profile, roundNumber, existingScores, false, evidence, reviewerPacketPassed);
+    generateSummary(roundDir, profile, effectiveRoundNumber, existingScores, false, evidence, reviewerPacketPassed);
     persistFinalArbitration(roundDir, false, 'one or more release gates failed', reviewers, process.argv);
     return false;
   } else {
@@ -474,7 +484,7 @@ async function runGate() {
     }
     console.log('');
 
-    generateSummary(roundDir, profile, roundNumber, existingScores, false, evidence, reviewerPacketPassed);
+    generateSummary(roundDir, profile, effectiveRoundNumber, existingScores, false, evidence, reviewerPacketPassed);
     persistFinalArbitration(roundDir, false, 'reviewer packets pending', reviewers, process.argv);
     return false;
   }

@@ -1019,7 +1019,7 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
       const reviewerDir = join(round, 'product-flow');
       const descendantCode = `process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(leakMarker)}, 'survived'), 500)`;
       writeFileSync(fakeCodex, `#!/usr/bin/env node
-if (process.argv.includes('--version')) process.exit(0);
+if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
 const fs = process.getBuiltinModule('node:fs');
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${TEST_ROUNDS.parallelSuccess}\\nscore: 95\\nstatus: pass\\nblockers: []\\nredlines: []\\n');
@@ -1030,16 +1030,19 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
 `);
       chmodSync(fakeCodex, 0o755);
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel', '--dry-run',
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel', '--agent', 'codex',
         '--reviewer', 'product-flow', '--round', String(TEST_ROUNDS.parallelSuccess), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
         env: {
           ...process.env, PATH: `${fakeBin}:${process.env.PATH}`,
           RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '1000', RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+          RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0', RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
         },
       });
-      assertEqual(result.status, 0, `Expected successful dry run, output: ${result.stdout}${result.stderr}`);
+      assertEqual(result.status, 1, `Expected failed gate after successful reviewer, output: ${result.stdout}${result.stderr}`);
+      assertTrue(readFileSync(join(reviewerDir, 'score.md'), 'utf8').includes('95/100'),
+        'Runner must preserve reviewer-authored artifacts');
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
       assertEqual(existsSync(leakMarker), false, 'Successful reviewers must not leave descendants alive');
     } finally {
@@ -1052,6 +1055,15 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--auto', '--dry-run',
     ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
     assertEqual(result.status, 4);
+  });
+
+  test('review gate auto-detects a positive round when omitted', () => {
+    const result = spawnSync('node', [
+      join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--dry-run',
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000 });
+    assertEqual(result.status, 0, `Expected successful dry run, output: ${result.stdout}${result.stderr}`);
+    assertTrue(/Round:\s+\d+/.test(result.stdout), 'Expected an auto-detected positive round');
+    assertEqual(result.stdout.includes('round-null'), false, 'Gate must never create round-null');
   });
 
   test('rejects review targets outside the repository', () => {
@@ -1283,11 +1295,15 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     const fakeBin = join(TEST_DIR, 'fake-bin-runner');
     try {
       mkdirSync(fakeBin);
-      const fakeClaude = join(fakeBin, 'claude');
-      writeFileSync(fakeClaude, '#!/bin/sh\nprintf "review completed\\n"\n');
-      chmodSync(fakeClaude, 0o755);
+      const fakeCodex = join(fakeBin, 'codex');
+      writeFileSync(fakeCodex, `#!/usr/bin/env node
+if (process.argv.includes('--help')) process.exit(0);
+if (!process.argv.includes('exec')) process.exit(3);
+console.log('review completed');
+`);
+      chmodSync(fakeCodex, 0o755);
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'claude',
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'codex',
         '--round', String(roundNumber), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT,

@@ -2,8 +2,9 @@
 
 Repository-owned Agent Skills with deterministic distribution and release gates.
 
-Requires Node.js 22+. Install repository metadata with `npm install`; there are
-no runtime dependencies.
+Requires Node.js 22+ and a Git checkout because candidate identity and rollback
+checks depend on Git metadata. Clone the repository, then run `npm install`;
+there are no runtime dependencies.
 
 ## Release quality review
 
@@ -30,8 +31,9 @@ The Node runner collects evidence and writes reviewer prompts. Independent
 reviewers must be started by the Codex or Claude host and must write the four
 required files under `quality-reports/round-NNN/<reviewer>/`; the runner never
 synthesizes reviewer scores. Re-run `skill:gate` to aggregate their results.
-Passing `--parallel` to the runner launches independent ephemeral Codex CLI
-reviewers concurrently and fails if any reviewer does not produce all four files.
+Passing `--parallel --agent codex` to the runner launches independent ephemeral
+Codex CLI reviewers concurrently and fails if any reviewer does not produce all
+four files.
 
 Trust boundary: the host/orchestrator, pinned Gate code, independent reviewers,
 and report root are trusted; candidate subprocesses and their output are
