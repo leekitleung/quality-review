@@ -388,7 +388,7 @@ async function runGate() {
   // Goal instruction validation
   let goalInstructionResult = null;
   const goalRequired = profile === 'agentic-release-gate';
-  if (!goalRequired && existsSync(join(roundDir, 'generated-goal.md'))) {
+  if (existsSync(join(roundDir, 'generated-goal.md'))) {
     try {
       const goalGateScript = join(SKILL_DIR, 'scripts', 'goal-instruction-gate.mjs');
       if (existsSync(goalGateScript)) {
@@ -418,7 +418,8 @@ async function runGate() {
   const hasRedlines = profileConfig.gate?.fail_on_p0_p1_blockers !== false && vetoFindingsPresent;
   const goalInstructionValid = goalRequired ? (goalInstructionResult?.passed === true) : true;
 
-  const artifactCompletenessPassed = !goalRequired || profile === 'agentic-release-gate';
+  const requiredAgenticArtifacts = ['generated-goal.md', 'changes.md', 'diff-summary.md', 'risk.md', 'handoff.md'];
+  const artifactCompletenessPassed = !goalRequired || requiredAgenticArtifacts.every(file => existsSync(join(roundDir, file)));
   const sensitiveArtifactFindings = allHaveScores ? scanRoundArtifacts(roundDir) : [];
   const generatedArtifactsSafe = sensitiveArtifactFindings.length === 0;
   const arbitrationEligible = !singleReviewer && excludeReviewers.length === 0;

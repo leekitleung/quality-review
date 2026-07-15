@@ -959,6 +959,11 @@ test.describe('CLI fail-closed integration', () => {
     const destructiveReviewer = readFileSync(join(SKILL_DIR, 'reviewers', 'destructive-qa.md'), 'utf8');
     assertTrue(destructiveReviewer.includes('威胁模型边界'), 'Destructive QA must evaluate the supported threat model');
     assertTrue(destructiveReviewer.includes('不能单独证明'), 'Synthetic helper inputs must not be reported as workflow bypasses');
+    const gate = readFileSync(join(SKILL_DIR, 'scripts', 'review-gate.mjs'), 'utf8');
+    assertTrue(gate.includes("if (existsSync(join(roundDir, 'generated-goal.md')))"),
+      'Agentic Gate must validate its required generated Goal');
+    assertTrue(gate.includes("requiredAgenticArtifacts.every"),
+      'Agentic Gate must enforce the complete delivery packet');
     const workflow = readFileSync(join(PROJECT_ROOT, '.github', 'workflows', 'skill-quality.yml'), 'utf8');
     assertTrue(workflow.includes('runs-on: macos-latest'), 'Sandbox validation requires a Darwin CI runner');
     assertTrue(workflow.includes('persist-credentials: false'), 'CI checkout credentials must not persist');
