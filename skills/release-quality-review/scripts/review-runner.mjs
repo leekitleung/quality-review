@@ -67,7 +67,7 @@ const SCALE_TIMEOUT_MULTIPLIERS = {
 };
 
 // Write reviewer output files from orchestrator (parse agent output and write)
-function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, profile, round, candidateCommit, candidateTree, resolvedDiffBase) {
+function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, profile, round, candidateCommit, candidateTree) {
   // Parse output - look for YAML blocks or markdown formatted sections
   let resultYaml = '';
   let scoreContent = '';
@@ -140,7 +140,7 @@ function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, 
     }
   } else {
     // Create minimal result.yaml with required fields
-    const minimal = `reviewer: ${reviewerName}\nprofile: ${profile}\nround: ${round}\ncandidate_commit: ${resolvedDiffBase === 'HEAD' ? candidateCommit : resolvedDiffBase}\ncandidate_tree: ${candidateTree}\nscore: 0\nstatus: parsed\n`;
+    const minimal = `reviewer: ${reviewerName}\nprofile: ${profile}\nround: ${round}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 0\nstatus: parsed\n`;
     try {
       writeContainedFileSync(reviewerDir, join(reviewerDir, 'result.yaml'), minimal);
     } catch (e) {
@@ -982,7 +982,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       ensureContainedDirectorySync(roundDir, reviewerDir);
 
       // Check if reviewer already has credible results (resume support)
-      const validation = validateResumeArtifacts(reviewerDir, resolvedDiffBase);
+      const validation = validateResumeArtifacts(reviewerDir, getGitInfo().commit);
       if (validation.valid) {
         console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
         resolve({ name: reviewer, status: 'completed', skipped: true });
@@ -1077,7 +1077,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             if (code === 0 && diagnostic.trim()) {
               try {
                 const { commit, tree } = getGitInfo();
-                writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree, resolvedDiffBase);
+                writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree);
               } catch (e) {
                 console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
               }
@@ -1086,7 +1086,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             const complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']
               .every(file => existsSync(join(reviewerDir, file)));
             if (complete && !aborted && code === 0) {
-              const postValidation = validateResumeArtifacts(reviewerDir, resolvedDiffBase);
+              const postValidation = validateResumeArtifacts(reviewerDir, getGitInfo().commit);
               if (!postValidation.valid) {
                 console.log(`  ${c.red}✗${c.reset} ${reviewer}: artifact validation failed (${postValidation.reason})`);
                 innerResolve({ name: reviewer, status: 'failed', attempt, diagnostic: `post-run validation: ${postValidation.reason}` });
@@ -1172,7 +1172,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       ensureContainedDirectorySync(roundDir, reviewerDir);
 
       // Check resume artifacts first
-      const validation = validateResumeArtifacts(reviewerDir, resolvedDiffBase);
+      const validation = validateResumeArtifacts(reviewerDir, getGitInfo().commit);
       if (validation.valid) {
         console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
         results.push({ name: reviewer, status: 'completed', skipped: true });
@@ -1242,7 +1242,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         if (exitCode === 0 && diagnostic.trim()) {
           try {
             const { commit, tree } = getGitInfo();
-            writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree, resolvedDiffBase);
+            writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree);
           } catch (e) {
             console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
           }
@@ -1252,7 +1252,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           .every(file => existsSync(join(reviewerDir, file)));
 
         if (complete && exitCode === 0) {
-          const postValidation = validateResumeArtifacts(reviewerDir, resolvedDiffBase);
+          const postValidation = validateResumeArtifacts(reviewerDir, getGitInfo().commit);
           if (postValidation.valid) {
             status = 'completed';
             console.log(`  ${c.green}✓${c.reset} ${reviewer}: completed`);

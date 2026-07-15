@@ -48,6 +48,7 @@ import {
 } from '../lib/security-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
 import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
+import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -323,6 +324,40 @@ test.describe('detectChangeScale (production)', () => {
     const scale = detectChangeScale([], 0, 0);
     assertEqual(scale.scale, 'none');
     assertEqual(scale.files, 0);
+  });
+});
+
+test.describe('gate change-scale module', () => {
+  test('detects the current repository and fails closed for an invalid root', () => {
+    const detected = detectGateChangeScale(PROJECT_ROOT, 'HEAD');
+    assertTrue(['micro', 'small', 'medium', 'large', 'xlarge'].includes(detected.scale), 'Expected a known scale');
+    assertTrue(detected.files >= 0 && detected.total >= 0, 'Expected non-negative change counts');
+
+    const fallback = detectGateChangeScale(join(TEST_DIR, 'missing-repository'), 'HEAD');
+    assertEqual(fallback.scale, 'unknown');
+    assertEqual(fallback.suggestedProfile, 'release-gate');
+  });
+
+  test('prints the detected scale and explicit profile override', () => {
+    const output = [];
+    const originalLog = console.log;
+    console.log = value => output.push(String(value ?? ''));
+    try {
+      printScaleDetection({
+        scale: 'xlarge',
+        files: 50,
+        additions: 2000,
+        deletions: 1,
+        total: 2001,
+        suggestedProfile: 'agentic-release-gate',
+        reason: 'test fixture',
+        requiresAgentic: true,
+      }, true, 'full');
+    } finally {
+      console.log = originalLog;
+    }
+    assertTrue(output.some(line => line.includes('XLarge change')), 'Expected agentic recommendation');
+    assertTrue(output.some(line => line.includes('User Override: Using --profile full')), 'Expected profile override');
   });
 });
 
@@ -940,7 +975,7 @@ test.describe('CLI fail-closed integration', () => {
       const descendantCode = `process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(leakMarker)}, 'leaked'), 500)`;
       writeFileSync(fakeCodex, `#!/usr/bin/env node
 if (process.env.AMBIENT_SECRET_CANARY) process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(canaryMarker)}, 'leaked');
-if (process.argv.includes('--version')) process.exit(0);
+if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
 process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e',
   ${JSON.stringify(descendantCode)}
 ], { stdio: 'ignore', env: process.env }).unref();
@@ -949,7 +984,7 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
       chmodSync(fakeCodex, 0o755);
       const result = spawnSync('node', [
         join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel',
-        '--round', String(TEST_ROUNDS.parallelTimeout), '--skip-evidence',
+        '--agent', 'codex', '--round', String(TEST_ROUNDS.parallelTimeout), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT,
         encoding: 'utf8',
@@ -959,6 +994,7 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
           PATH: `${fakeBin}:${process.env.PATH}`,
           RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '100',
           RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+          RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
           AMBIENT_SECRET_CANARY: 'ambient-secret-must-not-cross',
         },
       });
@@ -1244,11 +1280,27 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
   test('normal runner workflow writes every prompt and metadata without crashing', () => {
     const roundNumber = TEST_ROUNDS.runner;
     const round = reportRound(roundNumber);
+    const fakeBin = join(TEST_DIR, 'fake-bin-runner');
     try {
+      mkdirSync(fakeBin);
+      const fakeClaude = join(fakeBin, 'claude');
+      writeFileSync(fakeClaude, '#!/bin/sh\nprintf "review completed\\n"\n');
+      chmodSync(fakeClaude, 0o755);
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--round', String(roundNumber), '--skip-evidence',
-      ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000 });
-      assertEqual(result.status, 1);
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'claude',
+        '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT,
+        encoding: 'utf8',
+        timeout: 30000,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0',
+          RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
+        },
+      });
+      assertEqual(result.status, 1, `Expected runner gate failure, output: ${result.stdout}${result.stderr}`);
       assertEqual(result.stderr.includes('results is not defined'), false);
       assertEqual(existsSync(join(round, 'runner-metadata.json')), true);
       assertEqual(existsSync(join(round, 'product-flow', 'prompt.md')), true);
