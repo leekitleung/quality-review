@@ -975,13 +975,12 @@ test.describe('CLI fail-closed integration', () => {
   });
 
   test('gate and runner keep candidate writes outside the real report root', () => {
-    for (const name of ['review-gate.mjs', 'review-runner.mjs']) {
-      const source = readFileSync(join(SKILL_DIR, 'scripts', name), 'utf8');
-      assertEqual(source.includes('writeRoots: [REPORT_DIR, ISOLATED_HOME]'), false, `${name} exposes report root`);
-      assertEqual(source.includes('createCandidateRuntime'), true, `${name} bypasses shared candidate runtime`);
-    }
-    const gate = readFileSync(join(SKILL_DIR, 'scripts', 'review-gate.mjs'), 'utf8');
-    assertEqual(gate.includes('prepareCheckout()'), true, 'Gate lacks isolated checkout');
+    const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
+    assertEqual(runner.includes('writeRoots: [REPORT_DIR, ISOLATED_HOME]'), false, 'Runner exposes report root');
+    assertEqual(runner.includes('createCandidateRuntime'), true, 'Runner bypasses shared candidate runtime');
+    const evidence = readFileSync(join(SKILL_DIR, 'scripts', 'modules', 'evidence.mjs'), 'utf8');
+    assertEqual(evidence.includes('createCandidateRuntime'), true, 'Gate evidence collection bypasses shared candidate runtime');
+    assertEqual(evidence.includes('const candidateRoot = prepareCheckout()'), true, 'Gate evidence collection lacks isolated checkout');
     const runtime = readFileSync(join(SKILL_DIR, 'lib', 'candidate-runtime.mjs'), 'utf8');
     assertEqual(runtime.includes('sandboxWriteRoots = [isolatedHome]'), true, 'Shared runtime lacks isolated write root');
   });
@@ -1632,7 +1631,7 @@ console.log('review completed');
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
       }
 
-      const fixtureEnv = { ...process.env };
+      const fixtureEnv = { ...process.env, RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED: '1' };
       delete fixtureEnv.NODE_TEST_CONTEXT;
 
       const firstGate = spawnSync('node', [

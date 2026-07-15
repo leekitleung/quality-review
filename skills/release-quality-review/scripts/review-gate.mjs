@@ -64,9 +64,6 @@ import {
   writeContainedFileSync,
 } from '../lib/security-utils.mjs';
 
-import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
-const { prepareCheckout, readIdentity, validateCheckout } = createCandidateRuntime(PROJECT_ROOT, 'gate');
-
 // CLI and options
 const options = parseCliArgs(process.argv.slice(2));
 const {
@@ -235,9 +232,6 @@ async function runGate() {
 
   const currentCandidateCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000 }).trim();
   const currentCandidateTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000 }).trim();
-
-  // Initialize isolated candidate checkout
-  prepareCheckout();
 
   if (!isNewRound && collectEvidenceOpt) {
     const existingMetadataPath = join(roundDir, 'metadata.json');
