@@ -696,16 +696,27 @@ function loadConfig() {
   return { verification: {}, gate: {} };
 }
 
+// Get current git commit info
+function getGitInfo() {
+  try {
+    return {
+      commit: nodeExecFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+      }).trim(),
+      tree: nodeExecFileSync('git', ['rev-parse', 'HEAD^{tree}'], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+      }).trim(),
+    };
+  } catch (e) {
+    return { commit: 'unknown', tree: 'unknown' };
+  }
+}
+
 // Generate reviewer prompt
 function generateReviewerPrompt(reviewerName, currentRound) {
   const reviewerContent = loadReviewer(reviewerName);
   if (!reviewerContent) return null;
-  const candidateCommit = nodeExecFileSync('git', ['rev-parse', 'HEAD'], {
-    cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
-  }).trim();
-  const candidateTree = nodeExecFileSync('git', ['rev-parse', 'HEAD^{tree}'], {
-    cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
-  }).trim();
+  const { commit: candidateCommit, tree: candidateTree } = getGitInfo();
 
   // Extract key sections for the prompt
   const prompt = `
@@ -1065,7 +1076,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             // Write reviewer files from captured output (orchestrator writes files for agents)
             if (code === 0 && diagnostic.trim()) {
               try {
-                writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, candidateCommit, candidateTree);
+                const { commit, tree } = getGitInfo();
+                writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree);
               } catch (e) {
                 console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
               }
@@ -1229,7 +1241,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         // Write reviewer files from captured output (orchestrator writes files for agents)
         if (exitCode === 0 && diagnostic.trim()) {
           try {
-            writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, candidateCommit, candidateTree);
+            const { commit, tree } = getGitInfo();
+            writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree);
           } catch (e) {
             console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
           }
