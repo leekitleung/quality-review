@@ -1015,6 +1015,14 @@ test.describe('CLI fail-closed integration', () => {
       'Claude reviewer must not bypass all permission checks');
   });
 
+  test('reviewer prompt requires scalar score and exact machine verdict', () => {
+    const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
+    assertTrue(runner.includes('score 必须是整数'), 'Prompt must reject object-shaped scores');
+    assertTrue(runner.includes('status 必须是小写 pass 或 fail'), 'Prompt must require a parseable verdict');
+    assertTrue(runner.includes('score: <0-100 integer>'));
+    assertTrue(runner.includes('status: <pass|fail>'));
+  });
+
   test('release evidence exposes a coverage command and versioned changelog', () => {
     const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'));
     assertTrue(typeof manifest.scripts?.coverage === 'string', 'Expected a coverage script');

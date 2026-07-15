@@ -759,7 +759,16 @@ function generateReviewerPrompt(reviewerName, currentRound) {
 - blockers.md - P0/P1 必须修复的问题
 - improvement-list.md - P2/P3 改进建议
 
-result.yaml 必须声明 reviewer: ${reviewerName}、profile: ${profile}、round: ${currentRound}、candidate_commit: ${candidateCommit}、candidate_tree: ${candidateTree}。
+result.yaml 的前七个顶层字段必须严格使用以下格式；score 必须是整数，status 必须是小写 pass 或 fail，不能改名、嵌套或改成对象：
+\`\`\`yaml
+reviewer: ${reviewerName}
+profile: ${profile}
+round: ${currentRound}
+candidate_commit: ${candidateCommit}
+candidate_tree: ${candidateTree}
+score: <0-100 integer>
+status: <pass|fail>
+\`\`\`
 实际输出目录必须是 ${REPORT_DIR}/round-${String(currentRound).padStart(3, '0')}/${reviewerName}/。
 
 ## 评分标准
