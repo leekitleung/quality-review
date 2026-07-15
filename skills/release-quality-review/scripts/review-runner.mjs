@@ -67,7 +67,7 @@ const SCALE_TIMEOUT_MULTIPLIERS = {
 };
 
 // Write reviewer output files from orchestrator (parse agent output and write)
-function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, profile, round, candidateCommit, candidateTree) {
+function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, profile, round, candidateCommit, candidateTree, resolvedDiffBase) {
   // Parse output - look for YAML blocks or markdown formatted sections
   let resultYaml = '';
   let scoreContent = '';
@@ -140,7 +140,7 @@ function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, 
     }
   } else {
     // Create minimal result.yaml with required fields
-    const minimal = `reviewer: ${reviewerName}\nprofile: ${profile}\nround: ${round}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 0\nstatus: parsed\n`;
+    const minimal = `reviewer: ${reviewerName}\nprofile: ${profile}\nround: ${round}\ncandidate_commit: ${resolvedDiffBase}\ncandidate_tree: ${candidateTree}\nscore: 0\nstatus: parsed\n`;
     try {
       writeContainedFileSync(reviewerDir, join(reviewerDir, 'result.yaml'), minimal);
     } catch (e) {
@@ -1077,7 +1077,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             if (code === 0 && diagnostic.trim()) {
               try {
                 const { commit, tree } = getGitInfo();
-                writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree);
+                writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree, resolvedDiffBase);
               } catch (e) {
                 console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
               }
@@ -1242,7 +1242,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         if (exitCode === 0 && diagnostic.trim()) {
           try {
             const { commit, tree } = getGitInfo();
-            writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree);
+            writeReviewerFilesFromOutput(reviewerDir, diagnostic, reviewer, profile, currentRound, commit, tree, resolvedDiffBase);
           } catch (e) {
             console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
           }
