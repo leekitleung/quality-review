@@ -42,28 +42,25 @@ const log = {
   error: (msg) => console.log(`${c.red}✗${c.reset} ${msg}`),
 };
 
-// Parse arguments
-const args = process.argv.slice(2);
-let goalText = null;
-let filePath = null;
-let roundNumber = null;
-let stdin = false;
-
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-  if (arg === '--input' && args[i + 1]) {
-    goalText = args[++i];
-  } else if (arg === '--file' && args[i + 1]) {
-    filePath = args[++i];
-  } else if (arg === '--check-round' && args[i + 1]) {
-    roundNumber = args[++i];
-  } else if (arg === '--stdin') {
-    stdin = true;
-  } else if (arg === '--help' || arg === '-h') {
-    printHelp();
-    process.exit(0);
+function parseArgs(args) {
+  let goalText = null;
+  let filePath = null;
+  let roundNumber = null;
+  let stdin = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--input' && args[i + 1]) goalText = args[++i];
+    else if (arg === '--file' && args[i + 1]) filePath = args[++i];
+    else if (arg === '--check-round' && args[i + 1]) roundNumber = args[++i];
+    else if (arg === '--stdin') stdin = true;
+    else if (arg === '--help' || arg === '-h') {
+      printHelp();
+      process.exit(0);
+    }
   }
+  return Object.freeze({ goalText, filePath, roundNumber, stdin });
 }
+const { goalText, filePath, roundNumber, stdin } = parseArgs(process.argv.slice(2));
 
 function printHelp() {
   console.log(`

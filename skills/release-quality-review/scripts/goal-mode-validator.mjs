@@ -40,31 +40,28 @@ const log = {
   title: (msg) => console.log(`\n${c.bright}${c.cyan}═══ ${msg} ═══${c.reset}\n`),
 };
 
-// Parse arguments
-const args = process.argv.slice(2);
-let targetRound = null;
-let targetReviewer = null;
-let targetFile = null;
-let verbose = false;
-
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-  if (arg === '--round' && args[i + 1]) {
-    let roundArg = args[++i];
-    // Normalize "round-001" to "round-001" or "1" to "round-001"
-    const match = roundArg.match(/^round-(\d+)$/i);
-    targetRound = match ? `round-${match[1].padStart(3, '0')}` : `round-${roundArg.padStart(3, '0')}`;
-  } else if (arg === '--reviewer' && args[i + 1]) {
-    targetReviewer = args[++i];
-  } else if (arg === '--file' && args[i + 1]) {
-    targetFile = args[++i];
-  } else if (arg === '--verbose' || arg === '-v') {
-    verbose = true;
-  } else if (arg === '--help' || arg === '-h') {
-    printHelp();
-    process.exit(0);
+function parseArgs(args) {
+  let targetRound = null;
+  let targetReviewer = null;
+  let targetFile = null;
+  let verbose = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--round' && args[i + 1]) {
+      const roundArg = args[++i];
+      const match = roundArg.match(/^round-(\d+)$/i);
+      targetRound = match ? `round-${match[1].padStart(3, '0')}` : `round-${roundArg.padStart(3, '0')}`;
+    } else if (arg === '--reviewer' && args[i + 1]) targetReviewer = args[++i];
+    else if (arg === '--file' && args[i + 1]) targetFile = args[++i];
+    else if (arg === '--verbose' || arg === '-v') verbose = true;
+    else if (arg === '--help' || arg === '-h') {
+      printHelp();
+      process.exit(0);
+    }
   }
+  return Object.freeze({ targetRound, targetReviewer, targetFile, verbose });
 }
+const { targetRound, targetReviewer, targetFile, verbose } = parseArgs(process.argv.slice(2));
 
 function printHelp() {
   console.log(`

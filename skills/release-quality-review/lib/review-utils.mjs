@@ -203,7 +203,7 @@ export const ROLLBACK_COMMANDS = [
   ['isolated-tree', 'git rev-parse HEAD^{tree}'],
   ['revert', 'git revert --no-commit <base>..HEAD'],
   ['rollback-tree', 'git write-tree'],
-  ['package-manager', 'prepare rollback package manager'],
+  ['package-manager', 'verify pre-provisioned rollback package manager'],
   ['rollback-commit', 'git commit <rollback snapshot>'],
   ['test', 'npm test'],
   ['final-source-status', 'git status --porcelain --untracked-files=all'],

@@ -44,25 +44,23 @@ const log = {
   section: (msg) => console.log(`\n${c.bright}${msg}${c.reset}`),
 };
 
-// Parse arguments
-const args = process.argv.slice(2);
-let packetPath = null;
-let mode = 'assisted';
-let verbose = false;
-
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-  if (arg === '--packet' && args[i + 1]) {
-    packetPath = args[++i];
-  } else if (arg === '--mode' && args[i + 1]) {
-    mode = args[++i];
-  } else if (arg === '--verbose' || arg === '-v') {
-    verbose = true;
-  } else if (arg === '--help' || arg === '-h') {
-    printHelp();
-    process.exit(0);
+function parseArgs(args) {
+  let packetPath = null;
+  let mode = 'assisted';
+  let verbose = false;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--packet' && args[i + 1]) packetPath = args[++i];
+    else if (arg === '--mode' && args[i + 1]) mode = args[++i];
+    else if (arg === '--verbose' || arg === '-v') verbose = true;
+    else if (arg === '--help' || arg === '-h') {
+      printHelp();
+      process.exit(0);
+    }
   }
+  return Object.freeze({ packetPath, mode, verbose });
 }
+const { packetPath, mode, verbose } = parseArgs(process.argv.slice(2));
 
 function printHelp() {
   console.log(`

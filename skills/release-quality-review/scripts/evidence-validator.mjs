@@ -21,24 +21,22 @@ import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs 
 const PROJECT_ROOT = process.cwd();
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 
-// Parse arguments
-const args = process.argv.slice(2);
-let targetRound = null;
-let targetReviewer = null;
-let diffBase = 'HEAD';
-
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--round' && args[i + 1]) {
-    targetRound = args[++i];
-  } else if (args[i] === '--reviewer' && args[i + 1]) {
-    targetReviewer = args[++i];
-  } else if (args[i] === '--base' && args[i + 1]) {
-    diffBase = args[++i];
-  } else {
-    console.error(`Unknown or incomplete option: ${args[i]}`);
-    process.exit(4);
+function parseArgs(args) {
+  let targetRound = null;
+  let targetReviewer = null;
+  let diffBase = 'HEAD';
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--round' && args[i + 1]) targetRound = args[++i];
+    else if (args[i] === '--reviewer' && args[i + 1]) targetReviewer = args[++i];
+    else if (args[i] === '--base' && args[i + 1]) diffBase = args[++i];
+    else {
+      console.error(`Unknown or incomplete option: ${args[i]}`);
+      process.exit(4);
+    }
   }
+  return Object.freeze({ targetRound, targetReviewer, diffBase });
 }
+const { targetRound, targetReviewer, diffBase } = parseArgs(process.argv.slice(2));
 if (!/^[A-Za-z0-9._/@-]+$/.test(diffBase)) {
   console.error(`Invalid --base ref: ${diffBase}`);
   process.exit(4);

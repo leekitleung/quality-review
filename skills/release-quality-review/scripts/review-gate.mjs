@@ -281,6 +281,24 @@ async function runGate() {
         if (metadata.candidate_commit !== fullCommit || metadata.candidate_tree !== currentTree || metadata.automated_checks_sha256 !== digest) {
           throw new Error('persisted evidence does not match the current commit and working-tree status');
         }
+        if (profile === 'agentic-release-gate') {
+          const cleanPath = join(roundDir, 'evidence', 'clean-candidate.json');
+          const rollbackPath = join(roundDir, 'evidence', 'rollback-verification.json');
+          const cleanContent = readContainedFileSync(roundDir, cleanPath, 'utf8');
+          const rollbackContent = readContainedFileSync(roundDir, rollbackPath, 'utf8');
+          const clean = JSON.parse(cleanContent);
+          const rollback = JSON.parse(rollbackContent);
+          if (metadata.clean_candidate_sha256 !== createHash('sha256').update(cleanContent).digest('hex') ||
+              !validateCleanCandidateEvidence(clean, metadata.candidate_commit, metadata.candidate_tree)) {
+            throw new Error('invalid clean-candidate verification evidence');
+          }
+          if (metadata.rollback_verification_sha256 !== createHash('sha256').update(rollbackContent).digest('hex') ||
+              !validateRollbackEvidence(
+                rollback, metadata.candidate_commit, metadata.candidate_tree, metadata.base_commit, metadata.base_tree
+              )) {
+            throw new Error('invalid rollback verification evidence');
+          }
+        }
         // Validate command evidence structure for all gates
         const expectedCommands = {
           testGate: config?.verification?.test || 'pnpm test',
@@ -289,6 +307,9 @@ async function runGate() {
           lintGate: config?.verification?.lint || 'pnpm lint',
           auditGate: config?.verification?.audit || 'npm audit --audit-level=high',
         };
+        if (['release-gate', 'full', 'agentic-release-gate'].includes(profile)) {
+          expectedCommands.e2eGate = config?.verification?.e2e || 'npm run test:e2e';
+        }
         if (profile === 'agentic-release-gate') {
           expectedCommands.coverageGate = config?.verification?.coverage || 'npm run coverage';
         }
@@ -309,6 +330,7 @@ async function runGate() {
           timestamp: metadata.collected_at,
           git: metadata.git,
           files: metadata.files,
+          scale: metadata.scale,
           automatedChecks,
         };
         log.info('Loaded persisted automated evidence for the current candidate');
@@ -416,7 +438,7 @@ async function runGate() {
   const strictProfile = ['release-gate', 'full', 'agentic-release-gate'].includes(profile);
 
   const automatedChecksPassed = strictProfile
-    ? Boolean(autoChecks) && autoChecks.testGate?.status === 'pass' && autoChecks.typecheckGate?.status === 'pass' && autoChecks.buildGate?.status === 'pass' && autoChecks.lintGate?.status === 'pass' && autoChecks.auditGate?.status === 'pass' && autoChecks.secrets?.status === 'pass' && autoChecks.circularDeps?.status !== 'fail' && evidenceValidationPassed
+    ? Boolean(autoChecks) && autoChecks.testGate?.status === 'pass' && autoChecks.typecheckGate?.status === 'pass' && autoChecks.buildGate?.status === 'pass' && autoChecks.lintGate?.status === 'pass' && autoChecks.auditGate?.status === 'pass' && autoChecks.e2eGate?.status === 'pass' && autoChecks.secrets?.status === 'pass' && autoChecks.circularDeps?.status !== 'fail' && evidenceValidationPassed
     : Boolean(autoChecks) && autoChecks.testGate?.status === 'pass' && hasConcreteVerificationOutput('test', autoChecks?.testGate?.output);
 
   const vetoFindingsPresent = Object.values(existingScores).some(r => r.blockers?.some(b =>

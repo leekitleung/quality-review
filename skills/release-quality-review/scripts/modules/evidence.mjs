@@ -5,7 +5,9 @@ import { readFile } from 'fs/promises';
 import { execSync, execFileSync } from 'child_process';
 import { log } from './constants.mjs';
 import { ensureContainedDirectorySync, readContainedFileSync, writeContainedFile, writeContainedFileSync, containsSensitiveText, redactSensitiveText } from '../../lib/security-utils.mjs';
-import { findTrivialVerificationScripts } from '../../lib/review-utils.mjs';
+import {
+  detectChangeScale, findTrivialVerificationScripts, validateCleanCandidateEvidence, validateRollbackEvidence,
+} from '../../lib/review-utils.mjs';
 import { createCandidateRuntime } from '../../lib/candidate-runtime.mjs';
 
 /**
@@ -29,12 +31,27 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
 
   // Git info
   try {
+    const changedFiles = execFileSync('git', ['diff', '--name-only', resolvedDiffBase], {
+      encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+    }).trim().split('\n').filter(Boolean);
+    const numstat = execFileSync('git', ['diff', '--numstat', resolvedDiffBase], {
+      encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+    }).trim().split('\n').filter(Boolean);
+    const totals = numstat.reduce((sum, line) => {
+      const [added, deleted] = line.split('\t');
+      return {
+        added: sum.added + (/^\d+$/.test(added) ? Number(added) : 0),
+        deleted: sum.deleted + (/^\d+$/.test(deleted) ? Number(deleted) : 0),
+      };
+    }, { added: 0, deleted: 0 });
     evidence.git = {
       branch: execSync('git branch --show-current 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim(),
       commit: execSync('git rev-parse HEAD 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim().substring(0, 8),
       status: execSync('git status --short 2>/dev/null || echo ""', { encoding: 'utf-8' }).trim(),
       diff: execFileSync('git', ['diff', '--stat', resolvedDiffBase], { encoding: 'utf-8' }).trim(),
+      changedFiles,
     };
+    evidence.scale = detectChangeScale(changedFiles, totals.added, totals.deleted);
   } catch (e) {
     log.warn('Could not collect git evidence');
   }
@@ -68,9 +85,17 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
       ...options,
       sandboxReadOnlyRoots: [candidateRoot],
       sandboxWriteRoots: [runtime.isolatedHome, candidateRoot],
-      sandboxAllowNetwork: command === (config?.verification?.audit || 'npm audit --audit-level=high'),
     }));
-  evidence.automatedChecks = runAutomatedChecks(config, projectRoot, candidateRoot, runCandidateCommand);
+  const runTrustedAudit = cwd => runEvidenceCommand('npm audit --audit-level=high', cwd, (_cmd, options) =>
+    runtime.execFileSync('npm', ['audit', '--audit-level=high'], {
+      ...options,
+      sandboxReadOnlyRoots: [candidateRoot],
+      sandboxWriteRoots: [runtime.isolatedHome, candidateRoot],
+      sandboxAllowNetwork: true,
+    }));
+  evidence.automatedChecks = runAutomatedChecks(
+    config, projectRoot, candidateRoot, runCandidateCommand, runTrustedAudit
+  );
 
   return evidence;
 }
@@ -93,7 +118,7 @@ export function validateEvidenceCompleteness(evidence, projectRoot) {
   if (!ac) return false;
 
   // Required gate commands must have valid structure
-  const requiredGates = ['testGate', 'typecheckGate', 'buildGate', 'lintGate', 'auditGate'];
+  const requiredGates = ['testGate', 'typecheckGate', 'buildGate', 'lintGate', 'auditGate', 'e2eGate'];
   for (const gate of requiredGates) {
     const gateResult = ac[gate];
     if (!gateResult) return false;
@@ -247,7 +272,10 @@ export function scanCircularDependencies(projectRoot) {
  * @param {string} candidateRoot - Candidate checkout root
  * @returns {object} Automated check results
  */
-export function runAutomatedChecks(config, projectRoot, candidateRoot, runCommand = runEvidenceCommand) {
+export function runAutomatedChecks(
+  config, projectRoot, candidateRoot, runCommand = runEvidenceCommand,
+  runAuditCommand = cwd => runEvidenceCommand('npm audit --audit-level=high', cwd)
+) {
   const checks = {
     oversizedFiles: { status: 'pass', issues: [] },
     circularDeps: { status: 'pass', issues: [] },
@@ -258,6 +286,7 @@ export function runAutomatedChecks(config, projectRoot, candidateRoot, runComman
     lintGate: null,
     auditGate: null,
     coverageGate: null,
+    e2eGate: null,
     candidateCheckout: null,
   };
 
@@ -265,11 +294,12 @@ export function runAutomatedChecks(config, projectRoot, candidateRoot, runComman
   const typecheckCmd = config?.verification?.typecheck || 'pnpm typecheck';
   const buildCmd = config?.verification?.build || 'pnpm build';
   const lintCmd = config?.verification?.lint || 'pnpm lint';
-  const auditCmd = config?.verification?.audit || 'npm audit --audit-level=high';
+  const auditCmd = 'npm audit --audit-level=high';
   const coverageCmd = config?.verification?.coverage || 'npm run coverage';
+  const e2eCmd = config?.verification?.e2e || 'npm run test:e2e';
   const manifest = JSON.parse(readFileSync(join(candidateRoot, 'package.json'), 'utf8'));
   const scriptIssues = findTrivialVerificationScripts(manifest.scripts, [
-    testCmd, typecheckCmd, buildCmd, lintCmd, coverageCmd,
+    testCmd, typecheckCmd, buildCmd, lintCmd, coverageCmd, e2eCmd,
   ]);
   if (scriptIssues.length > 0) {
     throw new Error(`trivial or missing verification scripts: ${scriptIssues.map(issue => issue.script).join(', ')}`);
@@ -351,10 +381,13 @@ export function runAutomatedChecks(config, projectRoot, candidateRoot, runComman
   checks.lintGate = runCommand(lintCmd, candidateRoot);
 
   log.info(`Running audit gate: ${auditCmd}`);
-  checks.auditGate = runCommand(auditCmd, candidateRoot);
+  checks.auditGate = runAuditCommand(candidateRoot);
 
   log.info(`Running coverage gate: ${coverageCmd}`);
   checks.coverageGate = runCommand(coverageCmd, candidateRoot);
+
+  log.info(`Running E2E gate: ${e2eCmd}`);
+  checks.e2eGate = runCommand(e2eCmd, candidateRoot);
 
   return checks;
 }
@@ -389,6 +422,19 @@ export async function persistEvidence(projectRoot, roundDir, evidence, profileNa
   const candidateTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: projectRoot, encoding: 'utf8' }).trim();
   const baseCommit = execFileSync('git', ['rev-parse', `${resolvedDiffBase}^{commit}`], { cwd: projectRoot, encoding: 'utf8' }).trim();
   const baseTree = execFileSync('git', ['rev-parse', `${resolvedDiffBase}^{tree}`], { cwd: projectRoot, encoding: 'utf8' }).trim();
+  if (profileName === 'agentic-release-gate') {
+    if (cleanCandidateContent === null || rollbackContent === null) {
+      throw new Error('agentic release requires clean-candidate and rollback verification evidence');
+    }
+    const cleanCandidate = JSON.parse(cleanCandidateContent);
+    const rollback = JSON.parse(rollbackContent);
+    if (!validateCleanCandidateEvidence(cleanCandidate, candidateCommit, candidateTree)) {
+      throw new Error('invalid clean-candidate verification evidence');
+    }
+    if (!validateRollbackEvidence(rollback, candidateCommit, candidateTree, baseCommit, baseTree)) {
+      throw new Error('invalid rollback verification evidence');
+    }
+  }
 
   const metadata = {
     profile: profileName,
@@ -397,6 +443,7 @@ export async function persistEvidence(projectRoot, roundDir, evidence, profileNa
     collected_at: evidence.timestamp,
     git: evidence.git,
     files: evidence.files,
+    scale: evidence.scale,
     candidate_commit: candidateCommit,
     candidate_tree: candidateTree,
     base_commit: baseCommit,

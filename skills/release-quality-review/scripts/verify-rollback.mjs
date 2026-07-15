@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,17 +12,20 @@ import {
 
 const root = process.cwd();
 const subprocessEnv = createSubprocessEnv();
-const args = process.argv.slice(2);
-let baseRef = null;
-let outputArg = null;
-for (let index = 0; index < args.length; index++) {
-  if (args[index] === '--base' && args[index + 1]) baseRef = args[++index];
-  else if (args[index] === '--output' && args[index + 1]) outputArg = args[++index];
-  else {
-    console.error(`Unknown or incomplete option: ${args[index]}`);
-    process.exit(4);
+function parseArgs(args) {
+  let baseRef = null;
+  let outputArg = null;
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] === '--base' && args[index + 1]) baseRef = args[++index];
+    else if (args[index] === '--output' && args[index + 1]) outputArg = args[++index];
+    else {
+      console.error(`Unknown or incomplete option: ${args[index]}`);
+      process.exit(4);
+    }
   }
+  return Object.freeze({ baseRef, outputArg });
 }
+const { baseRef, outputArg } = parseArgs(process.argv.slice(2));
 if (!baseRef || !outputArg || !/^[A-Za-z0-9._/@-]+$/.test(baseRef)) {
   console.error('Usage: verify-rollback.mjs --base <ref> --output quality-reports/round-NNN/evidence/rollback-verification.json');
   process.exit(4);
@@ -75,7 +78,14 @@ const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-quality-rollback
 const rollbackRoot = path.join(temporary, 'rollback');
 const isolatedHome = await mkdtemp(path.join(temporary, 'home-'));
 const candidateEnv = createCandidateSubprocessEnv(process.env, isolatedHome);
-const sandboxOptions = { readOnlyRoots: [root], writeRoots: [temporary] };
+const corepackHome = process.env.COREPACK_HOME || path.join(os.homedir(), '.cache', 'node', 'corepack');
+candidateEnv.COREPACK_HOME = corepackHome;
+candidateEnv.COREPACK_ENABLE_NETWORK = '0';
+candidateEnv.COREPACK_DEFAULT_TO_LATEST = '0';
+const sandboxOptions = {
+  readOnlyRoots: [root, ...(existsSync(corepackHome) ? [corepackHome] : [])],
+  writeRoots: [temporary],
+};
 const records = [sourceStatus];
 try {
   const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', root, rollbackRoot], temporary, candidateEnv,
@@ -89,11 +99,20 @@ try {
       'git revert --no-commit <base>..HEAD', sandboxOptions));
     records.push(run('rollback-tree', 'git', ['write-tree'], rollbackRoot, candidateEnv, null, sandboxOptions));
     const rollbackConfig = readFileSync(path.join(rollbackRoot, 'skills/release-quality-review/review-config.yaml'), 'utf8');
-    records.push(/\bpnpm\b/.test(rollbackConfig)
-      ? run('package-manager', 'corepack', ['install', '--global', 'pnpm@10.33.0'], rollbackRoot, candidateEnv,
-        'prepare rollback package manager', { ...sandboxOptions, allowNetwork: true })
+    const usesPnpm = /\bpnpm\b/.test(rollbackConfig);
+    const packageManager = usesPnpm
+      ? run('package-manager', 'pnpm', ['--version'], rollbackRoot, candidateEnv,
+        'verify pre-provisioned rollback package manager', sandboxOptions)
       : run('package-manager', 'npm', ['--version'], rollbackRoot, candidateEnv,
-        'prepare rollback package manager', sandboxOptions));
+        'verify pre-provisioned rollback package manager', sandboxOptions);
+    if (usesPnpm && packageManager.output.trim() !== '10.33.0') {
+      packageManager.status = 'fail';
+      packageManager.exit_code = 1;
+      packageManager.output = 'required pre-provisioned pnpm version 10.33.0 is unavailable';
+      packageManager.output_bytes = Buffer.byteLength(packageManager.output);
+      packageManager.truncated = false;
+    }
+    records.push(packageManager);
     records.push(run('rollback-commit', 'git', [
       '-c', 'user.name=Release Quality Review',
       '-c', 'user.email=release-quality-review@example.invalid',

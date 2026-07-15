@@ -6,6 +6,36 @@ Requires Node.js 22+ and a Git checkout because candidate identity and rollback
 checks depend on Git metadata. Clone the repository, then run `npm install`;
 there are no runtime dependencies.
 
+## First successful review
+
+```bash
+git clone <repository-url> quality-review
+cd quality-review
+node --version                 # v22 or newer
+git rev-parse --is-inside-work-tree
+npm install
+npm start                      # prints runner help; it does not start a service
+
+export REVIEW_ROUND=100
+npm run review -- --profile quick --round "$REVIEW_ROUND"
+# Exit 1 is healthy here while reviewer packets are pending.
+# After the listed reviewers write all four packet files:
+npm run skill:gate -- --profile quick --round "$REVIEW_ROUND" --no-collect
+# Success ends with GATE PASSED and exit 0.
+```
+
+Choose `quick` for a small development check, `release-gate` for a normal
+release, and `agentic-release-gate` for the full 12-reviewer evidence workflow.
+`--base <base-ref>` is the commit before the reviewed change, for example
+`--base origin/main` or `--base HEAD~1`.
+
+Terms: the **candidate** is the exact commit/tree being reviewed; a **packet**
+is one reviewer's four output files; **evidence binding** ties those files to
+the candidate; **resident** reviewers always run, **conditional** reviewers run
+when triggered, and **adversarial** reviewers challenge completion claims;
+**arbitration** is the final Gate decision. The **host/orchestrator** is the
+trusted process that launches reviewers and owns the round.
+
 ## Release quality review
 
 The canonical source is `skills/release-quality-review/`. Claude and Codex
@@ -22,6 +52,7 @@ npm run skill:check
 # Run unit tests plus distribution validation
 npm run skill:verify
 npm run coverage
+npm run test:e2e
 
 # Aggregate reports and execute the release gate
 npm run skill:gate -- --profile release-gate
@@ -81,6 +112,11 @@ npm run skill:verify-clean -- --output "quality-reports/$REVIEW_ROUND_DIR/eviden
 npm run skill:verify-rollback -- --base <base-ref> --output "quality-reports/$REVIEW_ROUND_DIR/evidence/rollback-verification.json"
 ```
 
+Rollback verification never downloads a package manager. If the rollback base
+uses pnpm, the trusted host must pre-provision pnpm `10.33.0` in Corepack's
+cache (or set `COREPACK_HOME` to an equivalent read-only cache); verification
+fails closed when that pinned toolchain is unavailable.
+
 3. Run the runner with explicit round/base. It creates `phase-N-plan.md`,
    reviewer prompts, `runner-metadata.json`, and initial prompt evidence; its
    Gate pass binds `metadata.json` to the already persisted clean evidence.
@@ -130,7 +166,16 @@ Troubleshooting:
 - Drift failure: run `npm run skill:sync`, inspect the diff, then rerun
   `npm run skill:check-drift`.
 - Exit `4`: correct invalid CLI/profile/path input.
-- Exit `5`: the local Codex CLI required for parallel reviewer launch is unavailable.
+- Exit `5`: reviewer launch failed or timed out; verify the local Codex/Claude
+  CLI, then rerun the same round. Valid packets resume; malformed or incomplete
+  packets are invalidated and relaunched automatically.
+- Exit `1`: inspect `summary.md`. `reviewer packets pending` is expected before
+  reviewers finish; scores below 90, P0/P1 blockers, or failed evidence require
+  a fix and a fresh round.
+- Missing packet files: every reviewer directory needs `result.yaml`,
+  `score.md`, `blockers.md`, and `improvement-list.md`.
+- Round identity conflict: do not reuse a round after the candidate changes;
+  choose a new positive round number.
 - Persisted-evidence mismatch: rerun `skill:verify-clean` first, then rerun the
   collecting Gate command so `metadata.json` binds the same clean evidence.
 

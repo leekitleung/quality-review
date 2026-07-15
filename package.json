@@ -9,6 +9,7 @@
     "typecheck": "node --check scripts/sync-skills.mjs && node --check scripts/verify-clean-candidate.mjs && node --check skills/release-quality-review/scripts/review-gate.mjs && node --check skills/release-quality-review/scripts/review-runner.mjs && node --check skills/release-quality-review/scripts/evidence-validator.mjs && node --check skills/release-quality-review/scripts/verify-rollback.mjs && node --check skills/release-quality-review/lib/review-utils.mjs && node --check skills/release-quality-review/lib/evidence-utils.mjs && node --check skills/release-quality-review/lib/security-utils.mjs && node --check skills/release-quality-review/lib/candidate-runtime.mjs && node --check skills/release-quality-review/lib/phase-persistence.mjs",
     "build": "npm run typecheck",
     "test": "node --test skills/release-quality-review/__tests__/unit.test.mjs",
+    "test:e2e": "node --test --test-name-pattern='normal runner workflow|no-collect rehydrates|rejects stale reviewer packets' skills/release-quality-review/__tests__/unit.test.mjs",
     "coverage": "node --experimental-test-coverage --test-coverage-include='skills/release-quality-review/**/*.mjs' --test-coverage-include='scripts/*.mjs' --test-coverage-exclude='**/__tests__/**' --test-coverage-lines=75 --test-coverage-branches=60 --test-coverage-functions=75 --test skills/release-quality-review/__tests__/unit.test.mjs",
     "test:skill": "node --test skills/release-quality-review/__tests__/unit.test.mjs",
     "review": "node skills/release-quality-review/scripts/review-runner.mjs",
