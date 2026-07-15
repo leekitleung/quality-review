@@ -36,6 +36,7 @@ import {
 } from '../lib/review-utils.mjs';
 import {
   resolveWithinRoot,
+  isRealDirectory,
   shouldIncludeCanonicalFile,
   containsSensitiveText,
   createCandidateSubprocessEnv,
@@ -49,6 +50,7 @@ import {
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
 import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
 import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
+import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -358,6 +360,30 @@ test.describe('gate change-scale module', () => {
     }
     assertTrue(output.some(line => line.includes('XLarge change')), 'Expected agentic recommendation');
     assertTrue(output.some(line => line.includes('User Override: Using --profile full')), 'Expected profile override');
+  });
+});
+
+test.describe('gate CLI and filesystem helpers', () => {
+  test('distinguishes real directories from files and missing paths', () => {
+    const directory = join(TEST_DIR, 'real-directory');
+    const file = join(TEST_DIR, 'regular-file');
+    mkdirSync(directory);
+    writeFileSync(file, 'fixture');
+    assertEqual(isRealDirectory(directory), true);
+    assertEqual(isRealDirectory(file), false);
+    assertEqual(isRealDirectory(join(TEST_DIR, 'missing')), false);
+  });
+
+  test('prints gate usage including automatic round behavior', () => {
+    const output = [];
+    const originalLog = console.log;
+    console.log = value => output.push(String(value ?? ''));
+    try {
+      printGateHelp();
+    } finally {
+      console.log = originalLog;
+    }
+    assertTrue(output.some(line => line.includes('auto-detected if not specified')), 'Expected automatic round help');
   });
 });
 
