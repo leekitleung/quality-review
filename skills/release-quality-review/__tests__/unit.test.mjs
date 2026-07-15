@@ -1007,6 +1007,14 @@ test.describe('CLI fail-closed integration', () => {
     assertEqual(runtime.includes('sandboxWriteRoots = [isolatedHome]'), true, 'Shared runtime lacks isolated write root');
   });
 
+  test('Claude reviewer invocation accepts report edits without interactive approval', () => {
+    const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
+    assertTrue(runner.includes("args: ['-p', '--permission-mode', 'acceptEdits', '--no-session-persistence', prompt]"),
+      'Claude print mode must not block waiting for report write approval');
+    assertEqual(runner.includes('--dangerously-skip-permissions'), false,
+      'Claude reviewer must not bypass all permission checks');
+  });
+
   test('release evidence exposes a coverage command and versioned changelog', () => {
     const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'));
     assertTrue(typeof manifest.scripts?.coverage === 'string', 'Expected a coverage script');

@@ -805,7 +805,12 @@ function sleep(ms) {
 }
 
 function getAgentInvocation(agent, prompt) {
-  if (agent === 'claude') return { command: 'claude', args: ['-p', prompt] };
+  if (agent === 'claude') {
+    return {
+      command: 'claude',
+      args: ['-p', '--permission-mode', 'acceptEdits', '--no-session-persistence', prompt],
+    };
+  }
   if (agent === 'codex') {
     return {
       command: 'codex',
