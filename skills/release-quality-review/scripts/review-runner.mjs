@@ -825,7 +825,7 @@ function runGateCheck(roundDir, profileName, round) {
   try {
     const gateScript = join(SKILL_DIR, 'scripts', 'review-gate.mjs');
     if (existsSync(gateScript)) {
-      const args = [gateScript, '--profile', profileName, '--round', String(round)];
+      const args = [gateScript, '--profile', profileName, '--round', String(round), '--no-collect'];
       if (checkGoalMode) args.push('--check-goal-mode');
       if (diffBase !== 'HEAD') args.push('--base', diffBase);
       nodeExecFileSync('node', args, {
