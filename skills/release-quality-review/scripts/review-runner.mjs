@@ -33,6 +33,9 @@ const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 const TOOL_ENV = createSubprocessEnv();
+if (process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED === '1') {
+  TOOL_ENV.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
+}
 const {
   env: CANDIDATE_ENV, execSync, execFileSync,
 } = createCandidateRuntime(PROJECT_ROOT, 'runner');
@@ -1223,18 +1226,34 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         const proc = spawn(invocation.command, invocation.args, {
           cwd: PROJECT_ROOT,
           stdio: ['ignore', 'pipe', 'pipe'],
-          detached: false,
+          detached: process.platform !== 'win32',
           env: TOOL_ENV,
         });
 
         let diagnostic = '';
         let settled = false;
+        let forceTimer = null;
         const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
+        const signalProcessTree = signal => {
+          if (!proc.pid) return;
+          try {
+            if (process.platform === 'win32') {
+              const args = ['/pid', String(proc.pid), '/t'];
+              if (signal === 'SIGKILL') args.push('/f');
+              nodeExecFileSync('taskkill', args, { stdio: 'ignore', timeout: REVIEWER_KILL_GRACE_MS, env: CANDIDATE_ENV });
+            } else {
+              process.kill(-proc.pid, signal);
+            }
+          } catch (error) {
+            if (error.code !== 'ESRCH') diagnostic = `${diagnostic}\nprocess-tree ${signal} failed: ${error.message}`.slice(-4000);
+          }
+        };
         const timeoutTimer = setTimeout(() => {
           if (!settled) {
-            proc.kill('SIGTERM');
-            setTimeout(() => {
-              if (!settled) { proc.kill('SIGKILL'); settled = true; }
+            diagnostic = `${diagnostic}\n${reviewer} timed out after ${scaledTimeout}ms; sending SIGTERM`.slice(-4000);
+            signalProcessTree('SIGTERM');
+            forceTimer = setTimeout(() => {
+              if (!settled) signalProcessTree('SIGKILL');
             }, REVIEWER_KILL_GRACE_MS);
           }
         }, scaledTimeout);
@@ -1248,6 +1267,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         });
 
         clearTimeout(timeoutTimer);
+        if (forceTimer) clearTimeout(forceTimer);
         settled = true;
 
         let complete = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md']

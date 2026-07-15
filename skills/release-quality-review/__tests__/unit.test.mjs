@@ -51,6 +51,7 @@ import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.m
 import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
 import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
 import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
+import { runEvidenceCommand } from '../scripts/modules/evidence.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -797,7 +798,20 @@ test.describe('security boundaries', () => {
       '-p', '(version 1) (allow default)', '/usr/bin/true',
     ], { encoding: 'utf8' });
     if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout}${probe.stderr}`)) {
-      t.skip('Inherited sandbox is already enforcing the outer filesystem policy');
+      const original = process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
+      delete process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
+      let rejected = false;
+      try {
+        wrapCandidateCommand(process.execPath, ['-e', ''], { allowedRoots: [PROJECT_ROOT] });
+      } catch (error) {
+        rejected = error.message.includes('explicit outer-sandbox attestation required');
+      }
+      assertEqual(rejected, true, 'Unavailable nested sandbox must fail closed');
+      process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
+      const attested = wrapCandidateCommand(process.execPath, ['-e', ''], { allowedRoots: [PROJECT_ROOT] });
+      assertEqual(attested.command, process.execPath, 'Explicit outer sandbox attestation should permit host enforcement');
+      if (original === undefined) delete process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
+      else process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = original;
       return;
     }
     const hostHome = userInfo().homedir;
@@ -819,6 +833,13 @@ test.describe('security boundaries', () => {
     const nested = spawnSync(outer.command, outer.args, { cwd: PROJECT_ROOT, encoding: 'utf8' });
     assertEqual(nested.status, 0, nested.stderr);
     assertEqual(existsSync(protectedTarget), false, 'Nested candidate must not write the real report root');
+  });
+
+  test('candidate evidence output is redacted before persistence', () => {
+    const record = runEvidenceCommand('fixture', PROJECT_ROOT, () => 'token=abcdefghijklmnop');
+    assertEqual(record.status, 'pass');
+    assertEqual(containsSensitiveText(record.output), false);
+    assertTrue(record.output.includes('[REDACTED]'), 'Expected redacted evidence output');
   });
 
   test('rejects a repository output parent symlinked outside the repository', async () => {
@@ -1081,6 +1102,45 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     }
   });
 
+  test('sequential runner terminates hung reviewer descendants', () => {
+    const roundNumber = TEST_ROUNDS.parallelSuccess + 100;
+    const round = reportRound(roundNumber);
+    const fakeBin = join(TEST_DIR, 'fake-bin-sequential-timeout');
+    const leakMarker = join(TEST_DIR, 'sequential-reviewer-descendant-leak');
+    try {
+      mkdirSync(fakeBin);
+      const fakeCodex = join(fakeBin, 'codex');
+      const descendantCode = `process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(leakMarker)}, 'leaked'), 500)`;
+      writeFileSync(fakeCodex, `#!/usr/bin/env node
+process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendantCode)}], { stdio: 'ignore', env: process.env });
+setInterval(() => {}, 1000);
+`);
+      chmodSync(fakeCodex, 0o755);
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'codex',
+        '--reviewer', 'product-flow', '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT,
+        encoding: 'utf8',
+        timeout: 3000,
+        env: {
+          ...process.env,
+          PATH: `${fakeBin}:${process.env.PATH}`,
+          RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '100',
+          RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+          RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0',
+          RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
+        },
+      });
+      assertEqual(result.status, 5, `Expected exit 5, output: ${result.stdout}${result.stderr}`);
+      assertTrue(result.stdout.includes('timed out'), 'Expected explicit sequential timeout diagnostic');
+      spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
+      assertEqual(existsSync(leakMarker), false, 'Sequential reviewer descendants must be terminated');
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
+  });
+
   test('rejects synthetic auto review', () => {
     const result = spawnSync('node', [
       join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--auto', '--dry-run',
@@ -1095,6 +1155,16 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     assertEqual(result.status, 0, `Expected successful dry run, output: ${result.stdout}${result.stderr}`);
     assertTrue(/Round:\s+\d+/.test(result.stdout), 'Expected an auto-detected positive round');
     assertEqual(result.stdout.includes('round-null'), false, 'Gate must never create round-null');
+  });
+
+  test('review gate rejects shell metacharacters in the diff base', () => {
+    const marker = join(TEST_DIR, 'base-injection-marker');
+    const result = spawnSync('node', [
+      join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--dry-run',
+      '--base', `HEAD;touch ${marker}`,
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000 });
+    assertEqual(result.status, 4, `Expected invalid base failure, output: ${result.stdout}${result.stderr}`);
+    assertEqual(existsSync(marker), false, 'Diff base must not reach a shell');
   });
 
   test('rejects review targets outside the repository', () => {

@@ -73,14 +73,15 @@ export function createCandidateSubprocessEnv(source = process.env, isolatedHome)
 }
 
 export function wrapCandidateCommand(command, args, {
-  allowedRoots = [], readOnlyRoots = [], writeRoots = [], hostHome = null,
+  allowedRoots = [], readOnlyRoots = [], writeRoots = [], hostHome = null, allowNetwork = false,
 } = {}) {
   if (process.platform !== 'darwin') throw new Error(`candidate filesystem sandbox is unavailable on ${process.platform}`);
   const probe = spawnSync('/usr/bin/sandbox-exec', [
     '-p', '(version 1) (allow default)', '/usr/bin/true',
   ], { encoding: 'utf8' });
   if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout || ''}${probe.stderr || ''}`)) {
-    return { command, args };
+    if (process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED === '1') return { command, args };
+    throw new Error('candidate filesystem sandbox unavailable; explicit outer-sandbox attestation required');
   }
   if (probe.status !== 0) throw new Error('candidate filesystem sandbox probe failed closed');
   hostHome ||= userInfo().homedir;
@@ -101,7 +102,7 @@ export function wrapCandidateCommand(command, args, {
     '(allow process*)',
     '(allow signal (target same-sandbox))',
     '(allow sysctl*)',
-    '(allow network*)',
+    ...(allowNetwork ? ['(allow network*)'] : []),
     '(allow dynamic-code-generation)',
     '(allow file-read-metadata)',
     `(allow file-read* (literal "/") ${readRoots.slice(1).map(root => `(subpath ${quote(root)})`).join(' ')})`,
@@ -211,7 +212,7 @@ export async function writeContainedFile(root, file, content) {
 }
 
 export function containsSensitiveText(value) {
-  const text = String(value || '');
+  const text = String(value || '').replace(/\[REDACTED[^\]]*\]/g, '');
   return [
     /-----BEGIN [^-]+ PRIVATE KEY-----/i,
     /https?:\/\/[^\s/@:]+:[^\s/@]+@/i,

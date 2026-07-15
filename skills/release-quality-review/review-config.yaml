@@ -5,10 +5,10 @@
 # 项目基本信息
 # ============================================================
 project:
-  name: cli-bridge
-  type: browser-extension + local-server
-  description: Claude Code / Codex 与 ChatGPT Web 的桥接工具
-  repository: https://github.com/example/cli-bridge
+  name: quality-review-skills
+  type: agent-skill-package
+  description: Evidence-backed release quality review skills and deterministic gates
+  repository: local
 
 # ============================================================
 # 默认 Profile

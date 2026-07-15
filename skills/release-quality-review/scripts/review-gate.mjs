@@ -92,16 +92,30 @@ function detectNextRoundNumber() {
 
 const effectiveRoundNumber = roundNumber ?? detectNextRoundNumber();
 
-// Resolve diff base
-let resolvedDiffBase = diffBase;
-try {
-  resolvedDiffBase = execSync(`git rev-parse ${diffBase} 2>/dev/null || echo "${diffBase}"`, { encoding: 'utf-8' }).trim();
-} catch {}
+function resolveDiffBase(ref) {
+  if (!/^[A-Za-z0-9._/@-]+$/.test(ref)) {
+    log.error('Invalid --base ref');
+    process.exit(4);
+  }
+  try {
+    return execFileSync('git', ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], {
+      cwd: PROJECT_ROOT,
+      encoding: 'utf8',
+      timeout: 10000,
+    }).trim();
+  } catch {
+    log.error(`Unable to resolve --base ref: ${ref}`);
+    process.exit(4);
+  }
+}
+
+const resolvedDiffBase = resolveDiffBase(diffBase);
 
 // Detect scale at startup
-let startupScaleInfo = { scale: 'micro', files: 0, additions: 0, deletions: 0, total: 0, suggestedProfile: 'quick' };
+const startupScaleInfo = options.detectScale
+  ? detectChangeScale(PROJECT_ROOT, resolvedDiffBase)
+  : { scale: 'micro', files: 0, additions: 0, deletions: 0, total: 0, suggestedProfile: 'quick' };
 if (options.detectScale) {
-  startupScaleInfo = detectChangeScale(PROJECT_ROOT, resolvedDiffBase);
   printScaleDetection(startupScaleInfo, options.userSpecifiedProfile, profile);
 }
 

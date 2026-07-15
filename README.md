@@ -43,6 +43,11 @@ evidence, and adjacent metadata has crossed the local trust boundary; protect
 against that actor with externally signed CI artifacts or a protected remote
 runner.
 
+When macOS rejects nested `sandbox-exec`, the trusted host may set
+`RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED=1` only after independently enforcing an
+equivalent outer filesystem boundary. Without that explicit attestation,
+candidate verification fails closed.
+
 Host workflow:
 
 Choose an unused round first; never reuse a tracked or previously generated

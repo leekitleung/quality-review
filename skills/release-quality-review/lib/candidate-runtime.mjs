@@ -21,9 +21,12 @@ export function createCandidateRuntime(projectRoot, label) {
   }
 
   function execFileSync(file, args, options = {}) {
-    const { sandboxReadOnlyRoots = [], sandboxWriteRoots = [isolatedHome], ...execOptions } = options;
+    const {
+      sandboxReadOnlyRoots = [], sandboxWriteRoots = [isolatedHome], sandboxAllowNetwork = false, ...execOptions
+    } = options;
     const wrapped = wrapCandidateCommand(file, args, {
       readOnlyRoots: [projectRoot, ...sandboxReadOnlyRoots], writeRoots: sandboxWriteRoots,
+      allowNetwork: sandboxAllowNetwork,
     });
     return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env });
   }

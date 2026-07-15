@@ -59,10 +59,18 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
   }
 
   // Automated checks with config - create candidate runtime inline
-  const { prepareCheckout, readIdentity } = createCandidateRuntime(projectRoot, 'gate');
+  const runtime = createCandidateRuntime(projectRoot, 'gate');
+  const { prepareCheckout, readIdentity } = runtime;
   const candidateRoot = prepareCheckout();
   readIdentity(candidateRoot); // Validate checkout identity
-  evidence.automatedChecks = runAutomatedChecks(config, projectRoot, candidateRoot);
+  const runCandidateCommand = (command, cwd) => runEvidenceCommand(command, cwd, (cmd, options) =>
+    runtime.execSync(cmd, {
+      ...options,
+      sandboxReadOnlyRoots: [candidateRoot],
+      sandboxWriteRoots: [runtime.isolatedHome, candidateRoot],
+      sandboxAllowNetwork: command === (config?.verification?.audit || 'npm audit --audit-level=high'),
+    }));
+  evidence.automatedChecks = runAutomatedChecks(config, projectRoot, candidateRoot, runCandidateCommand);
 
   return evidence;
 }
@@ -108,11 +116,12 @@ export function validateEvidenceCompleteness(evidence, projectRoot) {
  * @param {string} cwd - Working directory
  * @returns {object} Evidence record
  */
-export function runEvidenceCommand(cmd, cwd) {
+export function runEvidenceCommand(cmd, cwd, executor = execSync) {
   const started = new Date();
   try {
-    const output = execSync(cmd, { cwd, encoding: 'utf-8', timeout: 30000 });
+    const rawOutput = executor(cmd, { cwd, encoding: 'utf-8', timeout: 30000 });
     const finished = new Date();
+    const output = redactEvidence(String(rawOutput));
     const outputBytes = Buffer.byteLength(output, 'utf8');
     return {
       command: cmd,
@@ -126,7 +135,7 @@ export function runEvidenceCommand(cmd, cwd) {
     };
   } catch (e) {
     const finished = new Date();
-    const output = e.stdout + (e.stderr || '');
+    const output = redactEvidence(String(e.stdout || '') + String(e.stderr || ''));
     const outputBytes = Buffer.byteLength(output, 'utf8');
     return {
       command: cmd,
@@ -238,7 +247,7 @@ export function scanCircularDependencies(projectRoot) {
  * @param {string} candidateRoot - Candidate checkout root
  * @returns {object} Automated check results
  */
-export function runAutomatedChecks(config, projectRoot, candidateRoot) {
+export function runAutomatedChecks(config, projectRoot, candidateRoot, runCommand = runEvidenceCommand) {
   const checks = {
     oversizedFiles: { status: 'pass', issues: [] },
     circularDeps: { status: 'pass', issues: [] },
@@ -330,19 +339,22 @@ export function runAutomatedChecks(config, projectRoot, candidateRoot) {
 
   // Gate commands
   log.info(`Running test gate: ${testCmd}`);
-  checks.testGate = runEvidenceCommand(testCmd, candidateRoot);
+  checks.testGate = runCommand(testCmd, candidateRoot);
 
   log.info(`Running typecheck gate: ${typecheckCmd}`);
-  checks.typecheckGate = runEvidenceCommand(typecheckCmd, candidateRoot);
+  checks.typecheckGate = runCommand(typecheckCmd, candidateRoot);
 
   log.info(`Running build gate: ${buildCmd}`);
-  checks.buildGate = runEvidenceCommand(buildCmd, candidateRoot);
+  checks.buildGate = runCommand(buildCmd, candidateRoot);
 
   log.info(`Running lint gate: ${lintCmd}`);
-  checks.lintGate = runEvidenceCommand(lintCmd, candidateRoot);
+  checks.lintGate = runCommand(lintCmd, candidateRoot);
 
   log.info(`Running audit gate: ${auditCmd}`);
-  checks.auditGate = runEvidenceCommand(auditCmd, candidateRoot);
+  checks.auditGate = runCommand(auditCmd, candidateRoot);
+
+  log.info(`Running coverage gate: ${coverageCmd}`);
+  checks.coverageGate = runCommand(coverageCmd, candidateRoot);
 
   return checks;
 }
@@ -362,6 +374,9 @@ export async function persistEvidence(projectRoot, roundDir, evidence, profileNa
   const evidenceDir = join(roundDir, 'evidence');
   ensureContainedDirectorySync(projectRoot, evidenceDir);
   const automatedContent = `${JSON.stringify(evidence.automatedChecks, null, 2)}\n`;
+  if (containsSensitiveText(automatedContent)) {
+    throw new Error('automated evidence contains sensitive text after redaction');
+  }
   const cleanCandidatePath = join(evidenceDir, 'clean-candidate.json');
   const cleanCandidateContent = existsSync(cleanCandidatePath)
     ? readContainedFileSync(roundDir, cleanCandidatePath, 'utf8')
