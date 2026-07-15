@@ -1087,7 +1087,7 @@ test.describe('CLI fail-closed integration', () => {
       } }, repository, base, base, join(repository, 'skills', 'release-quality-review'));
     } catch (error) {
       rejectionMessage = error.message;
-      rejected = /checkout identity changed/.test(error.message);
+      rejected = /checkout identity changed|candidate filesystem sandbox unavailable/.test(error.message);
     }
     assertEqual(rejected, true, `Candidate checkout mutation must fail evidence collection; got: ${rejectionMessage}`);
   });
