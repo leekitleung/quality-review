@@ -162,12 +162,10 @@ multi_agent:
   claude_code:
     use_subagents: true
     subagent_instructions_dir: ".claude/agents"
-    max_concurrent: 4
   # Codex 配置
   codex:
     use_subagents: true
     agents_md_ref: "AGENTS.md"
-    max_concurrent: 4
   # 通用配置
   parallel_execution: true
   result_aggregation: "merge"

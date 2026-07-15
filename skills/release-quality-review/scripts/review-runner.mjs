@@ -28,7 +28,7 @@ import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.m
 import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
 import {
   createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
-  redactSensitiveText, resolveWithinRoot, writeContainedFileSync,
+  readContainedFileSync, redactSensitiveText, resolveWithinRoot, writeContainedFileSync,
 } from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
@@ -47,7 +47,7 @@ const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY
 const REVIEWER_RETRY_MAX = parseInt(process.env.RELEASE_QUALITY_REVIEWER_RETRY_MAX || '2', 10);
 const RETRY_BASE_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_BASE_DELAY_MS || '1000', 10);
 const RETRY_MAX_JITTER_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_MAX_JITTER_MS || '300', 10);
-const REVIEWER_START_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_REVIEWER_START_DELAY_MS || '60000', 10);
+const REVIEWER_START_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_REVIEWER_START_DELAY_MS || '0', 10);
 
 // Auto-detect available agent CLI
 function detectAvailableAgent() {
@@ -833,6 +833,31 @@ function getAgentInvocation(agent, prompt) {
   return { command: agent, args: ['-p', prompt] };
 }
 
+function bindRoundBackend(roundDir, backend) {
+  const lockPath = resolveWithinRoot(roundDir, 'review-backend.json', 'review backend lock');
+  const record = { backend };
+  try {
+    writeFileSync(lockPath, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+    return record;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  let existing;
+  try {
+    existing = JSON.parse(readContainedFileSync(roundDir, lockPath, 'utf8'));
+  } catch (error) {
+    const failure = new Error(`invalid review backend lock: ${error.message}`);
+    failure.exitCode = 4;
+    throw failure;
+  }
+  if (!['claude', 'codex'].includes(existing.backend) || existing.backend !== backend) {
+    const failure = new Error(`round backend is locked to ${existing.backend || 'invalid'}, cannot use ${backend}`);
+    failure.exitCode = 4;
+    throw failure;
+  }
+  return existing;
+}
+
 // Scale-based timeout calculation
 function getScaledTimeout(scale, baseTimeout = REVIEWER_TIMEOUT_MS) {
   const multiplier = SCALE_TIMEOUT_MULTIPLIERS[scale] || 1.0;
@@ -1002,6 +1027,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     log.error('No agent CLI available (checked: claude, codex)');
     process.exit(5);
   }
+  bindRoundBackend(roundDir, resolvedAgent);
   log.info(`Using agent: ${resolvedAgent}`);
 
   // Use config for delays
@@ -1042,7 +1068,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: invalidating stale artifacts (${validation.reason}), re-running`);
       }
 
-      // Add delay between reviewer starts to avoid rate limit (API key: 1 concurrent session max)
+      // Optional operator-configured start staggering; zero means fully parallel launch.
       await sleep(startDelay);
 
       const prompt = generateReviewerPrompt(reviewer, currentRound);
@@ -1357,6 +1383,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   const meta = {
     profile,
     round: currentRound,
+    reviewBackend: resolvedAgent,
     reviewers: allReviewers,
     triggeredConditional,
     timestamp: new Date().toISOString(),

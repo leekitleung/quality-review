@@ -1108,6 +1108,14 @@ test.describe('CLI fail-closed integration', () => {
     assertTrue(runner.includes('status: <pass|fail>'));
   });
 
+  test('parallel review has no project concurrency cap or implicit start delay', () => {
+    const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
+    const config = readFileSync(join(SKILL_DIR, 'review-config.yaml'), 'utf8');
+    assertTrue(runner.includes("RELEASE_QUALITY_REVIEWER_START_DELAY_MS || '0'"));
+    assertTrue(runner.includes('Promise.all(allReviewers.map'));
+    assertEqual(config.includes('max_concurrent'), false);
+  });
+
   test('release evidence exposes a coverage command and versioned changelog', () => {
     const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'));
     assertTrue(typeof manifest.scripts?.coverage === 'string', 'Expected a coverage script');
@@ -1635,6 +1643,24 @@ console.log('review completed');
       assertEqual(rerun.status, 5);
       assertTrue(rerun.stdout.includes('invalidating stale artifacts'), 'Malformed packet must be relaunched');
       assertEqual(rerun.stdout.includes('validated resume'), false, 'Malformed packet must never be resumed');
+
+      const fakeClaude = join(fakeBin, 'claude');
+      writeFileSync(fakeClaude, `#!/usr/bin/env node
+if (process.argv.includes('--help') || process.argv.includes('--version')) process.exit(0);
+process.exit(3);
+`);
+      chmodSync(fakeClaude, 0o755);
+      const mixedBackend = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'claude',
+        '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT,
+        encoding: 'utf8',
+        timeout: 30000,
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+      });
+      assertEqual(mixedBackend.status, 4, `Expected backend-mixing rejection: ${mixedBackend.stdout}${mixedBackend.stderr}`);
+      assertTrue(mixedBackend.stderr.includes('round backend is locked to codex, cannot use claude'));
     } finally {
       rmSync(round, { recursive: true, force: true });
     }

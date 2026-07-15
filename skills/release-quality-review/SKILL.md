@@ -330,6 +330,11 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 | **断点续传** | 已完成的 Reviewer 结果会被保留，避免重复工作 |
 | **并行执行元数据** | 记录执行时间和状态，便于诊断问题 |
 
+同一 round 首次启动时会写入 `review-backend.json`。后续恢复必须继续使用同一
+backend；Codex round 不得使用 Claude，Claude round 不得使用 Codex。`--parallel`
+默认不限制并发量且不延迟启动；只有显式设置
+`RELEASE_QUALITY_REVIEWER_START_DELAY_MS` 才会错峰启动。
+
 **环境变量配置**:
 ```bash
 RELEASE_QUALITY_REVIEWER_TIMEOUT_MS=900000   # 默认 15 分钟

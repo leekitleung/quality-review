@@ -66,6 +66,11 @@ Passing `--parallel --agent codex` to the runner launches independent ephemeral
 Codex CLI reviewers concurrently and fails if any reviewer does not produce all
 four files.
 
+The first launch locks each round to its selected backend in
+`review-backend.json`. Resume the round with the same `--agent`; backend mixing
+fails closed. Parallel mode has no project-level concurrency cap or start delay
+unless `RELEASE_QUALITY_REVIEWER_START_DELAY_MS` is explicitly set.
+
 Trust boundary: the host/orchestrator, pinned Gate code, independent reviewers,
 and report root are trusted; candidate subprocesses and their output are
 untrusted. Stored SHA-256 values detect drift between collection and
