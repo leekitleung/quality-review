@@ -758,7 +758,7 @@ test.describe('security boundaries', () => {
 
   test('validates structured rollback evidence and rejects forged trees', () => {
     const now = new Date().toISOString();
-    const outputs = ['', '', 'candidate', 'candidate-tree', '', 'base-tree', '', '# tests 0\n# pass 0\n', ''];
+    const outputs = ['', '', 'candidate', 'candidate-tree', '', 'base-tree', '10.33.0', '', '# tests 0\n# pass 0\n', ''];
     const rollback = {
       schema_version: 1,
       candidate_commit: 'candidate',
@@ -788,8 +788,8 @@ test.describe('security boundaries', () => {
     assertEqual(validateRollbackEvidence(rollback, 'candidate', 'candidate-tree', 'base', 'base-tree'), true);
     assertEqual(validateRollbackEvidence({ ...rollback, rollback_tree: 'forged' }, 'candidate', 'candidate-tree', 'base', 'base-tree'), false);
     const missingTranscript = structuredClone(rollback);
-    missingTranscript.commands[7].output = '';
-    missingTranscript.commands[7].output_bytes = 0;
+    missingTranscript.commands[8].output = '';
+    missingTranscript.commands[8].output_bytes = 0;
     assertEqual(validateRollbackEvidence(missingTranscript, 'candidate', 'candidate-tree', 'base', 'base-tree'), false);
   });
 

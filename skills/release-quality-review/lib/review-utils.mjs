@@ -203,6 +203,7 @@ export const ROLLBACK_COMMANDS = [
   ['isolated-tree', 'git rev-parse HEAD^{tree}'],
   ['revert', 'git revert --no-commit <base>..HEAD'],
   ['rollback-tree', 'git write-tree'],
+  ['package-manager', 'prepare rollback package manager'],
   ['rollback-commit', 'git commit <rollback snapshot>'],
   ['test', 'npm test'],
   ['final-source-status', 'git status --porcelain --untracked-files=all'],
@@ -233,8 +234,8 @@ export function validateRollbackEvidence(rollback, candidateCommit, candidateTre
     rollback.commands[2].output.trim() === candidateCommit &&
     rollback.commands[3].output.trim() === candidateTree &&
     rollback.commands[5].output.trim() === baseTree &&
-    rollback.commands[7].output.trim() !== '' &&
-    rollback.commands[8].output.trim() === '';
+    rollback.commands[8].output.trim() !== '' &&
+    rollback.commands[9].output.trim() === '';
 }
 
 // ============================================================================
