@@ -87,6 +87,11 @@ try {
     records.push(run('revert', 'git', ['revert', '--no-commit', ...commits], rollbackRoot, candidateEnv,
       'git revert --no-commit <base>..HEAD', sandboxOptions));
     records.push(run('rollback-tree', 'git', ['write-tree'], rollbackRoot, candidateEnv, null, sandboxOptions));
+    records.push(run('rollback-commit', 'git', [
+      '-c', 'user.name=Release Quality Review',
+      '-c', 'user.email=release-quality-review@example.invalid',
+      'commit', '--quiet', '--no-gpg-sign', '-m', 'test: materialize rollback snapshot',
+    ], rollbackRoot, candidateEnv, 'git commit <rollback snapshot>', sandboxOptions));
     records.push(run('test', 'npm', ['test'], rollbackRoot, candidateEnv, null, sandboxOptions));
   }
   const finalSourceStatus = run('final-source-status', 'git', ['status', '--porcelain', '--untracked-files=all'], root);
@@ -94,7 +99,7 @@ try {
   const isolatedCommit = records.find(record => record.id === 'isolated-commit')?.output.trim() || '';
   const isolatedTree = records.find(record => record.id === 'isolated-tree')?.output.trim() || '';
   const rollbackTree = records.find(record => record.id === 'rollback-tree')?.output.trim() || '';
-  const passed = records.length === 8 && records.every(record => record.exit_code === 0) &&
+  const passed = records.length === 9 && records.every(record => record.exit_code === 0) &&
     isolatedCommit === candidateCommit && isolatedTree === candidateTree && rollbackTree === baseTree &&
     records.find(record => record.id === 'test')?.output.trim() && finalSourceStatus.output.trim() === '';
   const report = {
