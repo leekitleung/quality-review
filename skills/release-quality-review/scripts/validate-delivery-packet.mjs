@@ -60,7 +60,8 @@ function parseArgs(args) {
   }
   return Object.freeze({ packetPath, mode, verbose });
 }
-const { packetPath, mode, verbose } = parseArgs(process.argv.slice(2));
+const options = parseArgs(process.argv.slice(2));
+const { mode, verbose } = options;
 
 function printHelp() {
   console.log(`
@@ -129,7 +130,8 @@ const REQUIRED_COMMAND_FIELDS = [
 /**
  * Main validation function
  */
-function validate() {
+function validate({ packetPath, mode }) {
+  const resolvedPacketPath = packetPath || '.agent-deliveries';
   log.title('DELIVERY PACKET VALIDATOR');
   log.info(`Mode: ${mode}`);
   log.info(`Packet path: ${packetPath || '(not specified)'}`);
@@ -138,11 +140,10 @@ function validate() {
   // Check if packet path provided
   if (!packetPath) {
     log.warn('No packet path specified. Checking current directory...');
-    packetPath = '.agent-deliveries';
   }
 
   // Resolve absolute path
-  const absolutePath = join(PROJECT_ROOT, packetPath);
+  const absolutePath = join(PROJECT_ROOT, resolvedPacketPath);
 
   // Check if packet exists
   if (!existsSync(absolutePath)) {
@@ -566,7 +567,7 @@ function printResult(result) {
   console.log('');
   if (result.status === 'VALID') {
     log.pass('Packet is ready for review');
-    console.log(`  Proceed with: node review-gate.mjs --profile release-gate --packet "${packetPath}"`);
+    console.log(`  Proceed with: node review-gate.mjs --profile release-gate --packet "${options.packetPath || '.agent-deliveries'}"`);
   } else if (result.status === 'INCOMPLETE') {
     log.warn('Packet is incomplete but acceptable in assisted mode');
     console.log(`  Executor should complete the packet before release-gate`);
@@ -594,5 +595,5 @@ function getExitCode(status) {
 }
 
 // Run validation
-const result = validate();
+const result = validate(options);
 process.exit(getExitCode(result.status));

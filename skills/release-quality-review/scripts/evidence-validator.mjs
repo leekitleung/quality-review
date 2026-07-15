@@ -36,9 +36,9 @@ function parseArgs(args) {
   }
   return Object.freeze({ targetRound, targetReviewer, diffBase });
 }
-const { targetRound, targetReviewer, diffBase } = parseArgs(process.argv.slice(2));
-if (!/^[A-Za-z0-9._/@-]+$/.test(diffBase)) {
-  console.error(`Invalid --base ref: ${diffBase}`);
+const options = parseArgs(process.argv.slice(2));
+if (!/^[A-Za-z0-9._/@-]+$/.test(options.diffBase)) {
+  console.error(`Invalid --base ref: ${options.diffBase}`);
   process.exit(4);
 }
 
@@ -60,7 +60,7 @@ const log = {
 };
 
 // Get git diff files (newly added/changed)
-function getGitDiffFiles() {
+function getGitDiffFiles(diffBase) {
   try {
     const output = execFileSync('git', ['diff', '--name-only', diffBase], {
       encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000,
@@ -470,26 +470,27 @@ function generateReport(results) {
 }
 
 // Main
-function main() {
+function main({ targetRound, targetReviewer, diffBase }) {
   // Find latest round if not specified
-  if (!targetRound) {
+  let resolvedRound = targetRound;
+  if (!resolvedRound) {
     const rounds = readdirSync(REPORT_DIR)
       .filter(d => d.startsWith('round-'))
       .sort();
-    targetRound = rounds[rounds.length - 1] || 'round-001';
+    resolvedRound = rounds[rounds.length - 1] || 'round-001';
   }
 
-  const roundDir = join(REPORT_DIR, targetRound);
+  const roundDir = join(REPORT_DIR, resolvedRound);
 
   if (!existsSync(roundDir)) {
     console.error(`${c.red}❌ Round directory not found: ${roundDir}${c.reset}`);
     process.exit(1);
   }
 
-  console.log(`${c.blue}ℹ${c.reset} Validating: ${targetRound}`);
+  console.log(`${c.blue}ℹ${c.reset} Validating: ${resolvedRound}`);
 
   // Get diff files
-  const diffFiles = getGitDiffFiles();
+  const diffFiles = getGitDiffFiles(diffBase);
   console.log(`${c.blue}ℹ${c.reset} Diff files: ${diffFiles.length}`);
 
   // Find reviewers - entries that are directories with reviewer output files
@@ -578,4 +579,4 @@ function main() {
   process.exit(hasViolations ? 1 : 0);
 }
 
-main();
+main(options);

@@ -1267,7 +1267,8 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         '--reviewer', 'product-flow', '--base', 'HEAD',
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(result.status, 1, `Expected forged evidence rejection, output: ${result.stdout}${result.stderr}`);
-      assertTrue(result.stdout.includes('missing_evidence_output'), 'Expected explicit missing command evidence violation');
+      assertTrue(result.stdout.includes('missing_evidence_output'),
+        `Expected explicit missing command evidence violation, output: ${result.stdout}${result.stderr}`);
 
       writeFileSync(join(reviewerDir, 'score.md'), [
         '# Product Flow',
@@ -1484,7 +1485,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     }
   });
 
-  test('normal runner workflow writes every prompt and metadata without crashing', () => {
+  test('E2E normal runner workflow writes every prompt and metadata without crashing', () => {
     const roundNumber = TEST_ROUNDS.runner;
     const round = reportRound(roundNumber);
     const fakeBin = join(TEST_DIR, 'fake-bin-runner');
@@ -1538,7 +1539,7 @@ console.log('review completed');
     }
   });
 
-  test('no-collect rehydrates matching evidence and quick final report avoids agentic claims', () => {
+  test('E2E no-collect rehydrates matching evidence and quick final report avoids agentic claims', () => {
     const roundNumber = TEST_ROUNDS.rehydrate;
     const round = reportRound(roundNumber);
     const finalReport = join(round, 'final-report.md');
@@ -1680,7 +1681,7 @@ console.log('review completed');
     }
   });
 
-  test('rejects stale reviewer packets when the candidate changes in the same round', () => {
+  test('E2E rejects stale reviewer packets when the candidate changes in the same round', () => {
     const cloneRoot = join(TEST_DIR, 'candidate-drift-clone');
     const roundNumber = 991;
     const round = join(cloneRoot, 'quality-reports', `round-${String(roundNumber).padStart(3, '0')}`);

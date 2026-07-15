@@ -61,7 +61,7 @@ function parseArgs(args) {
   }
   return Object.freeze({ targetRound, targetReviewer, targetFile, verbose });
 }
-const { targetRound, targetReviewer, targetFile, verbose } = parseArgs(process.argv.slice(2));
+const options = parseArgs(process.argv.slice(2));
 
 function printHelp() {
   console.log(`
@@ -285,7 +285,7 @@ function validateReviewer(roundDir, reviewerName) {
 /**
  * Main validation
  */
-function main() {
+async function main({ targetRound, targetReviewer, targetFile, verbose }) {
   const results = [];
 
   if (targetFile) {
@@ -410,7 +410,7 @@ function main() {
   process.exit(2);
 }
 
-main().catch(err => {
+main(options).catch(err => {
   log.error(`Error: ${err.message}`);
   process.exit(2);
 });

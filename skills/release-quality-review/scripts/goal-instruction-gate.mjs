@@ -60,7 +60,7 @@ function parseArgs(args) {
   }
   return Object.freeze({ goalText, filePath, roundNumber, stdin });
 }
-const { goalText, filePath, roundNumber, stdin } = parseArgs(process.argv.slice(2));
+const options = parseArgs(process.argv.slice(2));
 
 function printHelp() {
   console.log(`
@@ -371,16 +371,17 @@ function printResult(result, goalText) {
 // Main
 // ============================================================================
 
-function main() {
+function main({ goalText, filePath, roundNumber, stdin }) {
+  let resolvedGoalText = goalText;
   // Get goal text from various sources
   if (stdin) {
     // Read from stdin
     const chunks = [];
     process.stdin.on('data', chunk => chunks.push(chunk));
     process.stdin.on('end', () => {
-      goalText = chunks.join('');
-      const result = validateGoalInstruction(goalText);
-      printResult(result, goalText);
+      resolvedGoalText = chunks.join('');
+      const result = validateGoalInstruction(resolvedGoalText);
+      printResult(result, resolvedGoalText);
       process.exit(result.valid ? 0 : 1);
     });
   } else if (filePath) {
@@ -389,7 +390,7 @@ function main() {
       log.error(`File not found: ${filePath}`);
       process.exit(2);
     }
-    goalText = readFileSync(filePath, 'utf-8');
+    resolvedGoalText = readFileSync(filePath, 'utf-8');
   } else if (roundNumber) {
     // Read from round directory
     const reportDir = join(PROJECT_ROOT, 'quality-reports', roundNumber);
@@ -399,8 +400,8 @@ function main() {
       log.error(`Goal file not found: ${goalFile}`);
       process.exit(2);
     }
-    goalText = readFileSync(goalFile, 'utf-8');
-  } else if (goalText) {
+    resolvedGoalText = readFileSync(goalFile, 'utf-8');
+  } else if (resolvedGoalText) {
     // Use provided text directly
   } else {
     log.error('No goal text provided. Use --input, --file, --check-round, or --stdin');
@@ -408,11 +409,11 @@ function main() {
   }
 
   // Validate
-  const result = validateGoalInstruction(goalText);
-  printResult(result, goalText);
+  const result = validateGoalInstruction(resolvedGoalText);
+  printResult(result, resolvedGoalText);
 
   // Exit with appropriate code
   process.exit(result.valid ? 0 : 1);
 }
 
-main();
+main(options);
