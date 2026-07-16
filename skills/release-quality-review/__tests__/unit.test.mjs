@@ -1297,6 +1297,8 @@ test.describe('CLI fail-closed integration', () => {
   test('runner resolves the diff base with read-only project access', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
     assertTrue(runner.includes('sandboxReadOnlyRoots: [PROJECT_ROOT]'));
+    assertTrue(runner.includes("branch: execSync('git branch --show-current 2>/dev/null', gitOptions)"),
+      'Runner Git evidence must use the sandboxed production execSync path');
   });
 
   test('release evidence exposes a coverage command and versioned changelog', () => {

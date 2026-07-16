@@ -384,33 +384,38 @@ function collectEvidence(config) {
     structure: {},
     config: {},
   };
+  const gitOptions = {
+    encoding: 'utf-8', cwd: PROJECT_ROOT, env: CANDIDATE_ENV,
+    sandboxReadOnlyRoots: [PROJECT_ROOT],
+  };
 
   // Git info (always from PROJECT_ROOT)
   try {
     evidence.git = {
-      branch: execSync('git branch --show-current 2>/dev/null', { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
-      commit: execSync('git rev-parse --short HEAD 2>/dev/null', { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
-      status: execSync('git status --short 2>/dev/null', { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
-      diffStats: execSync(`git diff --stat ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', env: CANDIDATE_ENV }).trim(),
+      branch: execSync('git branch --show-current 2>/dev/null', gitOptions).trim(),
+      commit: execSync('git rev-parse --short HEAD 2>/dev/null', gitOptions).trim(),
+      status: execSync('git status --short 2>/dev/null', gitOptions).trim(),
+      diffStats: execSync(`git diff --stat ${resolvedDiffBase} 2>/dev/null`, gitOptions).trim(),
     };
 
     // For self-review, only show changes in the skill directory
     if (isSelfReview) {
       evidence.git.changedFiles = execSync(
         `git diff --name-only ${resolvedDiffBase} 2>/dev/null | grep "^skills/release-quality-review/" || true`,
-        { encoding: 'utf-8', env: CANDIDATE_ENV }
+        gitOptions
       ).trim().split('\n').filter(Boolean);
       evidence.git.diff = execSync(
         `git diff ${resolvedDiffBase} 2>/dev/null -- "skills/release-quality-review/" || true`,
-        { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, env: CANDIDATE_ENV }
+        { ...gitOptions, maxBuffer: 10 * 1024 * 1024 }
       ).trim();
     } else {
-      evidence.git.changedFiles = execSync(`git diff --name-only ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', env: CANDIDATE_ENV })
+      evidence.git.changedFiles = execSync(`git diff --name-only ${resolvedDiffBase} 2>/dev/null`, gitOptions)
         .trim().split('\n').filter(Boolean);
-      evidence.git.diff = execSync(`git diff ${resolvedDiffBase} 2>/dev/null`, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024, env: CANDIDATE_ENV }).trim();
+      evidence.git.diff = execSync(`git diff ${resolvedDiffBase} 2>/dev/null`, { ...gitOptions, maxBuffer: 10 * 1024 * 1024 }).trim();
     }
     const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
       encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, env: CANDIDATE_ENV,
+      sandboxReadOnlyRoots: [PROJECT_ROOT],
     }).trim().split('\n').filter(Boolean);
     evidence.git.changedFiles = [...new Set([...(evidence.git.changedFiles || []), ...untracked])];
   } catch (e) {
