@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileS
 import { readFile } from 'fs/promises';
 import { execSync, execFileSync } from 'child_process';
 import { log } from './constants.mjs';
-import { ensureContainedDirectorySync, readContainedFileSync, writeContainedFile, writeContainedFileSync, containsSensitiveText, redactSensitiveText } from '../../lib/security-utils.mjs';
+import { ensureContainedDirectorySync, outerSandboxAttestationFromEnv, readContainedFileSync, writeContainedFile, writeContainedFileSync, containsSensitiveText, redactSensitiveText } from '../../lib/security-utils.mjs';
 import {
   detectChangeScale, findTrivialVerificationScripts, validateCleanCandidateEvidence, validateRollbackEvidence,
 } from '../../lib/review-utils.mjs';
@@ -95,7 +95,7 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
   }
 
   // Automated checks with config - create candidate runtime inline
-  const runtime = createCandidateRuntime(projectRoot, 'gate');
+  const runtime = createCandidateRuntime(projectRoot, 'gate', outerSandboxAttestationFromEnv());
   const { prepareCheckout, readIdentity, validateCheckout } = runtime;
   const candidateRoot = prepareCheckout();
   const initialCandidateIdentity = readIdentity(candidateRoot);

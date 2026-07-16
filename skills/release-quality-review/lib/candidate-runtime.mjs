@@ -1,25 +1,17 @@
 import { execFileSync as nodeExecFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   createCandidateSubprocessEnv, ensureContainedDirectorySync, wrapCandidateCommand,
 } from './security-utils.mjs';
 
-export function createCandidateRuntime(projectRoot, label) {
+export function createCandidateRuntime(projectRoot, label, outerSandboxAttestation = null) {
   const isolatedHome = mkdtempSync(join(tmpdir(), `release-quality-review-${label}-home-`));
-  const attestationRoot = mkdtempSync(join(tmpdir(), `release-quality-review-${label}-attestation-`));
   let checkoutParent = null;
   const env = createCandidateSubprocessEnv(process.env, isolatedHome);
-  const outerReadCanary = join(attestationRoot, 'read-canary');
-  const outerWriteCanary = join(attestationRoot, 'write-canary');
-  writeFileSync(outerReadCanary, 'trusted');
-  const outerSandboxAttestation = Object.freeze({
-    attested: true, readCanary: outerReadCanary, writeCanary: outerWriteCanary,
-  });
 
   process.on('exit', () => {
-    rmSync(attestationRoot, { recursive: true, force: true });
     rmSync(isolatedHome, { recursive: true, force: true });
     if (checkoutParent) rmSync(checkoutParent, { recursive: true, force: true });
   });

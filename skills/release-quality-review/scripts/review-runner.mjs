@@ -28,7 +28,8 @@ import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.m
 import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
 import {
   createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
-  readContainedFile, readContainedFileSync, redactSensitiveText, resolveWithinRoot, writeContainedFile,
+  outerSandboxAttestationFromEnv, readContainedFile, readContainedFileSync, redactSensitiveText,
+  resolveWithinRoot, writeContainedFile,
 } from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
@@ -36,9 +37,10 @@ const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 const TOOL_ENV = createSubprocessEnv();
+const OUTER_SANDBOX_ATTESTATION = outerSandboxAttestationFromEnv();
 const {
   env: CANDIDATE_ENV, execSync, execFileSync,
-} = createCandidateRuntime(PROJECT_ROOT, 'runner');
+} = createCandidateRuntime(PROJECT_ROOT, 'runner', OUTER_SANDBOX_ATTESTATION);
 const REVIEWER_TIMEOUT_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_TIMEOUT_MS, 15 * 60 * 1000);
 const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS, 5000);
 const REVIEWER_RETRY_MAX = parseInt(process.env.RELEASE_QUALITY_REVIEWER_RETRY_MAX || '2', 10);

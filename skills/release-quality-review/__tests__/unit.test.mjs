@@ -43,6 +43,7 @@ import {
   containsSensitiveText,
   createCandidateSubprocessEnv,
   createSubprocessEnv,
+  outerSandboxAttestationFromEnv,
   redactSensitiveText,
   wrapCandidateCommand,
   readContainedFileSync,
@@ -1082,7 +1083,9 @@ test.describe('CLI fail-closed integration', () => {
     mkdirSync(candidateRoot, { recursive: true });
     writeFileSync(join(candidateRoot, 'allowed.txt'), 'allowed');
     writeFileSync(canary, 'trusted');
-    const runtime = createCandidateRuntime(PROJECT_ROOT, 'read-boundary-test');
+    const runtime = createCandidateRuntime(
+      PROJECT_ROOT, 'read-boundary-test', outerSandboxAttestationFromEnv(),
+    );
     try {
       const script = `const fs=require('node:fs');if(fs.readFileSync('allowed.txt','utf8')!=='allowed')process.exit(2);try{fs.readFileSync(${JSON.stringify(canary)});process.exit(3)}catch{}`;
       const output = runtime.execFileSync(process.execPath, ['-e', script], {
@@ -2111,6 +2114,7 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
         'skills/release-quality-review/lib/review-utils.mjs',
         'skills/release-quality-review/lib/evidence-utils.mjs',
         'skills/release-quality-review/lib/candidate-runtime.mjs',
+        'skills/release-quality-review/lib/security-utils.mjs',
         'skills/release-quality-review/review-config.yaml',
         'skills/release-quality-review/templates/result.yaml',
       ]) {

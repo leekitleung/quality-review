@@ -74,6 +74,14 @@ export function createCandidateSubprocessEnv(source = process.env, isolatedHome)
   return result;
 }
 
+export function outerSandboxAttestationFromEnv(source = process.env) {
+  if (source?.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED !== '1') return null;
+  const readCanary = source.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY;
+  const writeCanary = source.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY;
+  if (!path.isAbsolute(readCanary || '') || !path.isAbsolute(writeCanary || '')) return null;
+  return Object.freeze({ attested: true, readCanary, writeCanary });
+}
+
 export function wrapCandidateCommand(command, args, {
   allowedRoots = [], readOnlyRoots = [], writeRoots = [], hostHome = null, allowNetwork = false,
   outerSandboxAttestation = null,
