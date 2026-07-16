@@ -6,7 +6,7 @@ import process from 'node:process';
 import { spawnSync } from 'node:child_process';
 import {
   createCandidateSubprocessEnv, createSubprocessEnv, redactSensitiveText, resolveWithinRoot, writeContainedFile,
-  wrapCandidateCommand,
+  outerSandboxAttestationFromEnv, wrapCandidateCommand,
 } from '../skills/release-quality-review/lib/security-utils.mjs';
 import {
   findTrivialVerificationScripts, hasConcreteVerificationOutput,
@@ -67,14 +67,15 @@ if (sourceStatus.exit_code !== 0 || sourceStatus.output.trim()) {
 }
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-quality-review-'));
-const attestationRoot = await mkdtemp(path.join(os.tmpdir(), 'release-quality-attestation-'));
+const inheritedAttestation = outerSandboxAttestationFromEnv();
+const attestationRoot = inheritedAttestation ? null : await mkdtemp(path.join(os.tmpdir(), 'release-quality-attestation-'));
 const candidate = path.join(temporary, 'candidate');
 const isolatedHome = await mkdtemp(path.join(temporary, 'home-'));
 const candidateEnv = createCandidateSubprocessEnv(process.env, isolatedHome);
-const outerReadCanary = path.join(attestationRoot, 'read-canary');
-const outerWriteCanary = path.join(attestationRoot, 'write-canary');
-await writeFile(outerReadCanary, 'trusted');
-const outerSandboxAttestation = Object.freeze({
+const outerReadCanary = inheritedAttestation?.readCanary || path.join(attestationRoot, 'read-canary');
+const outerWriteCanary = inheritedAttestation?.writeCanary || path.join(attestationRoot, 'write-canary');
+if (!inheritedAttestation) await writeFile(outerReadCanary, 'trusted');
+const outerSandboxAttestation = inheritedAttestation || Object.freeze({
   attested: true, readCanary: outerReadCanary, writeCanary: outerWriteCanary,
 });
 candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
@@ -173,5 +174,5 @@ try {
   process.exitCode = report.exit_code;
 } finally {
   await rm(temporary, { recursive: true, force: true });
-  await rm(attestationRoot, { recursive: true, force: true });
+  if (attestationRoot) await rm(attestationRoot, { recursive: true, force: true });
 }
