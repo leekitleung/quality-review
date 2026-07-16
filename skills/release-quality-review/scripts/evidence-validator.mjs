@@ -26,11 +26,15 @@ function parseArgs(args) {
   let targetReviewer = null;
   let diffBase = 'HEAD';
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--round' && args[i + 1]) targetRound = args[++i];
+    if (args[i] === '--help' || args[i] === '-h') {
+      console.log('Usage: evidence-validator.mjs --round round-NNN [--reviewer name] [--base ref]');
+      process.exit(0);
+    } else if (args[i] === '--round' && args[i + 1]) targetRound = args[++i];
     else if (args[i] === '--reviewer' && args[i + 1]) targetReviewer = args[++i];
     else if (args[i] === '--base' && args[i + 1]) diffBase = args[++i];
     else {
       console.error(`Unknown or incomplete option: ${args[i]}`);
+      console.error('Use --help for usage.');
       process.exit(4);
     }
   }

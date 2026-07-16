@@ -9,6 +9,15 @@ const root = process.cwd();
 const registryPath = path.join(root, 'skill-registry.yaml');
 const lockPath = path.join(root, 'skills.lock.yaml');
 const mode = process.argv[2] || 'check';
+if (mode === '--help' || mode === '-h') {
+  console.log('Usage: sync-skills.mjs <sync|check|diff>');
+  process.exit(0);
+}
+if (!['sync', 'check', 'diff'].includes(mode)) {
+  console.error(`Unknown mode: ${mode}`);
+  console.error('Use --help for usage.');
+  process.exit(4);
+}
 
 async function readJson(file) {
   return JSON.parse(await readFile(file, 'utf8'));
@@ -93,7 +102,6 @@ async function expectedState(config) {
 }
 
 async function main() {
-  if (!['sync', 'check', 'diff'].includes(mode)) throw new Error('Usage: sync-skills.mjs <sync|check|diff>');
   const registry = await readJson(registryPath);
   const config = registry.skills['release-quality-review'];
   const { generated, lock } = await expectedState(config);

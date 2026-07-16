@@ -80,8 +80,7 @@ export function wrapCandidateCommand(command, args, {
     '-p', '(version 1) (allow default)', '/usr/bin/true',
   ], { encoding: 'utf8' });
   if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout || ''}${probe.stderr || ''}`)) {
-    if (process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED === '1') return { command, args };
-    throw new Error('candidate filesystem sandbox unavailable; explicit outer-sandbox attestation required');
+    throw new Error('candidate filesystem sandbox unavailable; nested execution fails closed');
   }
   if (probe.status !== 0) throw new Error('candidate filesystem sandbox probe failed closed');
   hostHome ||= userInfo().homedir;

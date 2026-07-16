@@ -15,8 +15,13 @@ import {
 const root = process.cwd();
 const subprocessEnv = createSubprocessEnv();
 const args = process.argv.slice(2);
+if (args.length === 1 && (args[0] === '--help' || args[0] === '-h')) {
+  console.log('Usage: verify-clean-candidate.mjs --output quality-reports/round-NNN/evidence/clean-candidate.json');
+  process.exit(0);
+}
 if (args.length !== 2 || args[0] !== '--output' || !args[1] || args[1].startsWith('-')) {
   console.error('Usage: verify-clean-candidate.mjs --output quality-reports/round-NNN/evidence/clean-candidate.json');
+  console.error('Use --help for usage.');
   process.exit(4);
 }
 function resolveOutputPath(outputArg) {

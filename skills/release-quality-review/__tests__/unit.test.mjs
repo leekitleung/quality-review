@@ -840,20 +840,15 @@ test.describe('security boundaries', () => {
       '-p', '(version 1) (allow default)', '/usr/bin/true',
     ], { encoding: 'utf8' });
     if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout}${probe.stderr}`)) {
-      const original = process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
-      delete process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
-      let rejected = false;
+      process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
+      let errorMessage = '';
       try {
         wrapCandidateCommand(process.execPath, ['-e', ''], { allowedRoots: [PROJECT_ROOT] });
       } catch (error) {
-        rejected = error.message.includes('explicit outer-sandbox attestation required');
+        errorMessage = error.message;
       }
-      assertEqual(rejected, true, 'Unavailable nested sandbox must fail closed');
-      process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
-      const attested = wrapCandidateCommand(process.execPath, ['-e', ''], { allowedRoots: [PROJECT_ROOT] });
-      assertEqual(attested.command, process.execPath, 'Explicit outer sandbox attestation should permit host enforcement');
-      if (original === undefined) delete process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
-      else process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = original;
+      assertTrue(errorMessage.includes('nested execution fails closed'), errorMessage);
+      delete process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
       return;
     }
     const hostHome = userInfo().homedir;
@@ -1082,6 +1077,10 @@ test.describe('CLI fail-closed integration', () => {
         cwd: candidateRoot, encoding: 'utf8', sandboxReadOnlyRoots: [candidateRoot],
       });
       assertEqual(output, '');
+      const shellOutput = runtime.execSync(`${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`, {
+        cwd: candidateRoot, encoding: 'utf8', sandboxReadOnlyRoots: [candidateRoot],
+      });
+      assertEqual(shellOutput, '');
     } finally {
       rmSync(canary, { force: true });
     }
@@ -1169,13 +1168,26 @@ test.describe('CLI fail-closed integration', () => {
 
   test('validator CLI help and goal stdin paths are executable', () => {
     for (const script of [
-      'goal-instruction-gate.mjs', 'goal-mode-validator.mjs', 'validate-delivery-packet.mjs',
+      join(SKILL_DIR, 'scripts', 'goal-instruction-gate.mjs'),
+      join(SKILL_DIR, 'scripts', 'goal-mode-validator.mjs'),
+      join(SKILL_DIR, 'scripts', 'validate-delivery-packet.mjs'),
+      join(SKILL_DIR, 'scripts', 'evidence-validator.mjs'),
+      join(SKILL_DIR, 'scripts', 'verify-rollback.mjs'),
+      join(PROJECT_ROOT, 'scripts', 'verify-clean-candidate.mjs'),
+      join(PROJECT_ROOT, 'scripts', 'sync-skills.mjs'),
     ]) {
-      const help = spawnSync('node', [join(SKILL_DIR, 'scripts', script), '--help'], {
+      const help = spawnSync('node', [script, '--help'], {
         cwd: PROJECT_ROOT, encoding: 'utf8',
       });
       assertEqual(help.status, 0, `${script}: ${help.stdout}${help.stderr}`);
       assertTrue(help.stdout.includes('Usage:'));
+    }
+    for (const script of [
+      join(SKILL_DIR, 'scripts', 'review-runner.mjs'),
+      join(SKILL_DIR, 'scripts', 'review-gate.mjs'),
+    ]) {
+      const help = spawnSync('node', [script, '--help'], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(/\x1b\[/.test(`${help.stdout}${help.stderr}`), false, `${script} emitted ANSI to a pipe`);
     }
     const stdin = spawnSync('node', [join(SKILL_DIR, 'scripts', 'goal-instruction-gate.mjs'), '--stdin'], {
       cwd: PROJECT_ROOT, encoding: 'utf8',
@@ -1244,6 +1256,22 @@ test.describe('CLI fail-closed integration', () => {
     assertEqual(run('validate-delivery-packet.mjs', ['--packet', missingPacket, '--mode', 'legacy']).status, 3);
   });
 
+  test('strict delivery forensics fail closed when Git cannot execute', () => {
+    const fakeBin = join(TEST_DIR, `fake-git-${randomUUID()}`);
+    const fakeGit = join(fakeBin, 'git');
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(fakeGit, '#!/bin/sh\nexit 127\n');
+    chmodSync(fakeGit, 0o755);
+    const result = spawnSync(process.execPath, [
+      join(SKILL_DIR, 'scripts', 'validate-delivery-packet.mjs'),
+      '--packet', 'skills/release-quality-review/templates/delivery-packet', '--mode', 'strict', '--verbose',
+    ], {
+      cwd: PROJECT_ROOT, encoding: 'utf8', env: { ...process.env, PATH: fakeBin },
+    });
+    assertEqual(result.status, 1, `${result.stdout}${result.stderr}`);
+    assertTrue(`${result.stdout}${result.stderr}`.includes('Forensic analysis could not verify the Git working tree'));
+  });
+
   test('goal-mode round validation covers reviewer success and verbose failure', () => {
     const roundNumber = TEST_ROUNDS.runner + 300;
     const round = reportRound(roundNumber);
@@ -1282,8 +1310,10 @@ test.describe('CLI fail-closed integration', () => {
     const clean = readme.indexOf('npm run skill:verify-clean');
     const rollback = readme.indexOf('npm run skill:verify-rollback');
     const runner = readme.indexOf('npm run review -- --profile agentic-release-gate');
+    const artifacts = readme.indexOf('Before any reviewer launches');
     assertTrue(clean >= 0 && runner >= 0 && clean < runner, 'Clean evidence must precede the collecting runner');
     assertTrue(rollback >= 0 && rollback < runner, 'Rollback evidence must precede the collecting runner');
+    assertTrue(artifacts >= 0 && artifacts < runner, 'Agentic artifacts must precede reviewer launch');
     assertTrue(readme.includes('test ! -e "quality-reports/$REVIEW_ROUND_DIR"'), 'Workflow must reject reused rounds');
     assertEqual(readme.includes('quality-reports/round-001'), false, 'Workflow must not target tracked Round 1');
     assertTrue(readme.includes('Trust boundary:'), 'README must state the local trust boundary');
@@ -1844,6 +1874,9 @@ process.exit(3);
         candidate_commit: candidateCommit, candidate_tree: candidateTree,
         base_commit: candidateCommit, base_tree: candidateTree,
       }));
+      for (const file of ['generated-goal.md', 'changes.md', 'diff-summary.md', 'risk.md', 'handoff.md']) {
+        writeFileSync(join(round, file), `# ${file}\n`);
+      }
       const fakeCodex = join(fakeBin, 'codex');
       writeFileSync(fakeCodex, `#!/usr/bin/env node
 if (process.argv.includes('--help') || process.argv.includes('--version')) process.exit(0);
@@ -1871,6 +1904,34 @@ fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '#
       assertTrue(plan.includes('small (2 files, 2 lines)'));
       assertTrue(plan.includes('Changed files:** 2'));
       assertTrue(plan.includes(`Git commit:** ${candidateCommit.slice(0, 8)}`));
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
+  });
+
+  test('agentic runner rejects missing delivery artifacts before Agent launch', () => {
+    const roundNumber = TEST_ROUNDS.runner + 250;
+    const round = reportRound(roundNumber);
+    const fakeBin = join(TEST_DIR, `fake-bin-agentic-preflight-${randomUUID()}`);
+    const marker = join(TEST_DIR, `agent-launched-${randomUUID()}`);
+    try {
+      mkdirSync(fakeBin, { recursive: true });
+      const fakeCodex = join(fakeBin, 'codex');
+      writeFileSync(fakeCodex, `#!/usr/bin/env node
+if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
+require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
+`);
+      chmodSync(fakeCodex, 0o755);
+      const result = spawnSync(process.execPath, [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'agentic-release-gate',
+        '--agent', 'codex', '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+      });
+      assertEqual(result.status, 4, `${result.stdout}${result.stderr}`);
+      assertTrue(result.stderr.includes('must exist before reviewer launch'));
+      assertEqual(existsSync(marker), false, 'Agent must not launch before artifact preflight');
     } finally {
       rmSync(round, { recursive: true, force: true });
     }

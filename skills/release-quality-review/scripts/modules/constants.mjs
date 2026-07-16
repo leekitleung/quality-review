@@ -1,14 +1,17 @@
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const color = value => useColor ? value : '';
+
 // ANSI colors for terminal output
 export const colors = {
-  reset: '\x1b[0m',
-  bright: '\x1b[1m',
-  dim: '\x1b[2m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  magenta: '\x1b[35m',
-  cyan: '\x1b[36m',
+  reset: color('\x1b[0m'),
+  bright: color('\x1b[1m'),
+  dim: color('\x1b[2m'),
+  red: color('\x1b[31m'),
+  green: color('\x1b[32m'),
+  yellow: color('\x1b[33m'),
+  blue: color('\x1b[34m'),
+  magenta: color('\x1b[35m'),
+  cyan: color('\x1b[36m'),
 };
 
 export const log = {

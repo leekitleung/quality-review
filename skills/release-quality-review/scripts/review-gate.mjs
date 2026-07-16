@@ -494,8 +494,14 @@ async function runGate() {
     return true;
   } else if (allHaveScores) {
     log.error('GATE FAILED');
-    if (autoChecks?.testGate?.status !== 'pass') log.error(`Automated test gate FAILED: tests failed or missing`);
-    if (autoChecks?.typecheckGate?.status !== 'pass') log.error(`Automated typecheck gate FAILED: type errors or missing`);
+    for (const [key, label] of [
+      ['testGate', 'test'], ['typecheckGate', 'typecheck'], ['buildGate', 'build'],
+      ['lintGate', 'lint'], ['auditGate', 'audit'], ['coverageGate', 'coverage'], ['e2eGate', 'E2E'],
+    ]) {
+      if (autoChecks?.[key]?.status !== 'pass') {
+        log.error(`Automated ${label} gate FAILED; inspect evidence/automated-checks.json`);
+      }
+    }
     if (hasRedlines) log.error('Redlines detected - blocking release');
     if (!evidenceValidationPassed) log.error('Evidence source validation failed - self-verification detected');
     if (checkGoalMode && goalModeViolations.length > 0) log.error('Goal mode constraint violated - describing implementation steps instead of final state');

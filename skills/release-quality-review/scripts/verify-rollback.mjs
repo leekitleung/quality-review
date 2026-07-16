@@ -16,10 +16,14 @@ function parseArgs(args) {
   let baseRef = null;
   let outputArg = null;
   for (let index = 0; index < args.length; index++) {
-    if (args[index] === '--base' && args[index + 1]) baseRef = args[++index];
+    if (args[index] === '--help' || args[index] === '-h') {
+      console.log('Usage: verify-rollback.mjs --base <ref> --output quality-reports/round-NNN/evidence/rollback-verification.json');
+      process.exit(0);
+    } else if (args[index] === '--base' && args[index + 1]) baseRef = args[++index];
     else if (args[index] === '--output' && args[index + 1]) outputArg = args[++index];
     else {
       console.error(`Unknown or incomplete option: ${args[index]}`);
+      console.error('Use --help for usage.');
       process.exit(4);
     }
   }

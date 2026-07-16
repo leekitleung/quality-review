@@ -36,9 +36,6 @@ const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 const TOOL_ENV = createSubprocessEnv();
-if (process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED === '1') {
-  TOOL_ENV.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
-}
 const {
   env: CANDIDATE_ENV, execSync, execFileSync,
 } = createCandidateRuntime(PROJECT_ROOT, 'runner');
@@ -144,14 +141,6 @@ async function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewer
     } catch (e) {
       console.error(`Failed to write result.yaml: ${e.message}`);
     }
-  } else {
-    // Create minimal result.yaml with required fields
-    const minimal = `reviewer: ${reviewerName}\nprofile: ${profile}\nround: ${round}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 0\nstatus: parsed\n`;
-    try {
-      await writeContainedFile(reviewerDir, join(reviewerDir, 'result.yaml'), minimal);
-    } catch (e) {
-      console.error(`Failed to write result.yaml: ${e.message}`);
-    }
   }
 
   // Write score.md
@@ -178,7 +167,7 @@ async function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewer
       console.error(`Failed to write blockers.md: ${e.message}`);
     }
   } else {
-    const fallback = `# Blockers - ${reviewerName}\n\n## P0 (Must Fix)\n- None found\n\n---\n`;
+    const fallback = `# Blockers - ${reviewerName}\n\n## P0 (Must Fix)\n- None found\n\n## P1 (Must Fix)\n- Reviewer output could not be parsed into the required packet.\n\n---\n`;
     try {
       await writeContainedFile(reviewerDir, join(reviewerDir, 'blockers.md'), fallback);
     } catch (e) {
@@ -210,16 +199,18 @@ function parsePositiveDuration(value, fallback) {
 }
 
 // ANSI colors
+const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
+const color = value => useColor ? value : '';
 const c = {
-  reset: '\x1b[0m',
-  bright: '\x1b[1m',
-  dim: '\x1b[2m',
-  red: '\x1b[31m',
-  green: '\x1b[32m',
-  yellow: '\x1b[33m',
-  blue: '\x1b[34m',
-  cyan: '\x1b[36m',
-  magenta: '\x1b[35m',
+  reset: color('\x1b[0m'),
+  bright: color('\x1b[1m'),
+  dim: color('\x1b[2m'),
+  red: color('\x1b[31m'),
+  green: color('\x1b[32m'),
+  yellow: color('\x1b[33m'),
+  blue: color('\x1b[34m'),
+  cyan: color('\x1b[36m'),
+  magenta: color('\x1b[35m'),
 };
 
 const log = {
@@ -337,7 +328,7 @@ Options:
   --profile <name>   Profile: quick, default, release-gate, full, agentic-release-gate
   --round <N>        Round number (auto-detected if not specified)
   --parallel         Run reviewers in parallel
-  --agent <type>     Agent to use: claude (default) or codex
+  --agent <type>     Agent to use: claude or codex (auto-detects Claude, then Codex)
   --reviewer <name>  Run only this reviewer
   --target <path>    Review target directory (for self-review: skills/release-quality-review)
   --skip-evidence    Skip automatic evidence collection
@@ -994,6 +985,15 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
   ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR);
   ensureContainedDirectorySync(REPORT_DIR, roundDir);
+
+  if (profile === 'agentic-release-gate') {
+    const requiredArtifacts = ['generated-goal.md', 'changes.md', 'diff-summary.md', 'risk.md', 'handoff.md'];
+    const missingArtifacts = requiredArtifacts.filter(file => !existsSync(join(roundDir, file)));
+    if (missingArtifacts.length > 0) {
+      console.error(`Agentic review artifacts must exist before reviewer launch: ${missingArtifacts.join(', ')}`);
+      process.exit(4);
+    }
+  }
 
   // Collect evidence with config
   const config = loadConfig();

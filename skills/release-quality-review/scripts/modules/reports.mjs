@@ -52,6 +52,10 @@ export function generateSummary(roundDir, profile, roundNumber, scores, allPasse
       const coverageIcon = ac.coverageGate.status === 'pass' ? '✅' : '❌';
       content += `| coverage | ${coverageIcon} ${ac.coverageGate.status} | ${ac.coverageGate.status === 'pass' ? 'Measured' : 'See evidence'} |\n`;
     }
+    if (ac.e2eGate) {
+      const e2eIcon = ac.e2eGate.status === 'pass' ? '✅' : '❌';
+      content += `| E2E | ${e2eIcon} ${ac.e2eGate.status} | ${ac.e2eGate.status === 'pass' ? 'Passed' : 'See evidence'} |\n`;
+    }
 
     const sizeIcon = ac.oversizedFiles?.status === 'pass' ? '✅' : '⚠️';
     const sizeIssues = ac.oversizedFiles?.issues || [];
@@ -188,7 +192,7 @@ export function generateFinalReport(roundDir, scores, evidence = null, profile, 
   content += `- [x] Tests passed\n`;
   content += `- [x] Typecheck passed\n`;
   if (['release-gate', 'full', 'agentic-release-gate'].includes(profile)) {
-    content += `- [x] Build, lint, audit and source-secret scan passed\n`;
+    content += `- [x] Build, lint, audit, coverage, E2E and source-secret scan passed\n`;
   }
   if (profile === 'agentic-release-gate') {
     content += `- [x] Clean-candidate verification passed for the exact commit/tree\n`;

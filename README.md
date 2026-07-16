@@ -36,10 +36,8 @@ npm start                      # prints runner help; it does not start a service
 
 export REVIEW_ROUND=100
 npm run review -- --profile quick --round "$REVIEW_ROUND" --agent codex
-# Exit 1 is healthy here while reviewer packets are pending.
-# After the listed reviewers write all four packet files:
-npm run skill:gate -- --profile quick --round "$REVIEW_ROUND" --no-collect
-# Success ends with GATE PASSED and exit 0.
+# The runner launches every quick-profile reviewer and arbitrates the round.
+# Exit 0 is approval; exit 1 means the completed review failed its score/Gate.
 ```
 
 Choose `quick` for a small development check, `release-gate` for a normal
@@ -76,13 +74,12 @@ npm run test:e2e
 npm run skill:gate -- --profile release-gate
 ```
 
-The Node runner collects evidence and writes reviewer prompts. Independent
-reviewers must be started by the Codex or Claude host and must write the four
-required files under `quality-reports/round-NNN/<reviewer>/`; the runner never
-synthesizes reviewer scores. Re-run `skill:gate` to aggregate their results.
-Passing `--parallel --agent codex` to the runner launches independent ephemeral
-Codex CLI reviewers concurrently and fails if any reviewer does not produce all
-four files.
+The Node runner collects evidence, writes prompts, and starts independent
+reviewer processes through the selected Codex or Claude CLI. Each process must
+write four files under `quality-reports/round-NNN/<reviewer>/`; the runner never
+synthesizes reviewer scores. Sequential mode starts them one at a time;
+`--parallel` starts them concurrently and fails if any reviewer does not produce
+all four files.
 
 The first launch locks each round to its selected backend in
 `review-backend.json`. Resume the round with the same `--agent`; backend mixing
@@ -97,10 +94,8 @@ evidence, and adjacent metadata has crossed the local trust boundary; protect
 against that actor with externally signed CI artifacts or a protected remote
 runner.
 
-When macOS rejects nested `sandbox-exec`, the trusted host may set
-`RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED=1` only after independently enforcing an
-equivalent outer filesystem boundary. Without that explicit attestation,
-candidate verification fails closed.
+When macOS rejects nested `sandbox-exec`, candidate verification fails closed.
+An environment variable cannot substitute for an enforced filesystem boundary.
 
 Host workflow:
 
@@ -113,16 +108,11 @@ export REVIEW_ROUND_DIR="round-$(printf '%03d' "$REVIEW_ROUND")"
 test ! -e "quality-reports/$REVIEW_ROUND_DIR"
 ```
 
-1. Run `npm run review -- --profile release-gate --round "$REVIEW_ROUND"` to collect evidence
-   and create prompts.
-2. In Codex/Claude, launch one independent Agent per listed reviewer. Claude
-   adapters are in `.claude/agents/`; canonical definitions are in
-   `skills/release-quality-review/reviewers/`.
-3. Require each Agent to write `result.yaml`, `score.md`, `blockers.md`, and
-   `improvement-list.md` in its round directory. `result.yaml` must bind the
-   exact candidate from `git rev-parse HEAD` and `git rev-parse HEAD^{tree}`.
-4. Run `npm run skill:gate -- --profile release-gate --round "$REVIEW_ROUND"`. Exit `0` is the
-   only release approval; exit `1` means pending or failed review.
+Run `npm run review -- --profile release-gate --round "$REVIEW_ROUND" --agent codex`
+(or select `claude`). The runner collects evidence, automatically launches one
+independent process per reviewer, validates their four-file packets, and
+arbitrates the round. Exit `0` is the only approval; exit `1` means the completed
+review failed its score or Gate, and exit `5` means an Agent process failed.
 
 For `agentic-release-gate`, use this complete high-assurance workflow:
 
@@ -140,40 +130,28 @@ uses pnpm, the trusted host must pre-provision pnpm `10.33.0` in Corepack's
 cache (or set `COREPACK_HOME` to an equivalent read-only cache); verification
 fails closed when that pinned toolchain is unavailable.
 
-3. Run the runner with explicit round/base. It creates `phase-N-plan.md`,
-   reviewer prompts, `runner-metadata.json`, and initial prompt evidence; its
-   Gate pass binds `metadata.json` to the already persisted clean evidence.
-   Exit `1` is expected while packets are pending:
-
-```bash
-npm run review -- --profile agentic-release-gate --round "$REVIEW_ROUND" --base <base-ref>
-```
-
-4. The host writes `generated-goal.md`, `changes.md`, `diff-summary.md`,
-   `risk.md`, and `handoff.md`. Their contracts are in
+3. Before any reviewer launches, the host writes `generated-goal.md`,
+   `changes.md`, `diff-summary.md`, `risk.md`, and `handoff.md`. Their contracts are in
    `skills/release-quality-review/SKILL.md` and
    `skills/release-quality-review/rubrics/delivery-packet.schema.yaml`.
-   Validate the Goal, then run a collecting Gate pass; the Gate writes
-   `goal-instruction-validation.md`, refreshes `metadata.json` and
-   `evidence/automated-checks.json`, and remains exit `1` while reviews are
-   pending:
+   Validate the Goal:
 
 ```bash
 node skills/release-quality-review/scripts/goal-instruction-gate.mjs \
   --file "quality-reports/$REVIEW_ROUND_DIR/generated-goal.md"
-npm run skill:gate -- --profile agentic-release-gate --round "$REVIEW_ROUND" --base <base-ref>
 ```
 
-5. Launch every resident, triggered conditional, and adversarial reviewer.
-   Each follows its canonical definition in
-   `skills/release-quality-review/reviewers/` and writes `result.yaml`,
-   `score.md`, `blockers.md`, and `improvement-list.md` under the same round.
-   Start `result.yaml` from
-   `skills/release-quality-review/templates/result.yaml`. Every reviewer must
-   declare the exact candidate commit/tree, score at least `90`; any P0/P1
-   blocker or redline fails the release, and modified work must use a fresh
-   round and be reviewed again.
-6. Validate packets, then run final arbitration against persisted evidence:
+4. Run the runner with explicit backend, round, and base. It binds evidence,
+   launches every required reviewer using only that backend, validates their
+   packets, and arbitrates the round. `--parallel` starts them without a project
+   concurrency cap:
+
+```bash
+npm run review -- --profile agentic-release-gate --round "$REVIEW_ROUND" \
+  --base <base-ref> --agent codex --parallel
+```
+
+5. Validate packets, then rerun final arbitration against persisted evidence:
 
 ```bash
 node skills/release-quality-review/scripts/evidence-validator.mjs --round "$REVIEW_ROUND_DIR" --base <base-ref>
@@ -192,9 +170,8 @@ Troubleshooting:
 - Exit `5`: reviewer launch failed or timed out; verify the local Codex/Claude
   CLI, then rerun the same round. Valid packets resume; malformed or incomplete
   packets are invalidated and relaunched automatically.
-- Exit `1`: inspect `summary.md`. `reviewer packets pending` is expected before
-  reviewers finish; scores below 90, P0/P1 blockers, or failed evidence require
-  a fix and a fresh round.
+- Exit `1`: inspect `summary.md`; scores below 90, P0/P1 blockers, or failed
+  evidence require a fix and a fresh round.
 - Missing packet files: every reviewer directory needs `result.yaml`,
   `score.md`, `blockers.md`, and `improvement-list.md`.
 - Round identity conflict: do not reuse a round after the candidate changes;

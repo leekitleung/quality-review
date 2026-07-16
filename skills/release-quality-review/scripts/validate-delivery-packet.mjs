@@ -16,6 +16,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -253,6 +254,9 @@ function validate({ packetPath, mode }) {
     log.section('Phase 5: Forensic Analysis');
     const forensicResult = runForensicAnalysis(absolutePath);
     result.forensicFindings = forensicResult.findings;
+    if (mode === 'strict' && forensicResult.failed) {
+      result.errors.push('Forensic analysis could not verify the Git working tree');
+    }
     if (forensicResult.findings.length > 0 && verbose) {
       for (const finding of forensicResult.findings) {
         log.warn(`[Forensic] ${finding.type}: ${finding.message}`);
@@ -470,13 +474,13 @@ function validateBlockers(packetDir) {
  */
 function runForensicAnalysis(packetDir) {
   const findings = [];
+  let failed = false;
 
   // Check git status for actual changes
   try {
-    const gitStatus = require('child_process').execSync(
-      'git status --short 2>/dev/null || echo ""',
-      { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 5000 }
-    ).trim();
+    const gitStatus = execFileSync('git', ['status', '--short'], {
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 5000,
+    }).trim();
 
     if (!gitStatus) {
       findings.push({
@@ -492,6 +496,7 @@ function runForensicAnalysis(packetDir) {
       });
     }
   } catch (e) {
+    failed = true;
     findings.push({
       type: 'GIT_NOT_AVAILABLE',
       message: 'Git not available for forensic analysis',
@@ -529,7 +534,7 @@ function runForensicAnalysis(packetDir) {
     }
   }
 
-  return { findings };
+  return { findings, failed };
 }
 
 /**
