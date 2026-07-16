@@ -534,7 +534,7 @@ export function strictAutomatedChecksPassed(autoChecks, evidenceValidationPassed
     autoChecks.typecheckGate?.status === 'pass' && autoChecks.buildGate?.status === 'pass' &&
     autoChecks.lintGate?.status === 'pass' && autoChecks.auditGate?.status === 'pass' &&
     autoChecks.coverageGate?.status === 'pass' && autoChecks.e2eGate?.status === 'pass' &&
-    autoChecks.secrets?.status === 'pass' && autoChecks.circularDeps?.status !== 'fail' &&
+    autoChecks.secrets?.status === 'pass' && autoChecks.circularDeps?.status === 'pass' &&
     evidenceValidationPassed;
 }
 

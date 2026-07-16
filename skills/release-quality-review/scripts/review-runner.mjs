@@ -391,6 +391,7 @@ function collectEvidence(config) {
   };
 
   // Git info (always from PROJECT_ROOT)
+  let gitEvidenceError = null;
   try {
     evidence.git = {
       branch: execSync('git branch --show-current 2>/dev/null', gitOptions).trim(),
@@ -420,7 +421,11 @@ function collectEvidence(config) {
     }).trim().split('\n').filter(Boolean);
     evidence.git.changedFiles = [...new Set([...(evidence.git.changedFiles || []), ...untracked])];
   } catch (e) {
-    log.warn('Could not collect git info');
+    gitEvidenceError = e;
+    log.warn(`Could not collect git info: ${redactSensitiveText(e.message)}`);
+  }
+  if (gitEvidenceError) {
+    throw new Error(`git evidence collection failed: ${redactSensitiveText(gitEvidenceError.message)}`);
   }
   if (evidence.git.status !== '') throw new Error('source checkout must be clean before evidence collection');
 

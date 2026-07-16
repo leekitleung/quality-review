@@ -38,6 +38,7 @@ import {
 } from '../lib/review-utils.mjs';
 import {
   resolveWithinRoot,
+  ensureContainedDirectorySync,
   isPathWithin,
   isRealDirectory,
   shouldIncludeCanonicalFile,
@@ -56,7 +57,7 @@ import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs 
 import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
 import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
 import { collectEvidence, prepareTrustedAuditWorkspace, runAutomatedChecks, runEvidenceCommand } from '../scripts/modules/evidence.mjs';
-import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
+import { createCandidateRuntime, validateCandidateCheckoutIdentity } from '../lib/candidate-runtime.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -512,6 +513,10 @@ test('strict automated checks reject failed coverage', () => {
   assertEqual(strictAutomatedChecksPassed(checks, true), false);
   checks.coverageGate = pass;
   assertEqual(strictAutomatedChecksPassed(checks, true), true);
+  checks.circularDeps = { status: 'warn', issues: ['a.mjs -> b.mjs -> a.mjs'] };
+  assertEqual(strictAutomatedChecksPassed(checks, true), false);
+  checks.circularDeps = { status: 'warn', issues: ['circular dependency scan encountered error'] };
+  assertEqual(strictAutomatedChecksPassed(checks, true), false);
 });
 
 // ============================================================================
@@ -947,6 +952,21 @@ test.describe('security boundaries', () => {
     assertEqual(rejected, true);
   });
 
+  test('rejects symbolic links inside contained output directory paths', () => {
+    const root = join(TEST_DIR, 'contained-symlink-root');
+    const target = join(root, 'target');
+    const link = join(root, 'link');
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, link, 'dir');
+    let message = '';
+    try {
+      ensureContainedDirectorySync(root, join(link, 'child'));
+    } catch (error) {
+      message = error.message;
+    }
+    assertTrue(message.includes('must not be a symbolic link'), `Expected explicit symlink rejection: ${message}`);
+  });
+
   test('writes contained files through production filesystem guards', async () => {
     const root = join(TEST_DIR, 'contained-files');
     mkdirSync(root, { recursive: true });
@@ -1116,41 +1136,16 @@ test.describe('CLI fail-closed integration', () => {
     assertEqual(isPathWithin(PROJECT_ROOT, runtime.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY), false);
   });
 
-  test('evidence collection rejects candidate checkout mutation', () => {
-    const repository = join(TEST_DIR, `mutating-candidate-${randomUUID()}`);
-    const cloned = spawnSync('git', ['clone', '--quiet', '--no-local', PROJECT_ROOT, repository], {
-      cwd: TEST_DIR, encoding: 'utf8', timeout: 30000,
-    });
-    assertEqual(cloned.status, 0, `Expected fixture clone, output: ${cloned.stdout}${cloned.stderr}`);
-    const manifestPath = join(repository, 'package.json');
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-    const mutatingTest = 'env -u NODE_TEST_CONTEXT node --test mutating-candidate.test.mjs';
-    for (const script of ['test', 'typecheck', 'build', 'lint', 'coverage', 'test:e2e']) {
-      manifest.scripts[script] = mutatingTest;
-    }
-    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-    writeFileSync(join(repository, 'mutating-candidate.test.mjs'),
-      "import { appendFileSync } from 'node:fs'; import test from 'node:test'; appendFileSync('README.md', '\\nmutation'); test('passes', () => {});\n");
-    spawnSync('git', ['config', 'user.email', 'test@example.invalid'], { cwd: repository });
-    spawnSync('git', ['config', 'user.name', 'Test'], { cwd: repository });
-    spawnSync('git', ['add', 'package.json', 'mutating-candidate.test.mjs'], { cwd: repository });
-    const committed = spawnSync('git', ['commit', '--quiet', '-m', 'mutating candidate'], {
-      cwd: repository, encoding: 'utf8',
-    });
-    assertEqual(committed.status, 0, committed.stderr);
-    const base = spawnSync('git', ['rev-parse', 'HEAD^'], { cwd: repository, encoding: 'utf8' }).stdout.trim();
-    let rejected = false;
+  test('candidate checkout identity guard rejects mutation', () => {
+    const clean = { commit: 'a'.repeat(40), tree: 'b'.repeat(40), status: '' };
     let rejectionMessage = '';
     try {
-      collectEvidence({ verification: {
-        test: mutatingTest, typecheck: mutatingTest, build: mutatingTest, lint: mutatingTest,
-        coverage: mutatingTest, e2e: mutatingTest,
-      } }, repository, base, base, join(repository, 'skills', 'release-quality-review'));
+      validateCandidateCheckoutIdentity(clean, clean, { ...clean, status: ' M README.md' });
     } catch (error) {
       rejectionMessage = error.message;
-      rejected = /checkout identity changed|candidate filesystem sandbox unavailable|outer sandbox capability check failed closed/.test(error.message);
     }
-    assertEqual(rejected, true, `Candidate checkout mutation must fail evidence collection; got: ${rejectionMessage}`);
+    assertTrue(rejectionMessage.includes('checkout identity changed'),
+      `Candidate checkout mutation must reach the identity guard; got: ${rejectionMessage}`);
   });
 
   test('Claude reviewer invocation accepts report edits without interactive approval', () => {
@@ -1533,7 +1528,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
       assertEqual(existsSync(leakMarker), false, 'Sequential successful reviewer descendants must be terminated');
     } finally {
-      rmSync(round, { recursive: true, force: true });
+      rmSync(round, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }
   });
 
@@ -2158,6 +2153,7 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
       const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: cloneRoot, encoding: 'utf8' }).stdout.trim();
       const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: cloneRoot, encoding: 'utf8' }).stdout.trim();
       const diffBase = spawnSync('git', ['rev-parse', 'HEAD^'], { cwd: cloneRoot, encoding: 'utf8' }).stdout.trim();
+      const baseTree = spawnSync('git', ['rev-parse', `${diffBase}^{tree}`], { cwd: cloneRoot, encoding: 'utf8' }).stdout.trim();
       for (const reviewer of ['product-flow', 'architecture-maintainer']) {
         const dir = join(round, reviewer);
         mkdirSync(dir, { recursive: true });
@@ -2167,17 +2163,42 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
       }
 
-      const fixtureEnv = { ...process.env, RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED: '1' };
-      delete fixtureEnv.NODE_TEST_CONTEXT;
+      mkdirSync(join(round, 'evidence'), { recursive: true });
+      const now = new Date().toISOString();
+      const commandRecord = (command, output) => ({
+        command, started_at: now, finished_at: now, status: 'pass', exit_code: 0,
+        output, output_bytes: Buffer.byteLength(output), truncated: false,
+      });
+      const checkoutIdentity = { commit: candidateCommit, tree: candidateTree, status: '' };
+      const automatedContent = JSON.stringify({
+        testGate: commandRecord('npm test', '# tests 1\n# fail 0'),
+        typecheckGate: commandRecord('npm run typecheck', 'passed'),
+        buildGate: commandRecord('npm run build', 'passed'),
+        lintGate: commandRecord('npm run lint', 'passed'),
+        auditGate: commandRecord('npm audit --audit-level=high', 'found 0 vulnerabilities'),
+        coverageGate: commandRecord('npm run coverage', '# tests 1\n# fail 0\n# start of coverage report'),
+        e2eGate: commandRecord('npm run test:e2e', '# tests 1\n# fail 0'),
+        secrets: { status: 'pass', issues: [] }, oversizedFiles: { status: 'pass', issues: [] },
+        circularDeps: { status: 'pass', issues: [] },
+        candidateCheckout: {
+          status: 'pass', source_commit: candidateCommit, source_tree: candidateTree,
+          initial: checkoutIdentity, final: checkoutIdentity,
+        },
+      });
+      writeFileSync(join(round, 'evidence', 'automated-checks.json'), automatedContent);
+      writeFileSync(join(round, 'metadata.json'), JSON.stringify({
+        profile: 'quick', round: roundNumber, collected_at: now,
+        git: { branch: 'test', commit: candidateCommit.slice(0, 8), status: '', changedFiles: ['package.json'] },
+        files: {}, scale: { scale: 'micro', files: 1, additions: 1, deletions: 0, total: 1 },
+        candidate_commit: candidateCommit, candidate_tree: candidateTree,
+        base_commit: diffBase, base_tree: baseTree,
+        automated_checks_sha256: createHash('sha256').update(automatedContent).digest('hex'),
+      }));
 
       const firstGate = spawnSync('node', [
         join(cloneRoot, 'skills/release-quality-review/scripts/review-gate.mjs'), '--profile', 'quick',
-        '--round', String(roundNumber), '--base', diffBase, '--no-validate-evidence',
-      ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000, env: fixtureEnv });
-      if (firstGate.status !== 0 && `${firstGate.stdout}${firstGate.stderr}`.includes('outer sandbox capability check failed closed')) {
-        assertEqual(firstGate.status, 1, 'Nested sandbox capability rejection must fail closed');
-        return;
-      }
+        '--round', String(roundNumber), '--base', diffBase, '--no-collect', '--no-validate-evidence',
+      ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000 });
       assertEqual(firstGate.status, 0, `Expected candidate A to pass, output: ${firstGate.stdout}${firstGate.stderr}`);
       const arbitration = JSON.parse(readFileSync(join(round, 'evidence', 'final-arbitration.json'), 'utf8'));
       assertEqual(arbitration.candidate_commit, candidateCommit);
@@ -2191,12 +2212,30 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
       });
       assertEqual(secondCommit.status, 0, `Expected candidate B commit, output: ${secondCommit.stdout}${secondCommit.stderr}`);
 
+      const candidateBCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: cloneRoot, encoding: 'utf8' }).stdout.trim();
+      const candidateBTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: cloneRoot, encoding: 'utf8' }).stdout.trim();
+      const automatedB = JSON.parse(automatedContent);
+      const checkoutB = { commit: candidateBCommit, tree: candidateBTree, status: '' };
+      automatedB.candidateCheckout = {
+        status: 'pass', source_commit: candidateBCommit, source_tree: candidateBTree,
+        initial: checkoutB, final: checkoutB,
+      };
+      const automatedBContent = JSON.stringify(automatedB);
+      writeFileSync(join(round, 'evidence', 'automated-checks.json'), automatedBContent);
+      const metadataB = JSON.parse(readFileSync(join(round, 'metadata.json'), 'utf8'));
+      metadataB.git.commit = candidateBCommit.slice(0, 8);
+      metadataB.candidate_commit = candidateBCommit;
+      metadataB.candidate_tree = candidateBTree;
+      metadataB.automated_checks_sha256 = createHash('sha256').update(automatedBContent).digest('hex');
+      writeFileSync(join(round, 'metadata.json'), JSON.stringify(metadataB));
+
       const staleGate = spawnSync('node', [
         join(cloneRoot, 'skills/release-quality-review/scripts/review-gate.mjs'), '--profile', 'quick',
-        '--round', String(roundNumber), '--base', diffBase, '--no-validate-evidence',
-      ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000, env: fixtureEnv });
+        '--round', String(roundNumber), '--base', diffBase, '--no-collect', '--no-validate-evidence',
+      ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000 });
       assertEqual(staleGate.status, 1, `Expected stale packets to fail, output: ${staleGate.stdout}${staleGate.stderr}`);
-      assertTrue(staleGate.stdout.includes('candidate identity'), 'Expected explicit candidate identity diagnostic');
+      assertTrue(staleGate.stdout.includes('Candidate tree mismatch'),
+        `Expected explicit candidate identity diagnostic: ${staleGate.stdout}${staleGate.stderr}`);
     } finally {
       rmSync(cloneRoot, { recursive: true, force: true });
     }

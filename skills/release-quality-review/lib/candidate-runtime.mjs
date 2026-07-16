@@ -6,6 +6,15 @@ import {
   createCandidateSubprocessEnv, ensureContainedDirectorySync, wrapCandidateCommand,
 } from './security-utils.mjs';
 
+export function validateCandidateCheckoutIdentity(source, initial, final) {
+  if (source.status !== '' || initial.status !== '' || final.status !== '' ||
+      initial.commit !== source.commit || initial.tree !== source.tree ||
+      final.commit !== source.commit || final.tree !== source.tree) {
+    throw new Error('automated verification checkout identity changed or source checkout is dirty');
+  }
+  return { status: 'pass', source_commit: source.commit, source_tree: source.tree, initial, final };
+}
+
 export function createCandidateRuntime(projectRoot, label, outerSandboxAttestation = null) {
   const isolatedHome = mkdtempSync(join(tmpdir(), `release-quality-review-${label}-home-`));
   const attestationRoot = outerSandboxAttestation ? null :
@@ -69,12 +78,7 @@ export function createCandidateRuntime(projectRoot, label, outerSandboxAttestati
   function validateCheckout(root, initial) {
     const source = readIdentity(projectRoot);
     const final = readIdentity(root);
-    if (source.status !== '' || initial.status !== '' || final.status !== '' ||
-        initial.commit !== source.commit || initial.tree !== source.tree ||
-        final.commit !== source.commit || final.tree !== source.tree) {
-      throw new Error('automated verification checkout identity changed or source checkout is dirty');
-    }
-    return { status: 'pass', source_commit: source.commit, source_tree: source.tree, initial, final };
+    return validateCandidateCheckoutIdentity(source, initial, final);
   }
 
   return { env, isolatedHome, execSync, execFileSync, prepareCheckout, readIdentity, validateCheckout };

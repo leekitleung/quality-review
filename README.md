@@ -96,6 +96,22 @@ runner.
 
 When macOS rejects nested `sandbox-exec`, candidate verification fails closed.
 An environment variable cannot substitute for an enforced filesystem boundary.
+Run collection from a normal macOS host shell or CI runner that can create the
+outer sandbox. Running the review command from inside another workspace sandbox
+may be unsupported; the CLI reports the underlying sandbox capability error and
+must not describe a clean checkout as dirty. Exit that outer sandbox and resume
+the same round with the same backend.
+
+Review evidence is local release metadata, not an account or analytics store.
+It may contain repository paths, Git identities, and redacted command output.
+The release operator owns retention and should delete `quality-reports/round-*`
+after the applicable audit or release-retention window. Export only the bound
+round directory, use encrypted artifact storage when evidence leaves the host,
+and delete exported copies through that storage provider. GDPR/CCPA obligations
+apply only when repository paths or command output contain personal data; avoid
+putting personal data in source paths or verifier output. Local report files use
+restrictive permissions but are not content-encrypted, so the host should use
+full-disk encryption for at-rest protection.
 
 Host workflow:
 
@@ -178,6 +194,9 @@ Troubleshooting:
   choose a new positive round number.
 - Persisted-evidence mismatch: rerun `skill:verify-clean` first, then rerun the
   collecting Gate command so `metadata.json` binds the same clean evidence.
+- `outer sandbox capability check failed closed`: run from a normal macOS host
+  shell or supported CI runner, not from inside another workspace sandbox; then
+  resume the same round with its locked backend.
 
 `skills.lock.yaml` records canonical and adapter SHA-256 hashes. CI runs the
 drift check, tests, syntax validation, and review-gate dry-run.
