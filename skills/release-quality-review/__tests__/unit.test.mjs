@@ -1812,7 +1812,10 @@ fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '#
         '--base', candidateCommit, '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
-        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}`, RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0' },
+        env: {
+          ...process.env, PATH: `${fakeBin}:${process.env.PATH}`,
+          RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED: '1', RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0',
+        },
       });
       assertEqual(result.status, 1, `${result.stdout}${result.stderr}`);
       const plan = readFileSync(join(round, `phase-${roundNumber}-plan.md`), 'utf8');
