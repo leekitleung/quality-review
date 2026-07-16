@@ -842,12 +842,17 @@ test.describe('security boundaries', () => {
     if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout}${probe.stderr}`)) {
       process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
       let errorMessage = '';
+      let wrapped = null;
       try {
-        wrapCandidateCommand(process.execPath, ['-e', ''], { allowedRoots: [PROJECT_ROOT] });
+        wrapped = wrapCandidateCommand(process.execPath, ['-e', ''], { allowedRoots: [PROJECT_ROOT] });
       } catch (error) {
         errorMessage = error.message;
       }
-      assertTrue(errorMessage.includes('nested execution fails closed'), errorMessage);
+      if (process.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY) {
+        assertEqual(wrapped?.command, process.execPath, errorMessage);
+      } else {
+        assertTrue(errorMessage.includes('nested execution fails closed'), errorMessage);
+      }
       delete process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
       return;
     }
