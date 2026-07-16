@@ -1198,20 +1198,27 @@ test.describe('CLI fail-closed integration', () => {
 
   test('invalid diff and rollback base refs fail as configuration errors', () => {
     const missingRef = `missing-ref-${randomUUID()}`;
+    const roundNumber = TEST_ROUNDS.runner + 400;
+    const round = reportRound(roundNumber);
+    mkdirSync(round, { recursive: true });
     const cases = [
       [join(SKILL_DIR, 'scripts', 'verify-rollback.mjs'), [
         '--base', missingRef, '--output', `quality-reports/round-${TEST_ROUNDS.runner}/evidence/rollback-verification.json`,
       ]],
       [join(SKILL_DIR, 'scripts', 'evidence-validator.mjs'), [
-        '--round', 'round-080', '--reviewer', 'architecture-maintainer', '--base', missingRef,
+        '--round', `round-${roundNumber}`, '--reviewer', 'architecture-maintainer', '--base', missingRef,
       ]],
     ];
-    for (const [script, args] of cases) {
-      const result = spawnSync('node', [script, ...args], { cwd: PROJECT_ROOT, encoding: 'utf8' });
-      assertEqual(result.status, 4, `${result.stdout}${result.stderr}`);
-      assertEqual(result.stdout.includes('Diff files: 0'), false);
-      assertEqual(result.stderr.includes('\n    at '), false);
-      assertEqual(result.stderr.includes(PROJECT_ROOT), false);
+    try {
+      for (const [script, args] of cases) {
+        const result = spawnSync('node', [script, ...args], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+        assertEqual(result.status, 4, `${result.stdout}${result.stderr}`);
+        assertEqual(result.stdout.includes('Diff files: 0'), false);
+        assertEqual(result.stderr.includes('\n    at '), false);
+        assertEqual(result.stderr.includes(PROJECT_ROOT), false);
+      }
+    } finally {
+      rmSync(round, { recursive: true, force: true });
     }
   });
 
