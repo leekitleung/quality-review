@@ -1683,8 +1683,8 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     assertEqual(clean.status, 1, `Expected no-op clean-verifier rejection, output: ${clean.stdout}${clean.stderr}`);
     assertTrue(existsSync(output), `Expected failed clean evidence, output: ${clean.stdout}${clean.stderr}`);
     const cleanEvidence = JSON.parse(readFileSync(output, 'utf8'));
-    assertEqual(cleanEvidence.commands[1].id, 'script-integrity');
-    assertEqual(cleanEvidence.commands[1].status, 'fail');
+    const scriptIntegrity = cleanEvidence.commands.find(command => command.id === 'script-integrity');
+    assertEqual(scriptIntegrity?.status, 'fail');
   });
 
   test('Gate and clean verifier reject candidate-authored Node summary printers', () => {
@@ -1732,8 +1732,8 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     });
     assertEqual(clean.status, 1, `Expected forged Node clean-verifier rejection, output: ${clean.stdout}${clean.stderr}`);
     const cleanEvidence = JSON.parse(readFileSync(output, 'utf8'));
-    assertEqual(cleanEvidence.commands[1].id, 'script-integrity');
-    assertEqual(cleanEvidence.commands[1].status, 'fail');
+    const scriptIntegrity = cleanEvidence.commands.find(command => command.id === 'script-integrity');
+    assertEqual(scriptIntegrity?.status, 'fail');
   });
 
   test('Gate and clean verifier reject masked runner failures with forged summaries', () => {
@@ -1785,7 +1785,8 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     });
     assertEqual(clean.status, 1, `Expected masked-failure clean rejection, output: ${clean.stdout}${clean.stderr}`);
     const cleanEvidence = JSON.parse(readFileSync(output, 'utf8'));
-    assertEqual(cleanEvidence.commands[1].status, 'fail');
+    const scriptIntegrity = cleanEvidence.commands.find(command => command.id === 'script-integrity');
+    assertEqual(scriptIntegrity?.status, 'fail');
   });
 
   test('keeps blockers.md veto even when result.yaml claims pass', () => {

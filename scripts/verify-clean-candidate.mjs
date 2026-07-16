@@ -66,6 +66,38 @@ if (sourceStatus.exit_code !== 0 || sourceStatus.output.trim()) {
   process.exit(1);
 }
 
+const sourceManifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
+const sourceScriptIssues = findTrivialVerificationScripts(sourceManifest.scripts, [
+  'npm test', 'npm run coverage', 'npm run skill:check-drift', 'npm run lint',
+  'npm run build', 'npm run skill:check', 'npm run skill:verify',
+]);
+if (sourceScriptIssues.length > 0) {
+  const commit = run('candidate-commit', 'git', ['rev-parse', 'HEAD'], root);
+  const tree = run('candidate-tree', 'git', ['rev-parse', 'HEAD^{tree}'], root);
+  const now = new Date().toISOString();
+  const output = `trivial or missing verification scripts: ${sourceScriptIssues.map(issue => issue.script).join(', ')}`;
+  const report = {
+    schema_version: 1,
+    candidate_commit: commit.output.trim(),
+    candidate_tree: tree.output.trim(),
+    isolated_commit: '',
+    isolated_tree: '',
+    source_status: sourceStatus.output,
+    final_source_status: sourceStatus.output,
+    isolated_checkout: false,
+    status: 'fail',
+    exit_code: 1,
+    commands: [{
+      id: 'script-integrity', command: 'verify package verification scripts',
+      started_at: now, finished_at: now, exit_code: 1, status: 'fail', output,
+      output_bytes: Buffer.byteLength(output), truncated: false,
+    }],
+  };
+  await writeContainedFile(root, outputPath, `${JSON.stringify(report, null, 2)}\n`);
+  console.log(`Clean candidate verification fail: ${outputPath}`);
+  process.exit(1);
+}
+
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-quality-review-'));
 const inheritedAttestation = outerSandboxAttestationFromEnv();
 const attestationRoot = inheritedAttestation ? null : await mkdtemp(path.join(os.tmpdir(), 'release-quality-attestation-'));
