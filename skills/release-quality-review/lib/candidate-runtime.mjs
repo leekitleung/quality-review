@@ -10,8 +10,13 @@ export function createCandidateRuntime(projectRoot, label) {
   const isolatedHome = mkdtempSync(join(tmpdir(), `release-quality-review-${label}-home-`));
   let checkoutParent = null;
   const env = createCandidateSubprocessEnv(process.env, isolatedHome);
+  const outerWriteCanary = join(projectRoot, `.release-quality-outer-sandbox-write-canary-${process.pid}-${label}`);
+  env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
+  env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY = join(projectRoot, 'package.json');
+  env.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY = outerWriteCanary;
 
   process.on('exit', () => {
+    rmSync(outerWriteCanary, { force: true });
     rmSync(isolatedHome, { recursive: true, force: true });
     if (checkoutParent) rmSync(checkoutParent, { recursive: true, force: true });
   });
