@@ -30,14 +30,16 @@ if (!baseRef || !outputArg || !/^[A-Za-z0-9._/@-]+$/.test(baseRef)) {
   console.error('Usage: verify-rollback.mjs --base <ref> --output quality-reports/round-NNN/evidence/rollback-verification.json');
   process.exit(4);
 }
-let outputPath;
-try {
-  outputPath = resolveWithinRoot(root, outputArg, 'rollback evidence output');
-} catch {
-  console.error('Invalid rollback evidence output path: it must stay inside the repository.');
-  console.error('Usage: verify-rollback.mjs --base <ref> --output quality-reports/round-NNN/evidence/rollback-verification.json');
-  process.exit(4);
+function resolveOutputPath(value) {
+  try {
+    return resolveWithinRoot(root, value, 'rollback evidence output');
+  } catch {
+    console.error('Invalid rollback evidence output path: it must stay inside the repository.');
+    console.error('Usage: verify-rollback.mjs --base <ref> --output quality-reports/round-NNN/evidence/rollback-verification.json');
+    process.exit(4);
+  }
 }
+const outputPath = resolveOutputPath(outputArg);
 if (!/quality-reports[/\\]round-\d+[/\\]evidence[/\\]rollback-verification\.json$/.test(outputPath)) {
   console.error('Rollback evidence must be written under quality-reports/round-NNN/evidence/');
   process.exit(4);
@@ -73,8 +75,19 @@ function gitValue(args, cwd = root) {
 
 const candidateCommit = gitValue(['rev-parse', 'HEAD']);
 const candidateTree = gitValue(['rev-parse', 'HEAD^{tree}']);
-const baseCommit = gitValue(['rev-parse', `${baseRef}^{commit}`]);
-const baseTree = gitValue(['rev-parse', `${baseRef}^{tree}`]);
+function resolveBaseIdentity(ref) {
+  try {
+    return {
+      commit: gitValue(['rev-parse', `${ref}^{commit}`]),
+      tree: gitValue(['rev-parse', `${ref}^{tree}`]),
+    };
+  } catch {
+    console.error(`Invalid --base ref: ${ref}`);
+    console.error('Usage: verify-rollback.mjs --base <ref> --output quality-reports/round-NNN/evidence/rollback-verification.json');
+    process.exit(4);
+  }
+}
+const { commit: baseCommit, tree: baseTree } = resolveBaseIdentity(baseRef);
 const sourceStatus = run('source-status', 'git', ['status', '--porcelain', '--untracked-files=all'], root);
 if (sourceStatus.exit_code !== 0 || sourceStatus.output.trim()) {
   console.error('Source candidate must be committed and clean before rollback verification');

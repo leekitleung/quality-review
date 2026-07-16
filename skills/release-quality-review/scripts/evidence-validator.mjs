@@ -67,7 +67,9 @@ function getGitDiffFiles(diffBase) {
     });
     return output.trim().split('\n').filter(Boolean);
   } catch {
-    return [];
+    console.error(`Invalid --base ref or unreadable diff: ${diffBase}`);
+    console.error('Usage: evidence-validator.mjs --round round-NNN [--reviewer name] --base <ref>');
+    process.exit(4);
   }
 }
 

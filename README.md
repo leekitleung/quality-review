@@ -6,6 +6,24 @@ Requires Node.js 22+ and a Git checkout because candidate identity and rollback
 checks depend on Git metadata. Clone the repository, then run `npm install`;
 there are no runtime dependencies.
 
+Reviews require one supported Agent CLI. Install and authenticate either Codex
+or Claude before the quickstart, then verify the selected backend:
+
+```bash
+# Codex backend
+codex --version
+codex login status
+
+# Or Claude backend
+claude --version
+claude auth status
+```
+
+The review command automatically launches reviewer processes; it is not a
+collection-only command. Use `--agent codex` or `--agent claude` to select the
+authenticated backend explicitly. A missing or unauthenticated Agent CLI makes
+the runner fail with exit 5 and cannot produce reviewer packets.
+
 ## First successful review
 
 ```bash
@@ -17,7 +35,7 @@ npm install
 npm start                      # prints runner help; it does not start a service
 
 export REVIEW_ROUND=100
-npm run review -- --profile quick --round "$REVIEW_ROUND"
+npm run review -- --profile quick --round "$REVIEW_ROUND" --agent codex
 # Exit 1 is healthy here while reviewer packets are pending.
 # After the listed reviewers write all four packet files:
 npm run skill:gate -- --profile quick --round "$REVIEW_ROUND" --no-collect

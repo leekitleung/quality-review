@@ -19,14 +19,16 @@ if (args.length !== 2 || args[0] !== '--output' || !args[1] || args[1].startsWit
   console.error('Usage: verify-clean-candidate.mjs --output quality-reports/round-NNN/evidence/clean-candidate.json');
   process.exit(4);
 }
-let outputPath;
-try {
-  outputPath = resolveWithinRoot(root, args[1], 'evidence output');
-} catch {
-  console.error('Invalid evidence output path: it must stay inside the repository.');
-  console.error('Usage: verify-clean-candidate.mjs --output quality-reports/round-NNN/evidence/clean-candidate.json');
-  process.exit(4);
+function resolveOutputPath(outputArg) {
+  try {
+    return resolveWithinRoot(root, outputArg, 'evidence output');
+  } catch {
+    console.error('Invalid evidence output path: it must stay inside the repository.');
+    console.error('Usage: verify-clean-candidate.mjs --output quality-reports/round-NNN/evidence/clean-candidate.json');
+    process.exit(4);
+  }
 }
+const outputPath = resolveOutputPath(args[1]);
 if (!/quality-reports[/\\]round-\d+[/\\]evidence[/\\]clean-candidate\.json$/.test(outputPath)) {
   console.error('Clean-candidate evidence must be written under quality-reports/round-NNN/evidence/');
   process.exit(4);

@@ -1196,6 +1196,25 @@ test.describe('CLI fail-closed integration', () => {
     }
   });
 
+  test('invalid diff and rollback base refs fail as configuration errors', () => {
+    const missingRef = `missing-ref-${randomUUID()}`;
+    const cases = [
+      [join(SKILL_DIR, 'scripts', 'verify-rollback.mjs'), [
+        '--base', missingRef, '--output', `quality-reports/round-${TEST_ROUNDS.runner}/evidence/rollback-verification.json`,
+      ]],
+      [join(SKILL_DIR, 'scripts', 'evidence-validator.mjs'), [
+        '--round', 'round-080', '--reviewer', 'architecture-maintainer', '--base', missingRef,
+      ]],
+    ];
+    for (const [script, args] of cases) {
+      const result = spawnSync('node', [script, ...args], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(result.status, 4, `${result.stdout}${result.stderr}`);
+      assertEqual(result.stdout.includes('Diff files: 0'), false);
+      assertEqual(result.stderr.includes('\n    at '), false);
+      assertEqual(result.stderr.includes(PROJECT_ROOT), false);
+    }
+  });
+
   test('changed validator CLIs cover success and failure boundaries', () => {
     const validGoal = join(TEST_DIR, 'valid-goal.md');
     const invalidGoal = join(TEST_DIR, 'invalid-goal.md');
@@ -1262,6 +1281,12 @@ test.describe('CLI fail-closed integration', () => {
     assertEqual(readme.includes('quality-reports/round-001'), false, 'Workflow must not target tracked Round 1');
     assertTrue(readme.includes('Trust boundary:'), 'README must state the local trust boundary');
     assertTrue(readme.includes('not signatures'), 'README must distinguish drift hashes from signatures');
+    assertTrue(readme.includes('codex login status'), 'Quickstart must document Codex authentication preflight');
+    assertTrue(readme.includes('claude auth status'), 'Quickstart must document Claude authentication preflight');
+    assertTrue(readme.includes('--profile quick --round "$REVIEW_ROUND" --agent codex'),
+      'First review must select a documented backend explicitly');
+    assertTrue(readme.includes('automatically launches reviewer processes'),
+      'Quickstart must disclose that review launches external Agent processes');
     const destructiveReviewer = readFileSync(join(SKILL_DIR, 'reviewers', 'destructive-qa.md'), 'utf8');
     assertTrue(destructiveReviewer.includes('威胁模型边界'), 'Destructive QA must evaluate the supported threat model');
     assertTrue(destructiveReviewer.includes('不能单独证明'), 'Synthetic helper inputs must not be reported as workflow bypasses');
