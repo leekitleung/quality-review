@@ -370,11 +370,11 @@ export function runAutomatedChecks(
   try {
     const cycles = scanCircularDependencies(projectRoot);
     if (cycles.length > 0) {
-      checks.circularDeps.status = 'warn';
+      checks.circularDeps.status = 'fail';
       checks.circularDeps.issues = cycles;
     }
   } catch (e) {
-    checks.circularDeps.status = 'warn';
+    checks.circularDeps.status = 'fail';
     checks.circularDeps.issues = [`circular dependency scan encountered error: ${e.message}`];
   }
 
