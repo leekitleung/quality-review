@@ -1138,6 +1138,7 @@ test.describe('CLI fail-closed integration', () => {
 
   test('candidate checkout identity guard rejects mutation', () => {
     const clean = { commit: 'a'.repeat(40), tree: 'b'.repeat(40), status: '' };
+    assertEqual(validateCandidateCheckoutIdentity(clean, clean, clean).status, 'pass');
     let rejectionMessage = '';
     try {
       validateCandidateCheckoutIdentity(clean, clean, { ...clean, status: ' M README.md' });
@@ -1146,6 +1147,18 @@ test.describe('CLI fail-closed integration', () => {
     }
     assertTrue(rejectionMessage.includes('checkout identity changed'),
       `Candidate checkout mutation must reach the identity guard; got: ${rejectionMessage}`);
+    for (const altered of [
+      { initial: { ...clean, commit: 'c'.repeat(40) }, final: clean },
+      { initial: clean, final: { ...clean, tree: 'd'.repeat(40) } },
+    ]) {
+      let rejected = false;
+      try {
+        validateCandidateCheckoutIdentity(clean, altered.initial, altered.final);
+      } catch {
+        rejected = true;
+      }
+      assertEqual(rejected, true);
+    }
   });
 
   test('Claude reviewer invocation accepts report edits without interactive approval', () => {
