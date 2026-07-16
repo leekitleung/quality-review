@@ -102,18 +102,25 @@ const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-quality-rollback
 const rollbackRoot = path.join(temporary, 'rollback');
 const isolatedHome = await mkdtemp(path.join(temporary, 'home-'));
 const candidateEnv = createCandidateSubprocessEnv(process.env, isolatedHome);
+candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
+candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY = path.join(path.dirname(path.dirname(outputPath)), 'generated-goal.md');
+candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY = path.join(path.dirname(path.dirname(outputPath)), '.outer-sandbox-write-canary');
 const corepackHome = process.env.COREPACK_HOME || path.join(os.homedir(), '.cache', 'node', 'corepack');
 candidateEnv.COREPACK_HOME = corepackHome;
 candidateEnv.COREPACK_ENABLE_NETWORK = '0';
 candidateEnv.COREPACK_DEFAULT_TO_LATEST = '0';
-const sandboxOptions = {
+const cloneSandboxOptions = {
   readOnlyRoots: [root, ...(existsSync(corepackHome) ? [corepackHome] : [])],
+  writeRoots: [temporary],
+};
+const sandboxOptions = {
+  readOnlyRoots: [rollbackRoot, ...(existsSync(corepackHome) ? [corepackHome] : [])],
   writeRoots: [temporary],
 };
 const records = [sourceStatus];
 try {
   const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', root, rollbackRoot], temporary, candidateEnv,
-    'git clone --quiet --no-local <source> <rollback>', sandboxOptions);
+    'git clone --quiet --no-local <source> <rollback>', cloneSandboxOptions);
   records.push(clone);
   if (clone.exit_code === 0) {
     records.push(run('isolated-commit', 'git', ['rev-parse', 'HEAD'], rollbackRoot, candidateEnv, null, sandboxOptions));

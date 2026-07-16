@@ -48,6 +48,8 @@ const SUBPROCESS_ENV_ALLOWLIST = new Set([
   'FORCE_COLOR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'SYSTEMROOT', 'WINDIR',
   'COMSPEC', 'PATHEXT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'NODE_TEST_CONTEXT',
   'NODE_V8_COVERAGE',
+  'RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED', 'RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY',
+  'RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY',
 ]);
 
 export function createSubprocessEnv(source = process.env) {
@@ -80,7 +82,26 @@ export function wrapCandidateCommand(command, args, {
     '-p', '(version 1) (allow default)', '/usr/bin/true',
   ], { encoding: 'utf8' });
   if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout || ''}${probe.stderr || ''}`)) {
-    throw new Error('candidate filesystem sandbox unavailable; nested execution fails closed');
+    const readCanary = process.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY;
+    const writeCanary = process.env.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY;
+    const declaredRoots = [...allowedRoots, ...readOnlyRoots, ...writeRoots].map(root => path.resolve(root));
+    const canariesAreValid = process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED === '1' &&
+      path.isAbsolute(readCanary || '') && path.isAbsolute(writeCanary || '') && existsSync(readCanary) &&
+      !existsSync(writeCanary) &&
+      declaredRoots.every(root => !isPathWithin(root, readCanary) && !isPathWithin(root, writeCanary));
+    if (!canariesAreValid) throw new Error('candidate filesystem sandbox unavailable; nested execution fails closed');
+    const capability = spawnSync(process.execPath, ['-e', `
+      const fs = require('node:fs');
+      let denied = 0;
+      try { fs.readFileSync(${JSON.stringify(readCanary)}); } catch { denied++; }
+      try { fs.writeFileSync(${JSON.stringify(writeCanary)}, 'forged'); } catch { denied++; }
+      process.exit(denied === 2 ? 0 : 1);
+    `], { encoding: 'utf8' });
+    if (capability.status !== 0 || existsSync(writeCanary)) {
+      rmSync(writeCanary, { force: true });
+      throw new Error('outer sandbox capability check failed closed');
+    }
+    return { command, args };
   }
   if (probe.status !== 0) throw new Error('candidate filesystem sandbox probe failed closed');
   hostHome ||= userInfo().homedir;

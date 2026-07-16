@@ -70,13 +70,17 @@ const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-quality-review-'
 const candidate = path.join(temporary, 'candidate');
 const isolatedHome = await mkdtemp(path.join(temporary, 'home-'));
 const candidateEnv = createCandidateSubprocessEnv(process.env, isolatedHome);
+candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
+candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY = path.join(path.dirname(path.dirname(outputPath)), 'generated-goal.md');
+candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY = path.join(path.dirname(path.dirname(outputPath)), '.outer-sandbox-write-canary');
 const records = [];
 try {
-  const sandboxOptions = { readOnlyRoots: [root], writeRoots: [temporary] };
+  const cloneSandboxOptions = { readOnlyRoots: [root], writeRoots: [temporary] };
   const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', root, candidate], temporary, candidateEnv,
-    'git clone --quiet --no-local <source> <candidate>', sandboxOptions);
+    'git clone --quiet --no-local <source> <candidate>', cloneSandboxOptions);
   records.push(clone);
   if (clone.exit_code === 0) {
+    const sandboxOptions = { readOnlyRoots: [candidate], writeRoots: [temporary] };
     const startedAt = new Date().toISOString();
     let scriptIssues = [];
     try {
@@ -132,6 +136,7 @@ try {
       ));
     }
   }
+  const sandboxOptions = { readOnlyRoots: [candidate], writeRoots: [temporary] };
   const commit = run('candidate-commit', 'git', ['rev-parse', 'HEAD'], root);
   const tree = run('candidate-tree', 'git', ['rev-parse', 'HEAD^{tree}'], root);
   const isolatedCommit = run('isolated-commit', 'git', ['rev-parse', 'HEAD'], candidate, candidateEnv, null, sandboxOptions);
