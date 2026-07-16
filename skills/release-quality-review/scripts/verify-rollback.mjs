@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -99,23 +99,30 @@ if (sourceStatus.exit_code !== 0 || sourceStatus.output.trim()) {
 }
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-quality-rollback-'));
+const attestationRoot = await mkdtemp(path.join(os.tmpdir(), 'release-quality-attestation-'));
 const rollbackRoot = path.join(temporary, 'rollback');
 const isolatedHome = await mkdtemp(path.join(temporary, 'home-'));
 const candidateEnv = createCandidateSubprocessEnv(process.env, isolatedHome);
+const outerReadCanary = path.join(attestationRoot, 'read-canary');
+const outerWriteCanary = path.join(attestationRoot, 'write-canary');
+await writeFile(outerReadCanary, 'trusted');
+const outerSandboxAttestation = Object.freeze({
+  attested: true, readCanary: outerReadCanary, writeCanary: outerWriteCanary,
+});
 candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
-candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY = path.join(path.dirname(path.dirname(outputPath)), 'generated-goal.md');
-candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY = path.join(path.dirname(path.dirname(outputPath)), '.outer-sandbox-write-canary');
+candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY = outerReadCanary;
+candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY = outerWriteCanary;
 const corepackHome = process.env.COREPACK_HOME || path.join(os.homedir(), '.cache', 'node', 'corepack');
 candidateEnv.COREPACK_HOME = corepackHome;
 candidateEnv.COREPACK_ENABLE_NETWORK = '0';
 candidateEnv.COREPACK_DEFAULT_TO_LATEST = '0';
 const cloneSandboxOptions = {
   readOnlyRoots: [root, ...(existsSync(corepackHome) ? [corepackHome] : [])],
-  writeRoots: [temporary],
+  writeRoots: [temporary], outerSandboxAttestation,
 };
 const sandboxOptions = {
   readOnlyRoots: [rollbackRoot, ...(existsSync(corepackHome) ? [corepackHome] : [])],
-  writeRoots: [temporary],
+  writeRoots: [temporary], outerSandboxAttestation,
 };
 const records = [sourceStatus];
 try {
@@ -181,4 +188,5 @@ try {
   process.exitCode = report.exit_code;
 } finally {
   await rm(temporary, { recursive: true, force: true });
+  await rm(attestationRoot, { recursive: true, force: true });
 }

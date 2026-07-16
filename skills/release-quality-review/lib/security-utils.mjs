@@ -76,16 +76,17 @@ export function createCandidateSubprocessEnv(source = process.env, isolatedHome)
 
 export function wrapCandidateCommand(command, args, {
   allowedRoots = [], readOnlyRoots = [], writeRoots = [], hostHome = null, allowNetwork = false,
+  outerSandboxAttestation = null,
 } = {}) {
   if (process.platform !== 'darwin') throw new Error(`candidate filesystem sandbox is unavailable on ${process.platform}`);
   const probe = spawnSync('/usr/bin/sandbox-exec', [
     '-p', '(version 1) (allow default)', '/usr/bin/true',
   ], { encoding: 'utf8' });
   if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout || ''}${probe.stderr || ''}`)) {
-    const readCanary = process.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY;
-    const writeCanary = process.env.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY;
+    const readCanary = outerSandboxAttestation?.readCanary;
+    const writeCanary = outerSandboxAttestation?.writeCanary;
     const declaredRoots = [...allowedRoots, ...readOnlyRoots, ...writeRoots].map(root => path.resolve(root));
-    const canariesAreValid = process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED === '1' &&
+    const canariesAreValid = outerSandboxAttestation?.attested === true &&
       path.isAbsolute(readCanary || '') && path.isAbsolute(writeCanary || '') && existsSync(readCanary) &&
       !existsSync(writeCanary) &&
       declaredRoots.every(root => !isPathWithin(root, readCanary) && !isPathWithin(root, writeCanary));

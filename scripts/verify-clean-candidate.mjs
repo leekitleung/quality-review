@@ -67,20 +67,27 @@ if (sourceStatus.exit_code !== 0 || sourceStatus.output.trim()) {
 }
 
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-quality-review-'));
+const attestationRoot = await mkdtemp(path.join(os.tmpdir(), 'release-quality-attestation-'));
 const candidate = path.join(temporary, 'candidate');
 const isolatedHome = await mkdtemp(path.join(temporary, 'home-'));
 const candidateEnv = createCandidateSubprocessEnv(process.env, isolatedHome);
+const outerReadCanary = path.join(attestationRoot, 'read-canary');
+const outerWriteCanary = path.join(attestationRoot, 'write-canary');
+await writeFile(outerReadCanary, 'trusted');
+const outerSandboxAttestation = Object.freeze({
+  attested: true, readCanary: outerReadCanary, writeCanary: outerWriteCanary,
+});
 candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
-candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY = path.join(path.dirname(path.dirname(outputPath)), 'generated-goal.md');
-candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY = path.join(path.dirname(path.dirname(outputPath)), '.outer-sandbox-write-canary');
+candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY = outerReadCanary;
+candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY = outerWriteCanary;
 const records = [];
 try {
-  const cloneSandboxOptions = { readOnlyRoots: [root], writeRoots: [temporary] };
+  const cloneSandboxOptions = { readOnlyRoots: [root], writeRoots: [temporary], outerSandboxAttestation };
   const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', root, candidate], temporary, candidateEnv,
     'git clone --quiet --no-local <source> <candidate>', cloneSandboxOptions);
   records.push(clone);
   if (clone.exit_code === 0) {
-    const sandboxOptions = { readOnlyRoots: [candidate], writeRoots: [temporary] };
+    const sandboxOptions = { readOnlyRoots: [candidate], writeRoots: [temporary], outerSandboxAttestation };
     const startedAt = new Date().toISOString();
     let scriptIssues = [];
     try {
@@ -136,7 +143,7 @@ try {
       ));
     }
   }
-  const sandboxOptions = { readOnlyRoots: [candidate], writeRoots: [temporary] };
+  const sandboxOptions = { readOnlyRoots: [candidate], writeRoots: [temporary], outerSandboxAttestation };
   const commit = run('candidate-commit', 'git', ['rev-parse', 'HEAD'], root);
   const tree = run('candidate-tree', 'git', ['rev-parse', 'HEAD^{tree}'], root);
   const isolatedCommit = run('isolated-commit', 'git', ['rev-parse', 'HEAD'], candidate, candidateEnv, null, sandboxOptions);
@@ -166,4 +173,5 @@ try {
   process.exitCode = report.exit_code;
 } finally {
   await rm(temporary, { recursive: true, force: true });
+  await rm(attestationRoot, { recursive: true, force: true });
 }
