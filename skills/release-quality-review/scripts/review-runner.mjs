@@ -289,9 +289,8 @@ function resolveDiffBase(ref) {
     process.exit(4);
   }
   try {
-    return execFileSync('git', ['merge-base', ref, 'HEAD'], {
-      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, env: CANDIDATE_ENV,
-      sandboxReadOnlyRoots: [PROJECT_ROOT],
+    return nodeExecFileSync('git', ['merge-base', ref, 'HEAD'], {
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, env: TOOL_ENV,
     }).trim();
   } catch {
     console.error(`Unable to resolve --base ref: ${ref}`);

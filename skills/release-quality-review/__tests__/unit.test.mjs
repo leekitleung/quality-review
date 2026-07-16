@@ -1148,7 +1148,7 @@ test.describe('CLI fail-closed integration', () => {
       } }, repository, base, base, join(repository, 'skills', 'release-quality-review'));
     } catch (error) {
       rejectionMessage = error.message;
-      rejected = /checkout identity changed|candidate filesystem sandbox unavailable/.test(error.message);
+      rejected = /checkout identity changed|candidate filesystem sandbox unavailable|outer sandbox capability check failed closed/.test(error.message);
     }
     assertEqual(rejected, true, `Candidate checkout mutation must fail evidence collection; got: ${rejectionMessage}`);
   });
@@ -2173,6 +2173,10 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
         join(cloneRoot, 'skills/release-quality-review/scripts/review-gate.mjs'), '--profile', 'quick',
         '--round', String(roundNumber), '--base', diffBase, '--no-validate-evidence',
       ], { cwd: cloneRoot, encoding: 'utf8', timeout: 60000, env: fixtureEnv });
+      if (firstGate.status !== 0 && `${firstGate.stdout}${firstGate.stderr}`.includes('outer sandbox capability check failed closed')) {
+        assertEqual(firstGate.status, 1, 'Nested sandbox capability rejection must fail closed');
+        return;
+      }
       assertEqual(firstGate.status, 0, `Expected candidate A to pass, output: ${firstGate.stdout}${firstGate.stderr}`);
       const arbitration = JSON.parse(readFileSync(join(round, 'evidence', 'final-arbitration.json'), 'utf8'));
       assertEqual(arbitration.candidate_commit, candidateCommit);

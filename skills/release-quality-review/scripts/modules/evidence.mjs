@@ -94,6 +94,20 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
     // Ignore
   }
 
+  const verificationCommands = [
+    config?.verification?.test || 'pnpm test',
+    config?.verification?.typecheck || 'pnpm typecheck',
+    config?.verification?.build || 'pnpm build',
+    config?.verification?.lint || 'pnpm lint',
+    config?.verification?.coverage || 'npm run coverage',
+    config?.verification?.e2e || 'npm run test:e2e',
+  ];
+  const sourceManifest = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'));
+  const sourceScriptIssues = findTrivialVerificationScripts(sourceManifest.scripts, verificationCommands);
+  if (sourceScriptIssues.length > 0) {
+    throw new Error(`trivial or missing verification scripts: ${sourceScriptIssues.map(issue => issue.script).join(', ')}`);
+  }
+
   // Automated checks with config - create candidate runtime inline
   const runtime = createCandidateRuntime(projectRoot, 'gate', outerSandboxAttestationFromEnv());
   const { prepareCheckout, readIdentity, validateCheckout } = runtime;
