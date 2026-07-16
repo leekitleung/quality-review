@@ -1167,6 +1167,23 @@ test.describe('CLI fail-closed integration', () => {
     }
   });
 
+  test('validator CLI help and goal stdin paths are executable', () => {
+    for (const script of [
+      'goal-instruction-gate.mjs', 'goal-mode-validator.mjs', 'validate-delivery-packet.mjs',
+    ]) {
+      const help = spawnSync('node', [join(SKILL_DIR, 'scripts', script), '--help'], {
+        cwd: PROJECT_ROOT, encoding: 'utf8',
+      });
+      assertEqual(help.status, 0, `${script}: ${help.stdout}${help.stderr}`);
+      assertTrue(help.stdout.includes('Usage:'));
+    }
+    const stdin = spawnSync('node', [join(SKILL_DIR, 'scripts', 'goal-instruction-gate.mjs'), '--stdin'], {
+      cwd: PROJECT_ROOT, encoding: 'utf8',
+      input: '/goal release-quality-review 达到可发布状态。验证标准：测试、覆盖率与 Gate 均通过。边界：不降低门槛。证据：输出退出码与提交哈希。停止条件：达成即停止。',
+    });
+    assertEqual(stdin.status, 0, `${stdin.stdout}${stdin.stderr}`);
+  });
+
   test('evidence CLIs redact invalid output paths and use configuration exit 4', () => {
     for (const [script, args] of [
       [join(PROJECT_ROOT, 'scripts', 'verify-clean-candidate.mjs'), ['--output', '../outside/clean-candidate.json']],

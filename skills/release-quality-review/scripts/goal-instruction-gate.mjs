@@ -396,6 +396,7 @@ function main({ goalText, filePath, roundNumber, stdin }) {
       printResult(result, resolvedGoalText);
       process.exit(result.valid ? 0 : 1);
     });
+    return;
   } else if (filePath) {
     // Read from file
     if (!existsSync(filePath)) {
