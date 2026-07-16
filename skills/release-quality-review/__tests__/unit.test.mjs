@@ -842,27 +842,32 @@ test.describe('security boundaries', () => {
       '-p', '(version 1) (allow default)', '/usr/bin/true',
     ], { encoding: 'utf8' });
     if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout}${probe.stderr}`)) {
+      const previousAttested = process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
       process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
-      let errorMessage = '';
       try {
-        wrapCandidateCommand(process.execPath, ['-e', ''], { allowedRoots: [PROJECT_ROOT] });
-      } catch (error) {
-        errorMessage = error.message;
+        let errorMessage = '';
+        try {
+          wrapCandidateCommand(process.execPath, ['-e', ''], { allowedRoots: [PROJECT_ROOT] });
+        } catch (error) {
+          errorMessage = error.message;
+        }
+        assertTrue(errorMessage.includes('nested execution fails closed'),
+          'Ambient attestation must not authorize fallback');
+        if (process.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY) {
+          const wrapped = wrapCandidateCommand(process.execPath, ['-e', ''], {
+            allowedRoots: [PROJECT_ROOT],
+            outerSandboxAttestation: {
+              attested: true,
+              readCanary: process.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY,
+              writeCanary: process.env.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY,
+            },
+          });
+          assertEqual(wrapped?.command, process.execPath, errorMessage);
+        }
+      } finally {
+        if (previousAttested === undefined) delete process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
+        else process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = previousAttested;
       }
-      assertTrue(errorMessage.includes('nested execution fails closed'),
-        'Ambient attestation must not authorize fallback');
-      if (process.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY) {
-        const wrapped = wrapCandidateCommand(process.execPath, ['-e', ''], {
-          allowedRoots: [PROJECT_ROOT],
-          outerSandboxAttestation: {
-            attested: true,
-            readCanary: process.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY,
-            writeCanary: process.env.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY,
-          },
-        });
-        assertEqual(wrapped?.command, process.execPath, errorMessage);
-      }
-      delete process.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED;
       return;
     }
     const hostHome = userInfo().homedir;
