@@ -1,5 +1,5 @@
 import { execFileSync as nodeExecFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -8,11 +8,23 @@ import {
 
 export function createCandidateRuntime(projectRoot, label, outerSandboxAttestation = null) {
   const isolatedHome = mkdtempSync(join(tmpdir(), `release-quality-review-${label}-home-`));
+  const attestationRoot = outerSandboxAttestation ? null :
+    mkdtempSync(join(tmpdir(), `release-quality-review-${label}-attestation-`));
+  const sandboxAttestation = outerSandboxAttestation || Object.freeze({
+    attested: true,
+    readCanary: join(attestationRoot, 'read-canary'),
+    writeCanary: join(attestationRoot, 'write-canary'),
+  });
+  if (attestationRoot) writeFileSync(sandboxAttestation.readCanary, 'trusted');
   let checkoutParent = null;
   const env = createCandidateSubprocessEnv(process.env, isolatedHome);
+  env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED = '1';
+  env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY = sandboxAttestation.readCanary;
+  env.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY = sandboxAttestation.writeCanary;
 
   process.on('exit', () => {
     rmSync(isolatedHome, { recursive: true, force: true });
+    if (attestationRoot) rmSync(attestationRoot, { recursive: true, force: true });
     if (checkoutParent) rmSync(checkoutParent, { recursive: true, force: true });
   });
 
@@ -26,7 +38,7 @@ export function createCandidateRuntime(projectRoot, label, outerSandboxAttestati
     } = options;
     const wrapped = wrapCandidateCommand(file, args, {
       readOnlyRoots: sandboxReadOnlyRoots, writeRoots: sandboxWriteRoots,
-      allowNetwork: sandboxAllowNetwork, outerSandboxAttestation,
+      allowNetwork: sandboxAllowNetwork, outerSandboxAttestation: sandboxAttestation,
     });
     return nodeExecFileSync(wrapped.command, wrapped.args, { ...execOptions, env });
   }

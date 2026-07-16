@@ -38,6 +38,7 @@ import {
 } from '../lib/review-utils.mjs';
 import {
   resolveWithinRoot,
+  isPathWithin,
   isRealDirectory,
   shouldIncludeCanonicalFile,
   containsSensitiveText,
@@ -1099,6 +1100,15 @@ test.describe('CLI fail-closed integration', () => {
     } finally {
       rmSync(canary, { force: true });
     }
+  });
+
+  test('candidate runtime passes its trusted sandbox attestation to nested commands', () => {
+    const runtime = createCandidateRuntime(PROJECT_ROOT, `nested-attestation-${randomUUID()}`);
+    assertEqual(runtime.env.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED, '1');
+    assertEqual(existsSync(runtime.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY), true);
+    assertEqual(existsSync(runtime.env.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY), false);
+    assertEqual(isPathWithin(runtime.isolatedHome, runtime.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY), false);
+    assertEqual(isPathWithin(PROJECT_ROOT, runtime.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY), false);
   });
 
   test('evidence collection rejects candidate checkout mutation', () => {
