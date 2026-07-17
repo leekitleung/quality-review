@@ -855,6 +855,13 @@ test.describe('adversarial review detection', () => {
     assertEqual(violations.length, 0);
   });
 
+  test('accepts TAP summary labels without comment prefixes', () => {
+    const content = 'Command: npm test\nExit code: 0\nOutput: TAP version 13; tests 132; pass 132; fail 0\n测试通过';
+    assertEqual(extractCommandEvidence(content).length, 1);
+    assertTrue(extractTestOutputs(content).includes('tests 132'));
+    assertEqual(checkMissingEvidenceOutput(content).length, 0);
+  });
+
   test('rejects a bare command token and static references as runtime evidence', () => {
     const content = '功能正常。运行证据：npm test。\na.mjs:1\nb.mjs:1\nc.mjs:1\nd.mjs:1\ne.mjs:1';
     assertEqual(extractCommandEvidence(content).length, 0);
@@ -1227,6 +1234,10 @@ Evidence: reproducible
     assertEqual(parseBlockers('NO P0 OR P1 BLOCKERS.').length, 0);
   });
 
+  test('ignores labeled empty severity sections with dash separators', () => {
+    assertEqual(parseBlockers('## P0 — Redlines\n\nNone.\n\n## P1 — Must fix before release\n\nNone.\n').length, 0);
+  });
+
   test('retains titled P0/P1 headings and ignores unrelated checklists', () => {
     for (const heading of ['## P0 — Hidden veto', '## P1 - Hidden veto', '## P0: Hidden veto', '## P1 (Hidden veto)']) {
       const parsed = parseBlockers(`${heading}\nEvidence: reproducible\n`);
@@ -1547,6 +1558,7 @@ test.describe('CLI fail-closed integration', () => {
     assertTrue(runner.includes('Exit code: 0'));
     assertTrue(runner.includes('Output: # tests <N>; # pass <N>; # fail 0'));
     assertTrue(runner.includes('不得只写“测试通过”'));
+    assertTrue(runner.includes('每个 blockers/redlines 条目必须在 blockers.md 中有独立标题'));
     assertEqual(runner.includes('writeReviewerFilesFromOutput'), false,
       'Runner must fail closed instead of synthesizing reviewer packet files');
     assertEqual(runner.includes('Review output parsing incomplete'), false,
@@ -1554,6 +1566,17 @@ test.describe('CLI fail-closed integration', () => {
     const validator = readFileSync(join(SKILL_DIR, 'scripts', 'evidence-validator.mjs'), 'utf8');
     assertTrue(validator.includes('const fileLineRefs = extractFileLineReferences(content)'),
       'Evidence quality must count references with the canonical extractor');
+  });
+
+  test('entry scripts initialize the report root without module-global mutable state', () => {
+    for (const script of ['review-runner.mjs', 'review-gate.mjs', 'evidence-validator.mjs']) {
+      const content = readFileSync(join(SKILL_DIR, 'scripts', script), 'utf8');
+      assertEqual(/\blet REPORT_DIR\b/.test(content), false, script);
+      assertTrue(content.includes('const REPORT_DIR = resolveReportDirectoryOrExit()'), script);
+    }
+    const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
+    assertTrue(runner.includes('Run from a normal macOS host shell or supported CI runner.'),
+      'Sandbox capability failures must include an actionable recovery path');
   });
 
   test('actual reviews require a backend and reject incompatible explicit models', () => {

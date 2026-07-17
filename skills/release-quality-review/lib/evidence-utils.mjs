@@ -2,7 +2,7 @@ import path from 'node:path';
 
 const COMMAND_PATTERN = /\b(?:pnpm|npm|yarn)\s+(?:run\s+)?[a-zA-Z0-9:._-]+(?:\s+--[^\s`),;]+)*/g;
 const EXIT_ZERO_PATTERN = /\b(?:exit(?:ed|_code)?|return(?:ed)?|status)\s*(?:code)?\s*[:=]?\s*`?0\b/i;
-const OUTPUT_SUMMARY_PATTERN = /#\s*(?:tests|pass|fail|skipped)\s+\d+|\b\d+\s+(?:passed|failed|skipped)\b|found\s+0\s+vulnerabilities|in sync\s*\(\d+\s+adapters\)|operation not permitted/i;
+const OUTPUT_SUMMARY_PATTERN = /(?:#\s*|\b)(?:tests|pass|fail|skipped)\s+\d+|\b\d+\s+(?:passed|failed|skipped)\b|found\s+0\s+vulnerabilities|in sync\s*\(\d+\s+adapters\)|operation not permitted/i;
 
 const FILE_LINE_PATTERN = /`?((?:\/|\.\.?\/)?[A-Za-z0-9_.][A-Za-z0-9_./\\-]*\.(?:ts|tsx|js|jsx|mjs|md|json|ya?ml)):(\d+)`?/g;
 
@@ -34,7 +34,7 @@ export function extractCommandEvidence(content) {
 }
 
 export function extractTestOutputs(content) {
-  return content.match(/#\s*(?:tests|pass|fail|skipped)\s+\d+|\b\d+\s+(?:passed|failed|skipped)\b/g) || [];
+  return content.match(/(?:#\s*|\b)(?:tests|pass|fail|skipped)\s+\d+|\b\d+\s+(?:passed|failed|skipped)\b/g) || [];
 }
 
 export function checkMissingEvidenceOutput(content) {

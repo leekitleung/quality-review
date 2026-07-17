@@ -268,7 +268,7 @@ export function parseBlockers(blockerContent) {
 
     if (/^none(?:\.|\b)/i.test(trimmed) ||
         /^(?:no|none|无).*?(?:p0|p1|blockers?)/i.test(trimmed) ||
-        /^#+\s*(?:P0|P1)(?:\s*\/\s*red\s*lines?|\s*\((?:red\s*lines?|must\s*fix|must\s*fix\s*before\s*release)\))?\s*$/i.test(trimmed) ||
+        /^#+\s*(?:P0|P1)(?:(?:\s*[/—–-]\s*|\s*\()(?:red\s*lines?|must\s*fix|must\s*fix\s*before\s*release)\)?)?\s*$/i.test(trimmed) ||
         trimmed.match(/^#\s+.*Blockers$/i)) {
       continue;
     }

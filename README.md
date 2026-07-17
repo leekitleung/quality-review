@@ -242,7 +242,8 @@ Troubleshooting:
   collecting Gate command so `metadata.json` binds the same clean evidence.
 - `outer sandbox capability check failed closed`: run from a normal macOS host
   shell or supported CI runner, not from inside another workspace sandbox; then
-  resume the same round with its locked backend and model.
+  resume the same round with its locked backend and model. The runner includes
+  this recovery action directly in Git evidence-collection errors.
 
 `skills.lock.yaml` records canonical and adapter SHA-256 hashes. CI runs the
 drift check, tests, syntax validation, and review-gate dry-run.

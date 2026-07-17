@@ -361,6 +361,8 @@ backend/model 校验的完整四文件 packet 才可视为完成。HTTP 4xx（40
 `result.yaml` 仅在 score >= 90 且 blockers/redlines 均为空时允许 `status: pass`，其他情况
 必须为 `fail`，且该 status 只表示当前 Reviewer，不表示整轮 Gate。Reviewer 在 `score.md` 引用共享自动化
 证据时必须写出可解析的 Command、Exit code、Output 三行及实际摘要，不能只声称“测试通过”。
+每个 machine blocker/redline 必须在 `blockers.md` 的独立标题中原样出现或使用同一唯一标识符。
+报告目录在三个 CLI 入口均以不可变值初始化；sandbox capability 失败必须直接输出 host-shell/CI 恢复动作。
 
 **环境变量配置**:
 ```bash

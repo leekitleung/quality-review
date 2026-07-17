@@ -25,13 +25,16 @@ import {
 import { resolveReportDirectory } from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
-let REPORT_DIR;
-try {
-  REPORT_DIR = resolveReportDirectory(PROJECT_ROOT);
-} catch (error) {
-  console.error(error.message);
-  process.exit(4);
+function resolveReportDirectoryOrExit() {
+  try {
+    return resolveReportDirectory(PROJECT_ROOT);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(4);
+    throw error;
+  }
 }
+const REPORT_DIR = resolveReportDirectoryOrExit();
 
 function parseArgs(args) {
   let targetRound = null;

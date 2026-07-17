@@ -42,13 +42,16 @@ import {
 
 const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
-let REPORT_DIR;
-try {
-  REPORT_DIR = resolveReportDirectory(PROJECT_ROOT);
-} catch (error) {
-  console.error(error.message);
-  process.exit(4);
+function resolveReportDirectoryOrExit() {
+  try {
+    return resolveReportDirectory(PROJECT_ROOT);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(4);
+    throw error;
+  }
 }
+const REPORT_DIR = resolveReportDirectoryOrExit();
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 const TOOL_ENV = createSubprocessEnv();
 const OUTER_SANDBOX_ATTESTATION = outerSandboxAttestationFromEnv();
@@ -334,7 +337,11 @@ function collectEvidence(config) {
     log.warn(`Could not collect git info: ${redactSensitiveText(e.message)}`);
   }
   if (gitEvidenceError) {
-    throw new Error(`git evidence collection failed: ${redactSensitiveText(gitEvidenceError.message)}`);
+    const message = redactSensitiveText(gitEvidenceError.message);
+    const recovery = /(?:outer sandbox|filesystem sandbox)/i.test(message)
+      ? ' Run from a normal macOS host shell or supported CI runner.'
+      : '';
+    throw new Error(`git evidence collection failed: ${message}.${recovery}`);
   }
   if (evidence.git.status !== '') throw new Error('source checkout must be clean before evidence collection');
 
@@ -564,6 +571,7 @@ function generateReviewerPrompt(
   Output: # tests <N>; # pass <N>; # fail 0
 - ✅ 其他命令也必须使用同样的 Command/Exit code/Output 三行格式，Output 包含原始摘要
 - ❌ 不得只写“测试通过”“共享证据为 pass”而省略命令、exit code 或输出摘要
+- ✅ 每个 blockers/redlines 条目必须在 blockers.md 中有独立标题，标题原样包含该条目的完整文本或唯一标识符
 - ✅ 引用**历史报告**或**其他 Reviewer 的发现**
 - ✅ 提供具体的错误信息、堆栈跟踪或命令输出
 
