@@ -200,7 +200,7 @@ function checkEvidenceQuality(content) {
   const violations = [];
 
   // Count evidence citations
-  const fileLineRefs = content.match(/[a-zA-Z][^\s:]+\.(ts|tsx|js|jsx|mjs):\d+/g) || [];
+  const fileLineRefs = extractFileLineReferences(content);
   const commandOutputs = extractCommandEvidence(content);
   const testOutputs = extractTestOutputs(content);
 
@@ -232,7 +232,7 @@ function checkEvidenceQuality(content) {
   // NOTE: Auto-generated reviews with real evidence are VALID - only flag if no evidence
   const hasTestOutput = testOutputs.length > 0;
   const hasCommandOutput = commandOutputs.length > 0;
-  const hasFileRefs = /[a-zA-Z][^\s:]+\.(ts|tsx|js|jsx|mjs):\d+/.test(content);
+  const hasFileRefs = fileLineRefs.length > 0;
 
   // Only flag "Auto" patterns if there's no real evidence
   const hasRealEvidence = hasTestOutput || hasCommandOutput || hasFileRefs;

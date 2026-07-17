@@ -63,129 +63,6 @@ const SCALE_TIMEOUT_MULTIPLIERS = {
   xlarge: 2.0,   // 30 minutes
 };
 
-// Write reviewer output files from orchestrator (parse agent output and write)
-async function writeReviewerFilesFromOutput(reviewerDir, outputContent, reviewerName, profile, round, candidateCommit, candidateTree) {
-  // Parse output - look for YAML blocks or markdown formatted sections
-  let resultYaml = '';
-  let scoreContent = '';
-  let blockersContent = '';
-  let improvementsContent = '';
-
-  const lines = outputContent.split('\n');
-  let inResultBlock = false;
-  let inScore = false;
-  let inBlockers = false;
-  let inImprovements = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-
-    // Detect section transitions
-    if ((line.includes('result.yaml') || line.includes('candidate_commit:')) && !inScore) {
-      inResultBlock = true;
-      inImprovements = false;
-    }
-
-    if (inResultBlock && line.trim() === '---') {
-      // YAML block end marker
-      inResultBlock = false;
-      continue;
-    }
-
-    if (line.includes('score.md') || (inResultBlock && line.includes('score:')) || (line.includes('Overall Score') && !inScore)) {
-      inResultBlock = false;
-      inScore = true;
-      inBlockers = false;
-      inImprovements = false;
-    }
-
-    if (inScore && (line.includes('blockers.md') || line.includes('## Blockers') || line.includes('## P0') || line.includes('## P1'))) {
-      inScore = false;
-      inBlockers = true;
-      inImprovements = false;
-    }
-
-    if (inBlockers && (line.includes('improvement-list.md') || line.includes('## Improvements') || line.includes('## P2') || line.includes('## P3'))) {
-      inBlockers = false;
-      inImprovements = true;
-    }
-
-    // Extract content based on current section
-    if (inResultBlock && !inScore) {
-      resultYaml += line + '\n';
-    }
-
-    if (inScore && !inBlockers && !inImprovements) {
-      scoreContent += line + '\n';
-    }
-
-    if (inBlockers && !inImprovements) {
-      blockersContent += line + '\n';
-    }
-
-    if (inImprovements) {
-      improvementsContent += line + '\n';
-    }
-  }
-
-  // Write result.yaml
-  if (resultYaml.trim() && resultYaml.includes('candidate_commit:')) {
-    try {
-      await writeContainedFile(reviewerDir, join(reviewerDir, 'result.yaml'), resultYaml);
-    } catch (e) {
-      console.error(`Failed to write result.yaml: ${e.message}`);
-    }
-  }
-
-  // Write score.md
-  if (scoreContent.trim()) {
-    try {
-      await writeContainedFile(reviewerDir, join(reviewerDir, 'score.md'), scoreContent);
-    } catch (e) {
-      console.error(`Failed to write score.md: ${e.message}`);
-    }
-  } else {
-    const fallback = `# ${reviewerName} - Round ${round}\n\n## Overall Score: 0/100\n\n---\n\nReview output parsing incomplete.\n`;
-    try {
-      await writeContainedFile(reviewerDir, join(reviewerDir, 'score.md'), fallback);
-    } catch (e) {
-      console.error(`Failed to write score.md: ${e.message}`);
-    }
-  }
-
-  // Write blockers.md
-  if (blockersContent.trim()) {
-    try {
-      await writeContainedFile(reviewerDir, join(reviewerDir, 'blockers.md'), blockersContent);
-    } catch (e) {
-      console.error(`Failed to write blockers.md: ${e.message}`);
-    }
-  } else {
-    const fallback = `# Blockers - ${reviewerName}\n\n## P0 (Must Fix)\n- None found\n\n## P1 (Must Fix)\n- Reviewer output could not be parsed into the required packet.\n\n---\n`;
-    try {
-      await writeContainedFile(reviewerDir, join(reviewerDir, 'blockers.md'), fallback);
-    } catch (e) {
-      console.error(`Failed to write blockers.md: ${e.message}`);
-    }
-  }
-
-  // Write improvement-list.md
-  if (improvementsContent.trim()) {
-    try {
-      await writeContainedFile(reviewerDir, join(reviewerDir, 'improvement-list.md'), improvementsContent);
-    } catch (e) {
-      console.error(`Failed to write improvement-list.md: ${e.message}`);
-    }
-  } else {
-    const fallback = `# Improvements - ${reviewerName}\n\n## P2 (Should Fix)\n- No improvements listed\n\n## P3 (Nice to Have)\n- None\n`;
-    try {
-      await writeContainedFile(reviewerDir, join(reviewerDir, 'improvement-list.md'), fallback);
-    } catch (e) {
-      console.error(`Failed to write improvement-list.md: ${e.message}`);
-    }
-  }
-}
-
 function parsePositiveDuration(value, fallback) {
   if (value === undefined) return fallback;
   const parsed = Number(value);
@@ -1221,26 +1098,10 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             if (forceTimer) clearTimeout(forceTimer);
             activeReviewers.delete(`${reviewer}-${attempt}`);
 
-            let postValidation = await validateResumeArtifacts(
+            const postValidation = await validateResumeArtifacts(
               reviewerDir, reviewer, profile, currentRound, candidateIdentity,
               resolvedAgent, resolvedModel,
             );
-
-            // Preserve canonical files written by the reviewer; parse stdout only as a fallback.
-            if (!postValidation.valid && code === 0 && diagnostic.trim()) {
-              try {
-                await writeReviewerFilesFromOutput(
-                  reviewerDir, diagnostic, reviewer, profile, currentRound,
-                  candidateIdentity.commit, candidateIdentity.tree
-                );
-                postValidation = await validateResumeArtifacts(
-                  reviewerDir, reviewer, profile, currentRound, candidateIdentity,
-                  resolvedAgent, resolvedModel,
-                );
-              } catch (e) {
-                console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
-              }
-            }
 
             const complete = postValidation.valid;
             const status = eventStatus || (!aborted && code === 0 && complete ? 'completed' : 'failed');
@@ -1428,26 +1289,10 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         clearTimeout(timeoutTimer);
         if (forceTimer) clearTimeout(forceTimer);
 
-        let postValidation = await validateResumeArtifacts(
+        const postValidation = await validateResumeArtifacts(
           reviewerDir, reviewer, profile, currentRound, candidateIdentity,
           resolvedAgent, resolvedModel,
         );
-
-        // Preserve canonical files written by the reviewer; parse stdout only as a fallback.
-        if (!postValidation.valid && exitCode === 0 && diagnostic.trim()) {
-          try {
-            await writeReviewerFilesFromOutput(
-              reviewerDir, diagnostic, reviewer, profile, currentRound,
-              candidateIdentity.commit, candidateIdentity.tree
-            );
-            postValidation = await validateResumeArtifacts(
-              reviewerDir, reviewer, profile, currentRound, candidateIdentity,
-              resolvedAgent, resolvedModel,
-            );
-          } catch (e) {
-            console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
-          }
-        }
 
         const complete = postValidation.valid;
         if (complete && exitCode === 0) {

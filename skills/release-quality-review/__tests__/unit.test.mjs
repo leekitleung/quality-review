@@ -494,8 +494,9 @@ status: pass
 review_backend: codex
 review_model: gpt-test-review
 blockers: []
+redlines: []
 `;
-  test('accepts required scalar fields plus optional packet fields', () => {
+  test('accepts only the exact 11-field packet', () => {
     assertEqual(validateResultYamlContract(canonical).valid, true);
   });
   test('rejects duplicate, slash-form, nested, and non-lowercase machine fields', () => {
@@ -512,6 +513,9 @@ blockers: []
     const reversed = canonical.split('\n').slice(0, 7).reverse().join('\n');
     assertEqual(validateResultYamlContract(`${reversed}\n`).valid, false);
     assertEqual(validateResultYamlContract(canonical.replace('profile:', 'unexpected_authority: trusted\nprofile:')).valid, false);
+    for (const field of ['summary', 'dimensions', 'evidence', 'notes', 'verdict']) {
+      assertEqual(validateResultYamlContract(`${canonical}${field}: unsupported\n`).valid, false);
+    }
   });
 });
 
@@ -1319,6 +1323,13 @@ test.describe('CLI fail-closed integration', () => {
     assertTrue(runner.includes('不得添加 summary、dimensions、evidence'));
     assertTrue(runner.includes('不要运行 review-runner、review-gate、npm test、npm run build'));
     assertTrue(runner.includes('evidence/automated-checks.json'));
+    assertEqual(runner.includes('writeReviewerFilesFromOutput'), false,
+      'Runner must fail closed instead of synthesizing reviewer packet files');
+    assertEqual(runner.includes('Review output parsing incomplete'), false,
+      'Runner must not author fallback review evidence');
+    const validator = readFileSync(join(SKILL_DIR, 'scripts', 'evidence-validator.mjs'), 'utf8');
+    assertTrue(validator.includes('const fileLineRefs = extractFileLineReferences(content)'),
+      'Evidence quality must count references with the canonical extractor');
   });
 
   test('actual reviews require an explicit compatible backend and model', () => {
