@@ -33,8 +33,8 @@ trigger_conditions:
   native-designer:
     files: ['**/*.tsx', '**/*.jsx', '**/*.css', '**/ui/**']
   data-security:
-    files: ['**/auth/**', '**/storage/**']
-    patterns: ['token', 'secret', 'password', 'api-key']
+    files: ['**/auth/**', '**/storage/**', '**/security/**', '**/security-utils.mjs', '**/candidate-runtime.mjs']
+    patterns: ['token', 'secret', 'password', 'api-key', 'credential', 'sandbox', 'permission']
   zero-doc-user:
     files: ['**/README.md', '**/docs/**', '**/*.md']
     conditions: ['new-feature', 'onboarding']

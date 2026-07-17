@@ -20,9 +20,9 @@ claude auth status
 ```
 
 The review command automatically launches reviewer processes; it is not a
-collection-only command. Use `--agent codex` or `--agent claude` to select the
-authenticated backend explicitly. A missing or unauthenticated Agent CLI makes
-the runner fail with exit 5 and cannot produce reviewer packets.
+collection-only command. Every actual review requires both `--agent` and
+`--model`. The model must be compatible with the selected backend. Missing
+selection fails with exit 4; a missing or unauthenticated CLI fails with exit 5.
 
 ## First successful review
 
@@ -35,13 +35,18 @@ npm install
 npm start                      # prints runner help; it does not start a service
 
 export REVIEW_ROUND=100
-npm run review -- --profile quick --round "$REVIEW_ROUND" --agent codex
+export REVIEW_MODEL=gpt-5.4
+npm run review -- --profile quick --round "$REVIEW_ROUND" \
+  --agent codex --model "$REVIEW_MODEL"
 # The runner launches every quick-profile reviewer and arbitrates the round.
 # Exit 0 is approval; exit 1 means the completed review failed its score/Gate.
 ```
 
 Choose `quick` for a small development check, `release-gate` for a normal
-release, and `agentic-release-gate` for the full 12-reviewer evidence workflow.
+release, and `agentic-release-gate` for the 8-to-12-reviewer adversarial evidence
+workflow. Agentic reviews always run the four resident and four adversarial
+reviewers; UI, documentation, CLI, and data-security reviewers run only when
+their declared diff triggers match.
 `--base <base-ref>` is the commit before the reviewed change, for example
 `--base origin/main` or `--base HEAD~1`.
 
@@ -81,9 +86,10 @@ synthesizes reviewer scores. Sequential mode starts them one at a time;
 `--parallel` starts them concurrently and fails if any reviewer does not produce
 all four files.
 
-The first launch locks each round to its selected backend in
-`review-backend.json`. Resume the round with the same `--agent`; backend mixing
-fails closed. Parallel mode has no project-level concurrency cap or start delay
+The first launch locks each round to its selected backend and model in
+`review-backend.json`. Resume the round with the same `--agent` and `--model`;
+backend mixing and model drift fail closed. Parallel mode has no project-level
+concurrency cap or start delay
 unless `RELEASE_QUALITY_REVIEWER_START_DELAY_MS` is explicitly set.
 
 Trust boundary: the host/orchestrator, pinned Gate code, independent reviewers,
@@ -100,7 +106,7 @@ Run collection from a normal macOS host shell or CI runner that can create the
 outer sandbox. Running the review command from inside another workspace sandbox
 may be unsupported; the CLI reports the underlying sandbox capability error and
 must not describe a clean checkout as dirty. Exit that outer sandbox and resume
-the same round with the same backend.
+the same round with the same backend and model.
 
 Review evidence is local release metadata, not an account or analytics store.
 It may contain repository paths, Git identities, and redacted command output.
@@ -124,8 +130,15 @@ export REVIEW_ROUND_DIR="round-$(printf '%03d' "$REVIEW_ROUND")"
 test ! -e "quality-reports/$REVIEW_ROUND_DIR"
 ```
 
-Run `npm run review -- --profile release-gate --round "$REVIEW_ROUND" --agent codex`
-(or select `claude`). The runner collects evidence, automatically launches one
+Run the release gate with an explicit backend and compatible model:
+
+```bash
+npm run review -- --profile release-gate --round "$REVIEW_ROUND" \
+  --agent codex --model "$REVIEW_MODEL"
+```
+
+Use `--agent claude` with a Claude model when selecting Claude. The runner
+collects evidence, automatically launches one
 independent process per reviewer, validates their four-file packets, and
 arbitrates the round. Exit `0` is the only approval; exit `1` means the completed
 review failed its score or Gate, and exit `5` means an Agent process failed.
@@ -164,7 +177,7 @@ node skills/release-quality-review/scripts/goal-instruction-gate.mjs \
 
 ```bash
 npm run review -- --profile agentic-release-gate --round "$REVIEW_ROUND" \
-  --base <base-ref> --agent codex --parallel
+  --base <base-ref> --agent codex --model "$REVIEW_MODEL" --parallel
 ```
 
 5. Validate packets, then rerun final arbitration against persisted evidence:
@@ -196,7 +209,7 @@ Troubleshooting:
   collecting Gate command so `metadata.json` binds the same clean evidence.
 - `outer sandbox capability check failed closed`: run from a normal macOS host
   shell or supported CI runner, not from inside another workspace sandbox; then
-  resume the same round with its locked backend.
+  resume the same round with its locked backend and model.
 
 `skills.lock.yaml` records canonical and adapter SHA-256 hashes. CI runs the
 drift check, tests, syntax validation, and review-gate dry-run.

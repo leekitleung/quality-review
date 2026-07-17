@@ -13,6 +13,10 @@ score: <0-100>
 # Required machine verdict. Must be exactly pass or fail.
 status: pass|fail
 
+# Backend/model identity. New review rounds require both fields and bind them to review-backend.json.
+review_backend: <claude|codex>
+review_model: <backend-compatible-model-name>
+
 # Dimension scores for weighted calculation
 dimension_scores:
   completeness: <0-100>      # 25% - Does it actually work end-to-end?

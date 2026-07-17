@@ -27,6 +27,7 @@ import {
   detectChangeScale,
   parseYamlProfile,
   matchesTriggerConditions,
+  selectReviewers,
   findTrivialVerificationScripts,
   hasConcreteVerificationOutput,
   CLEAN_CANDIDATE_COMMANDS,
@@ -64,6 +65,8 @@ const SKILL_DIR = join(__dirname, '..');
 const PROJECT_ROOT = join(SKILL_DIR, '..', '..');
 const TEST_ROOT = join(tmpdir(), 'release-quality-review-tests');
 const TEST_DIR = join(TEST_ROOT, `${process.pid}-${randomUUID()}`);
+const TEST_CODEX_MODEL = 'gpt-test-review';
+const TEST_CLAUDE_MODEL = 'claude-test-review';
 const ROUND_BASE = process.pid * 10;
 const TEST_ROUNDS = {
   veto: ROUND_BASE + 1,
@@ -484,6 +487,8 @@ candidate_commit: 1111111111111111111111111111111111111111
 candidate_tree: 2222222222222222222222222222222222222222
 score: 95
 status: pass
+review_backend: codex
+review_model: gpt-test-review
 blockers: []
 `;
   test('accepts required scalar fields plus optional packet fields', () => {
@@ -495,6 +500,8 @@ blockers: []
       canonical.replace('score: 95', 'score: 95/100'),
       canonical.replace('score: 95', 'score:\n  total: 95'),
       canonical.replace('status: pass', 'status: PASS'),
+      canonical.replace('review_backend: codex', 'review_backend: claude-code'),
+      canonical.replace('review_model: gpt-test-review', 'review_model: model with spaces'),
     ]) assertEqual(validateResultYamlContract(invalid).valid, false);
   });
   test('rejects reordered required fields and unknown top-level fields', () => {
@@ -999,11 +1006,13 @@ test.describe('fail-closed result parsing', () => {
   });
 
   test('parses and retains packet profile and round identity', () => {
-    const parsed = parseYamlResult(`reviewer: destructive-qa\nprofile: agentic-release-gate\nround: 5\ncandidate_commit: 1111111111111111111111111111111111111111\ncandidate_tree: 2222222222222222222222222222222222222222\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+    const parsed = parseYamlResult(`reviewer: destructive-qa\nprofile: agentic-release-gate\nround: 5\ncandidate_commit: 1111111111111111111111111111111111111111\ncandidate_tree: 2222222222222222222222222222222222222222\nscore: 95\nstatus: pass\nreview_backend: codex\nreview_model: gpt-test-review\nblockers: []\nredlines: []\n`);
     assertEqual(parsed.profile, 'agentic-release-gate');
     assertEqual(parsed.round, 5);
     assertEqual(parsed.candidateCommit, '1111111111111111111111111111111111111111');
     assertEqual(parsed.candidateTree, '2222222222222222222222222222222222222222');
+    assertEqual(parsed.reviewBackend, 'codex');
+    assertEqual(parsed.reviewModel, 'gpt-test-review');
   });
 });
 
@@ -1049,6 +1058,129 @@ test.describe('conditional reviewer triggers', () => {
       '',
       { files: ['**/scripts/**'], patterns: [] }
     ), true);
+  });
+
+  test('selects agentic reviewers from the candidate diff without self-review expansion', () => {
+    const profile = parseYamlProfile(
+      readFileSync(join(SKILL_DIR, 'profiles', 'agentic-release-gate.yaml'), 'utf8'),
+      'agentic-release-gate',
+    );
+    const selection = selectReviewers(profile, ['README.md'], '+ Update installation docs');
+
+    assertEqual(selection.reviewers.length, 9);
+    assertEqual(JSON.stringify(selection.triggeredConditional), JSON.stringify(['zero-doc-user']));
+    assertTrue(!selection.reviewers.includes('native-designer'), 'README must not trigger native-designer');
+    for (const reviewer of profile.adversarial_reviewers) {
+      assertTrue(selection.reviewers.includes(reviewer), `${reviewer} must be required`);
+    }
+  });
+
+  test('triggers each agentic conditional reviewer for its declared risk surface', () => {
+    const profile = parseYamlProfile(
+      readFileSync(join(SKILL_DIR, 'profiles', 'agentic-release-gate.yaml'), 'utf8'),
+      'agentic-release-gate',
+    );
+    const cases = [
+      { reviewer: 'terminal-veteran', files: ['skills/example/scripts/run.mjs'], diff: '' },
+      { reviewer: 'native-designer', files: ['apps/ui/panel.tsx'], diff: '' },
+      { reviewer: 'data-security', files: ['lib/worker.js'], diff: '+ enforce sandbox permission' },
+      { reviewer: 'zero-doc-user', files: ['skills/example/SKILL.md'], diff: '' },
+    ];
+
+    for (const item of cases) {
+      const selection = selectReviewers(profile, item.files, item.diff);
+      assertTrue(selection.triggeredConditional.includes(item.reviewer), `${item.reviewer} should trigger`);
+    }
+  });
+
+  test('can select all 12 agentic reviewers when every risk surface is present', () => {
+    const profile = parseYamlProfile(
+      readFileSync(join(SKILL_DIR, 'profiles', 'agentic-release-gate.yaml'), 'utf8'),
+      'agentic-release-gate',
+    );
+    const selection = selectReviewers(
+      profile,
+      ['README.md', 'apps/ui/panel.tsx', 'scripts/release.mjs', 'lib/security-utils.mjs'],
+      '+ enforce sandbox permission',
+    );
+    assertEqual(selection.reviewers.length, 12);
+    assertEqual(selection.triggeredConditional.length, 4);
+  });
+
+  test('rejects a conditional reviewer without an explicit trigger contract', () => {
+    let error = null;
+    try {
+      selectReviewers({
+        name: 'invalid-profile',
+        resident_reviewers: ['product-flow'],
+        conditional_reviewers: ['terminal-veteran'],
+        adversarial_reviewers: [],
+        trigger_conditions: {},
+        gate: {},
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    assertTrue(error instanceof Error, 'Missing trigger contract must throw');
+    assertTrue(error.message.includes('terminal-veteran'), 'Error must name the invalid reviewer');
+  });
+
+  test('keeps every real profile valid and preserves its baseline reviewer count', () => {
+    const expectedCounts = {
+      quick: 2,
+      default: 2,
+      'release-gate': 4,
+      full: 8,
+      'agentic-release-gate': 8,
+    };
+    for (const [profileName, expectedCount] of Object.entries(expectedCounts)) {
+      const parsed = parseYamlProfile(
+        readFileSync(join(SKILL_DIR, 'profiles', `${profileName}.yaml`), 'utf8'),
+        profileName,
+      );
+      assertEqual(selectReviewers(parsed).reviewers.length, expectedCount, `${profileName} baseline count`);
+    }
+  });
+
+  test('uses the shared reviewer selector in both runner and gate', () => {
+    const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
+    const gate = readFileSync(join(SKILL_DIR, 'scripts', 'review-gate.mjs'), 'utf8');
+    assertTrue(runner.includes('selectReviewers('), 'Runner must use shared selection');
+    assertTrue(gate.includes('selectReviewers('), 'Gate must use shared selection');
+    assertTrue(!runner.includes('function detectConditionalReviewers('), 'Runner must not retain divergent selection');
+  });
+
+  test('runner and gate dry runs select the same reviewers for the current diff', () => {
+    const env = { ...process.env, NO_COLOR: '1' };
+    const runner = spawnSync('node', [
+      join(SKILL_DIR, 'scripts', 'review-runner.mjs'),
+      '--profile', 'agentic-release-gate', '--dry-run', '--base', 'HEAD',
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8', env });
+    const gate = spawnSync('node', [
+      join(SKILL_DIR, 'scripts', 'review-gate.mjs'),
+      '--profile', 'agentic-release-gate', '--dry-run', '--base', 'HEAD',
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8', env });
+    assertEqual(runner.status, 0, `Runner dry run failed: ${runner.stderr}`);
+    assertEqual(gate.status, 0, `Gate dry run failed: ${gate.stderr}`);
+
+    const runnerBlock = runner.stdout.split('Selected reviewers:')[1].split('Dry run complete')[0];
+    const runnerReviewers = [...runnerBlock.matchAll(/^\s+✓\s+([a-z0-9-]+)$/gm)].map(match => match[1]);
+    const gateLine = gate.stdout.split('\n').find(line => line.startsWith('ℹ Reviewers: '));
+    const gateReviewers = gateLine.slice('ℹ Reviewers: '.length).split(', ');
+    assertEqual(JSON.stringify(runnerReviewers), JSON.stringify(gateReviewers));
+  });
+
+  test('runner self-review dry run does not expand agentic selection to all 12 reviewers', () => {
+    const runner = spawnSync('node', [
+      join(SKILL_DIR, 'scripts', 'review-runner.mjs'),
+      '--profile', 'agentic-release-gate', '--target', 'skills/release-quality-review',
+      '--dry-run', '--base', 'HEAD',
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8', env: { ...process.env, NO_COLOR: '1' } });
+    assertEqual(runner.status, 0, `Runner self-review dry run failed: ${runner.stderr}`);
+    const selectedBlock = runner.stdout.split('Selected reviewers:')[1].split('Dry run complete')[0];
+    const selected = [...selectedBlock.matchAll(/^\s+✓\s+([a-z0-9-]+)$/gm)].map(match => match[1]);
+    assertTrue(selected.length < 12, `Self-review unexpectedly selected all reviewers: ${selected.join(', ')}`);
+    assertTrue(!selected.includes('native-designer'), 'Non-UI skill self-review must not trigger native-designer');
   });
 });
 
@@ -1163,8 +1295,10 @@ test.describe('CLI fail-closed integration', () => {
 
   test('Claude reviewer invocation accepts report edits without interactive approval', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
-    assertTrue(runner.includes("args: ['-p', '--permission-mode', 'acceptEdits', '--no-session-persistence', prompt]"),
+    assertTrue(runner.includes("args: ['-p', '--model', selectedModel, '--permission-mode', 'acceptEdits', '--no-session-persistence', prompt]"),
       'Claude print mode must not block waiting for report write approval');
+    assertTrue(runner.includes("args: ['exec', '--model', selectedModel"),
+      'Codex reviewer invocation must pin the selected model');
     assertEqual(runner.includes('--dangerously-skip-permissions'), false,
       'Claude reviewer must not bypass all permission checks');
   });
@@ -1175,6 +1309,21 @@ test.describe('CLI fail-closed integration', () => {
     assertTrue(runner.includes('status 必须是小写 pass 或 fail'), 'Prompt must require a parseable verdict');
     assertTrue(runner.includes('score: <0-100 integer>'));
     assertTrue(runner.includes('status: <pass|fail>'));
+    assertTrue(runner.includes('review_backend: ${reviewBackend}'));
+    assertTrue(runner.includes('review_model: ${reviewModel}'));
+  });
+
+  test('actual reviews require an explicit compatible backend and model', () => {
+    const runner = join(SKILL_DIR, 'scripts', 'review-runner.mjs');
+    for (const [args, expected] of [
+      [['--profile', 'quick'], 'require explicit --agent and --model'],
+      [['--profile', 'quick', '--agent', 'codex', '--model', 'claude-sonnet-4-6'], 'not valid for codex'],
+      [['--profile', 'quick', '--agent', 'claude', '--model', 'gpt-5.4'], 'not valid for claude'],
+    ]) {
+      const result = spawnSync('node', [runner, ...args], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(result.status, 4, `${result.stdout}${result.stderr}`);
+      assertTrue(result.stderr.includes(expected), `${result.stdout}${result.stderr}`);
+    }
   });
 
   test('parallel review has no project concurrency cap or implicit start delay', () => {
@@ -1360,8 +1509,8 @@ test.describe('CLI fail-closed integration', () => {
     assertTrue(readme.includes('not signatures'), 'README must distinguish drift hashes from signatures');
     assertTrue(readme.includes('codex login status'), 'Quickstart must document Codex authentication preflight');
     assertTrue(readme.includes('claude auth status'), 'Quickstart must document Claude authentication preflight');
-    assertTrue(readme.includes('--profile quick --round "$REVIEW_ROUND" --agent codex'),
-      'First review must select a documented backend explicitly');
+    assertTrue(readme.includes('--agent codex --model "$REVIEW_MODEL"'),
+      'First review must select a documented backend and model explicitly');
     assertTrue(readme.includes('automatically launches reviewer processes'),
       'Quickstart must disclose that review launches external Agent processes');
     const destructiveReviewer = readFileSync(join(SKILL_DIR, 'reviewers', 'destructive-qa.md'), 'utf8');
@@ -1397,7 +1546,8 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
       chmodSync(fakeCodex, 0o755);
       const result = spawnSync('node', [
         join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel',
-        '--agent', 'codex', '--round', String(TEST_ROUNDS.parallelTimeout), '--skip-evidence',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL,
+        '--round', String(TEST_ROUNDS.parallelTimeout), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT,
         encoding: 'utf8',
@@ -1437,7 +1587,7 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
 if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
 const fs = process.getBuiltinModule('node:fs');
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
-fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${TEST_ROUNDS.parallelSuccess}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nblockers: []\\nredlines: []\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${TEST_ROUNDS.parallelSuccess}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, '# Blockers\\n\\nNo P0/P1 blockers.\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
@@ -1445,7 +1595,8 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
 `);
       chmodSync(fakeCodex, 0o755);
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel', '--agent', 'codex',
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL,
         '--reviewer', 'product-flow', '--round', String(TEST_ROUNDS.parallelSuccess), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
@@ -1480,7 +1631,8 @@ setInterval(() => {}, 1000);
 `);
       chmodSync(fakeCodex, 0o755);
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'codex',
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL,
         '--reviewer', 'product-flow', '--round', String(roundNumber), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT,
@@ -1519,7 +1671,7 @@ setInterval(() => {}, 1000);
       writeFileSync(fakeCodex, `#!/usr/bin/env node
 const fs = process.getBuiltinModule('node:fs');
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
-fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nblockers: []\\nredlines: []\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, '# Blockers\\n\\nNo P0/P1 blockers.\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
@@ -1527,7 +1679,8 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
 `);
       chmodSync(fakeCodex, 0o755);
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'codex',
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL,
         '--reviewer', 'product-flow', '--round', String(roundNumber), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
@@ -1591,7 +1744,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         candidate_commit: candidateCommit,
         candidate_tree: candidateTree,
       }));
-      writeFileSync(join(reviewerDir, 'result.yaml'), `reviewer: product-flow\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+      writeFileSync(join(reviewerDir, 'result.yaml'), `reviewer: product-flow\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 95\nstatus: pass\nreview_backend: codex\nreview_model: ${TEST_CODEX_MODEL}\nblockers: []\nredlines: []\n`);
       writeFileSync(join(reviewerDir, 'score.md'), [
         '# Product Flow',
         '## Overall Score: 95/100',
@@ -1805,13 +1958,14 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     for (const reviewer of ['product-flow', 'architecture-maintainer']) {
       const dir = join(round, reviewer);
       mkdirSync(dir, { recursive: true });
-      writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 100\nstatus: pass\nblockers: []\nredlines: []\n`);
+      writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 100\nstatus: pass\nreview_backend: codex\nreview_model: ${TEST_CODEX_MODEL}\nblockers: []\nredlines: []\n`);
       writeFileSync(join(dir, 'score.md'), `# ${reviewer}\n\n## Overall Score: 100/100\n`);
       writeFileSync(join(dir, 'blockers.md'), reviewer === 'product-flow'
         ? '# Blockers\n\n## P1 — veto must survive\n\nEvidence: reproducible\n'
         : '# Blockers\n\nNo P0/P1 blockers.\n');
       writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
     }
+    writeFileSync(join(round, 'review-backend.json'), JSON.stringify({ backend: 'codex', model: TEST_CODEX_MODEL }));
     try {
       const result = spawnSync('node', [
         join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
@@ -1836,11 +1990,14 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
       writeFileSync(fakeCodex, `#!/usr/bin/env node
 if (process.argv.includes('--help')) process.exit(0);
 if (!process.argv.includes('exec')) process.exit(3);
+const modelIndex = process.argv.indexOf('--model');
+if (modelIndex < 0 || process.argv[modelIndex + 1] !== ${JSON.stringify(TEST_CODEX_MODEL)}) process.exit(4);
 console.log('review completed');
 `);
       chmodSync(fakeCodex, 0o755);
       const result = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'codex',
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL,
         '--round', String(roundNumber), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT,
@@ -1858,8 +2015,33 @@ console.log('review completed');
       assertEqual(existsSync(join(round, 'runner-metadata.json')), true);
       assertEqual(existsSync(join(round, 'product-flow', 'prompt.md')), true);
       assertEqual(existsSync(join(round, 'architecture-maintainer', 'prompt.md')), true);
+      assertEqual(
+        JSON.stringify(JSON.parse(readFileSync(join(round, 'review-backend.json'), 'utf8'))),
+        JSON.stringify({ backend: 'codex', model: TEST_CODEX_MODEL }),
+      );
+      const runnerMetadata = JSON.parse(readFileSync(join(round, 'runner-metadata.json'), 'utf8'));
+      assertEqual(runnerMetadata.reviewBackend, 'codex');
+      assertEqual(runnerMetadata.reviewModel, TEST_CODEX_MODEL);
+      const prompt = readFileSync(join(round, 'product-flow', 'prompt.md'), 'utf8');
+      assertTrue(prompt.includes('review_backend: codex'));
+      assertTrue(prompt.includes(`review_model: ${TEST_CODEX_MODEL}`));
+      writeFileSync(join(round, 'review-backend.json'), JSON.stringify({ backend: 'codex' }));
+      const legacyLock = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL,
+        '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT,
+        encoding: 'utf8',
+        timeout: 30000,
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+      });
+      assertEqual(legacyLock.status, 4, `${legacyLock.stdout}${legacyLock.stderr}`);
+      assertTrue(legacyLock.stderr.includes('round model is locked to invalid'));
+      writeFileSync(join(round, 'review-backend.json'), JSON.stringify({ backend: 'codex', model: TEST_CODEX_MODEL }));
       const rerun = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'codex',
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL,
         '--round', String(roundNumber), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT,
@@ -1876,6 +2058,19 @@ console.log('review completed');
       assertTrue(rerun.stdout.includes('invalidating stale artifacts'), 'Malformed packet must be relaunched');
       assertEqual(rerun.stdout.includes('validated resume'), false, 'Malformed packet must never be resumed');
 
+      const modelDrift = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick',
+        '--agent', 'codex', '--model', 'gpt-different-review',
+        '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT,
+        encoding: 'utf8',
+        timeout: 30000,
+        env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
+      });
+      assertEqual(modelDrift.status, 4, `${modelDrift.stdout}${modelDrift.stderr}`);
+      assertTrue(modelDrift.stderr.includes(`round model is locked to ${TEST_CODEX_MODEL}`));
+
       const fakeClaude = join(fakeBin, 'claude');
       writeFileSync(fakeClaude, `#!/usr/bin/env node
 if (process.argv.includes('--help') || process.argv.includes('--version')) process.exit(0);
@@ -1883,7 +2078,8 @@ process.exit(3);
 `);
       chmodSync(fakeClaude, 0o755);
       const mixedBackend = spawnSync('node', [
-        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--agent', 'claude',
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick',
+        '--agent', 'claude', '--model', TEST_CLAUDE_MODEL,
         '--round', String(roundNumber), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT,
@@ -1923,7 +2119,7 @@ process.exit(3);
 if (process.argv.includes('--help') || process.argv.includes('--version')) process.exit(0);
 const fs = process.getBuiltinModule('node:fs');
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
-fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: agentic-release-gate\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nblockers: []\\nredlines: []\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: agentic-release-gate\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, '# Blockers\\n\\nNo P0/P1 blockers.\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
@@ -1931,7 +2127,8 @@ fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '#
       chmodSync(fakeCodex, 0o755);
       const result = spawnSync('node', [
         join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'agentic-release-gate',
-        '--agent', 'codex', '--reviewer', 'product-flow', '--round', String(roundNumber),
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL,
+        '--reviewer', 'product-flow', '--round', String(roundNumber),
         '--base', candidateCommit, '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
@@ -1945,6 +2142,9 @@ fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '#
       assertTrue(plan.includes('small (2 files, 2 lines)'));
       assertTrue(plan.includes('Changed files:** 2'));
       assertTrue(plan.includes(`Git commit:** ${candidateCommit.slice(0, 8)}`));
+      const boundMetadata = JSON.parse(readFileSync(join(round, 'metadata.json'), 'utf8'));
+      assertEqual(boundMetadata.review_backend, 'codex');
+      assertEqual(boundMetadata.review_model, TEST_CODEX_MODEL);
     } finally {
       rmSync(round, { recursive: true, force: true });
     }
@@ -1965,7 +2165,8 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
       chmodSync(fakeCodex, 0o755);
       const result = spawnSync(process.execPath, [
         join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'agentic-release-gate',
-        '--agent', 'codex', '--round', String(roundNumber), '--skip-evidence',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL,
+        '--round', String(roundNumber), '--skip-evidence',
       ], {
         cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
         env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
@@ -1990,7 +2191,7 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
       for (const reviewer of ['product-flow', 'architecture-maintainer']) {
         const dir = join(round, reviewer);
         mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${fullCommit}\ncandidate_tree: ${tree}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${fullCommit}\ncandidate_tree: ${tree}\nscore: 95\nstatus: pass\nreview_backend: codex\nreview_model: ${TEST_CODEX_MODEL}\nblockers: []\nredlines: []\n`);
         writeFileSync(join(dir, 'score.md'), `# ${reviewer}\n\n## Overall Score: 95/100\n`);
         writeFileSync(join(dir, 'blockers.md'), '# Blockers\n\nNo P0/P1 blockers.\n');
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
@@ -2021,9 +2222,11 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
         git: { commit, status, branch: 'test', changedFiles: ['README.md'] }, files: {},
         scale: { scale: 'micro', files: 1, total: 2 },
         candidate_commit: fullCommit, candidate_tree: tree,
+        review_backend: 'codex', review_model: TEST_CODEX_MODEL,
         base_commit: fullCommit, base_tree: tree,
         automated_checks_sha256: createHash('sha256').update(automatedContent).digest('hex'),
       }));
+      writeFileSync(join(round, 'review-backend.json'), JSON.stringify({ backend: 'codex', model: TEST_CODEX_MODEL }));
       const result = spawnSync('node', [
         join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
         '--no-collect', '--no-validate-evidence',
@@ -2038,6 +2241,28 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
       assertEqual(report.includes('Clean-candidate verification passed'), false);
       assertEqual(report.includes('Goal instruction validation passed'), false);
       assertEqual(report.includes('Build, lint, audit'), false);
+
+      const identityPacket = join(round, 'product-flow', 'result.yaml');
+      const identityPacketContent = readFileSync(identityPacket, 'utf8');
+      writeFileSync(identityPacket, identityPacketContent.replace(TEST_CODEX_MODEL, 'gpt-forged-review'));
+      const packetModelMismatch = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(packetModelMismatch.status, 1);
+      assertTrue(packetModelMismatch.stdout.includes('Review model mismatch'));
+      writeFileSync(identityPacket, identityPacketContent);
+
+      const identityMetadataPath = join(round, 'metadata.json');
+      const identityMetadata = JSON.parse(readFileSync(identityMetadataPath, 'utf8'));
+      writeFileSync(identityMetadataPath, JSON.stringify({ ...identityMetadata, review_model: 'gpt-forged-review' }));
+      const metadataModelMismatch = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(metadataModelMismatch.status, 1);
+      assertTrue(metadataModelMismatch.stdout.includes('Review backend/model identity'));
+      writeFileSync(identityMetadataPath, JSON.stringify(identityMetadata));
 
       rmSync(finalReport, { force: true });
       mkdirSync(finalReport);
@@ -2170,7 +2395,7 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
       for (const reviewer of ['product-flow', 'architecture-maintainer']) {
         const dir = join(round, reviewer);
         mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 95\nstatus: pass\nreview_backend: codex\nreview_model: ${TEST_CODEX_MODEL}\nblockers: []\nredlines: []\n`);
         writeFileSync(join(dir, 'score.md'), `# ${reviewer}\n\n## Overall Score: 95/100\n\nEvidence: package.json:1 and npm test exit 0.\n`);
         writeFileSync(join(dir, 'blockers.md'), '# Blockers\n\nNo P0/P1 blockers.\n');
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
@@ -2204,9 +2429,11 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
         git: { branch: 'test', commit: candidateCommit.slice(0, 8), status: '', changedFiles: ['package.json'] },
         files: {}, scale: { scale: 'micro', files: 1, additions: 1, deletions: 0, total: 1 },
         candidate_commit: candidateCommit, candidate_tree: candidateTree,
+        review_backend: 'codex', review_model: TEST_CODEX_MODEL,
         base_commit: diffBase, base_tree: baseTree,
         automated_checks_sha256: createHash('sha256').update(automatedContent).digest('hex'),
       }));
+      writeFileSync(join(round, 'review-backend.json'), JSON.stringify({ backend: 'codex', model: TEST_CODEX_MODEL }));
 
       const firstGate = spawnSync('node', [
         join(cloneRoot, 'skills/release-quality-review/scripts/review-gate.mjs'), '--profile', 'quick',
@@ -2263,11 +2490,12 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
       for (const reviewer of ['product-flow', 'architecture-maintainer']) {
         const dir = join(round, reviewer);
         mkdirSync(dir, { recursive: true });
-        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 95\nstatus: pass\nblockers: []\nredlines: []\n`);
+        writeFileSync(join(dir, 'result.yaml'), `reviewer: ${reviewer}\nprofile: quick\nround: ${roundNumber}\ncandidate_commit: ${candidateCommit}\ncandidate_tree: ${candidateTree}\nscore: 95\nstatus: pass\nreview_backend: codex\nreview_model: ${TEST_CODEX_MODEL}\nblockers: []\nredlines: []\n`);
         writeFileSync(join(dir, 'score.md'), `## Overall Score: 95/100\n`);
         writeFileSync(join(dir, 'blockers.md'), 'No P0/P1 blockers.\n');
         writeFileSync(join(dir, 'improvement-list.md'), '# Improvements\n');
       }
+      writeFileSync(join(round, 'review-backend.json'), JSON.stringify({ backend: 'codex', model: TEST_CODEX_MODEL }));
       const result = spawnSync('node', [
         join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
         '--no-collect', '--no-validate-evidence',

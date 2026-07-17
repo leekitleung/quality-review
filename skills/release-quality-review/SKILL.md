@@ -96,14 +96,19 @@ description: Run an evidence-backed multi-reviewer release quality gate with ind
 ## 快速开始
 
 ```bash
+export REVIEW_AGENT=codex
+export REVIEW_MODEL=gpt-5.4
+
 # 1. 收集证据并生成独立 Reviewer prompts
-node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate
+node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate \
+  --agent "$REVIEW_AGENT" --model "$REVIEW_MODEL"
 
 # 2. 查看结果
 cat quality-reports/round-001/summary.md
 
 # 3. 由宿主启动独立 Reviewer，修复问题后继续评审
-node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate --round 2
+node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate --round 2 \
+  --agent "$REVIEW_AGENT" --model "$REVIEW_MODEL"
 
 # 4. 聚合某个 Reviewer 已写入的报告（诊断模式，不产生发布批准）
 node skills/release-quality-review/scripts/review-gate.mjs --reviewer destructive-qa
@@ -114,10 +119,10 @@ node skills/release-quality-review/scripts/review-gate.mjs --reviewer destructiv
 | Profile | 用途 | Reviewers | 运行时间 |
 |---------|------|-----------|----------|
 | `quick` | 开发中快速检查 | product-flow, architecture-maintainer | ~5 分钟 |
-| `default` | PR 合并前 | product-flow, destructive-qa, terminal-veteran | ~15 分钟 |
-| `release-gate` | 发布前必须通过 | 全部常驻 + terminal-veteran | ~30 分钟 |
+| `default` | PR 合并前 | 2 个常驻 + 按需条件角色 | ~15 分钟 |
+| `release-gate` | 发布前必须通过 | 4 个常驻 + 按需条件角色 | ~30 分钟 |
 | `full` | 重大版本发布 | 全部 8 个 | ~60 分钟 |
-| `agentic-release-gate` | XLarge 规模强制 | 全部 + 4 个对抗性审查器 | ~90 分钟 |
+| `agentic-release-gate` | XLarge 规模强制 | 4 个常驻 + 按需条件角色 + 4 个对抗角色 | ~90 分钟 |
 
 ## 对抗性审查器 (Adversarial Reviewers)
 
@@ -134,6 +139,10 @@ node skills/release-quality-review/scripts/review-gate.mjs --reviewer destructiv
 - 变更规模为 XLarge (50+ 文件或 2000+ 行)
 - 变更由 AI Agent 执行
 - `--profile agentic-release-gate` 显式指定
+
+Agentic profile 固定启用 4 个常驻和 4 个对抗 Reviewer；条件 Reviewer
+仍按候选 diff 的 `trigger_conditions` 启用。Self-review 与项目评审使用同一套
+选择逻辑，不得因为使用 `--target` 而自动启用全部条件 Reviewer。
 
 ## Goal 指令生成器
 
@@ -165,7 +174,8 @@ node skills/release-quality-review/scripts/goal-instruction-gate.mjs --input "�
 node skills/release-quality-review/scripts/goal-instruction-gate.mjs --file generated-goal.md
 
 # 集成到评审流程
-node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate
+node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate \
+  --agent "$REVIEW_AGENT" --model "$REVIEW_MODEL"
 ```
 
 ### 验收标准
@@ -294,7 +304,8 @@ quality-reports/                   # 评审输出
 
 ### 方式 3: 直接执行
 ```bash
-node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate
+node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate \
+  --agent "$REVIEW_AGENT" --model "$REVIEW_MODEL"
 ```
 
 ### 方式 4: Claude Code Subagent 并行评审 (推荐用于 release-gate)
@@ -309,7 +320,7 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 
 ### Claude Code Subagent 编排流程
 
-`review-runner.mjs --parallel` 使用本机 Codex CLI 同时启动独立、临时 reviewer 会话；启动前验证 CLI 可用性，任一进程未生成完整四文件包即保持失败。宿主也可直接创建独立 subagent 并写入相同目录。
+`review-runner.mjs --parallel` 使用显式选择的 Codex 或 Claude CLI 与模型，同时启动独立、临时 reviewer 会话；启动前验证 CLI 可用性，任一进程未生成完整四文件包即保持失败。宿主也可直接创建独立 subagent 并写入相同目录。
 
 宿主并行编排会：
 
@@ -330,8 +341,9 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 | **断点续传** | 已完成的 Reviewer 结果会被保留，避免重复工作 |
 | **并行执行元数据** | 记录执行时间和状态，便于诊断问题 |
 
-同一 round 首次启动时会写入 `review-backend.json`。后续恢复必须继续使用同一
-backend；Codex round 不得使用 Claude，Claude round 不得使用 Codex。`--parallel`
+实际评审必须显式传入 `--agent` 和 `--model`。同一 round 首次启动时会把两者
+写入 `review-backend.json`；后续恢复必须完全一致。Codex round 不得使用 Claude
+backend/model，Claude round 不得使用 Codex backend/model，模型漂移同样失败。`--parallel`
 默认不限制并发量且不延迟启动；只有显式设置
 `RELEASE_QUALITY_REVIEWER_START_DELAY_MS` 才会错峰启动。
 
@@ -373,7 +385,8 @@ graph TD
 ```bash
 # 读取 AGENTS.md 中的评审规则
 # 然后运行评审
-node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate
+node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate \
+  --agent codex --model "$REVIEW_MODEL"
 ```
 
 ### Codex Subagent 并行评审
@@ -439,9 +452,10 @@ Round N: 迭代直到通过或放弃
 | `improvement-list.md` | 是 | P2/P3 改进建议 |
 | `result.yaml` | 是 | 机器可读的标准化输出 |
 
-`result.yaml` 必须声明与本轮 `metadata.json` 完全一致的
-`candidate_commit` 和 `candidate_tree`。候选 commit/tree 改变后不得复用旧
-round 或 reviewer packet；必须使用全新 round 重新评审。
+`result.yaml` 必须声明与本轮 `metadata.json` 和 `review-backend.json` 完全一致的
+`candidate_commit`、`candidate_tree`、`review_backend` 和 `review_model`。
+候选身份、backend 或 model 改变后不得复用旧 round 或 reviewer packet；必须使用
+全新 round 重新评审。
 
 ### 证据收集要求
 
@@ -516,7 +530,8 @@ cat quality-reports/round-XXX/summary.md
 ### 4. 运行下一轮评审
 ```bash
 # 继续下一轮评审
-node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate --round N+1
+node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate --round N+1 \
+  --agent "$REVIEW_AGENT" --model "$REVIEW_MODEL"
 
 # 或只运行失败的 reviewers
 node skills/release-quality-review/scripts/review-gate.mjs --reviewer <failed-reviewer>

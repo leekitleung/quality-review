@@ -18,10 +18,10 @@
  */
 
 import { readFileSync, existsSync, readdirSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { join, relative } from 'path';
 import { execFileSync as nodeExecFileSync, spawn } from 'child_process';
 import {
-  matchesTriggerConditions, parseYamlProfile as parseYamlProfileShared, parseYamlResult,
+  parseYamlProfile as parseYamlProfileShared, parseYamlResult, selectReviewers,
   validateResultYamlContract,
 } from '../lib/review-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
@@ -47,20 +47,6 @@ const REVIEWER_RETRY_MAX = parseInt(process.env.RELEASE_QUALITY_REVIEWER_RETRY_M
 const RETRY_BASE_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_BASE_DELAY_MS || '1000', 10);
 const RETRY_MAX_JITTER_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_MAX_JITTER_MS || '300', 10);
 const REVIEWER_START_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_REVIEWER_START_DELAY_MS || '0', 10);
-
-// Auto-detect available agent CLI
-function detectAvailableAgent() {
-  const agents = ['claude', 'codex'];
-  for (const agent of agents) {
-    try {
-      nodeExecFileSync(agent, ['--version'], { cwd: PROJECT_ROOT, timeout: 5000, stdio: 'ignore' });
-      return agent;
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
 
 // Scale-based timeout multipliers (apply to base REVIEWER_TIMEOUT_MS)
 const SCALE_TIMEOUT_MULTIPLIERS = {
@@ -227,7 +213,7 @@ function parseCliArgs(args) {
   const options = {
     profile: 'release-gate', roundNumber: null, parallel: false, dryRun: false,
     skipEvidence: false, reviewerOverride: null, targetDir: null,
-    checkGoalMode: false, diffBase: 'HEAD', agentCli: null, // null = auto-detect
+    checkGoalMode: false, diffBase: 'HEAD', agentCli: null, model: null,
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -260,6 +246,7 @@ function parseCliArgs(args) {
     }
     options.agentCli = agent;
   }
+  else if (arg === '--model' && args[i + 1]) options.model = args[++i];
   else if (arg === '--help' || arg === '-h') {
     printHelp();
     process.exit(0);
@@ -274,12 +261,29 @@ function parseCliArgs(args) {
 
 const {
   profile, roundNumber, parallel, dryRun, skipEvidence, reviewerOverride,
-  targetDir, checkGoalMode, diffBase, agentCli,
+  targetDir, checkGoalMode, diffBase, agentCli, model,
 } = parseCliArgs(process.argv.slice(2));
 
 if (!/^[a-z0-9-]+$/.test(profile) || (reviewerOverride && !/^[a-z0-9-]+$/.test(reviewerOverride))) {
   console.error('Invalid profile or reviewer name');
   process.exit(4);
+}
+
+function validateAgentModel(agent, selectedModel) {
+  if (!agent || !selectedModel) return 'actual reviews require explicit --agent and --model';
+  if (!/^[A-Za-z0-9._:/-]{1,128}$/.test(selectedModel)) return 'invalid --model value';
+  const claudeModel = /^(?:claude-|sonnet$|opus$|haiku$)/i.test(selectedModel);
+  if (agent === 'codex' && claudeModel) return `model ${selectedModel} is not valid for codex backend`;
+  if (agent === 'claude' && !claudeModel) return `model ${selectedModel} is not valid for claude backend`;
+  return null;
+}
+
+if (!dryRun) {
+  const modelError = validateAgentModel(agentCli, model);
+  if (modelError) {
+    console.error(modelError);
+    process.exit(4);
+  }
 }
 
 function resolveDiffBase(ref) {
@@ -329,7 +333,8 @@ Options:
   --profile <name>   Profile: quick, default, release-gate, full, agentic-release-gate
   --round <N>        Round number (auto-detected if not specified)
   --parallel         Run reviewers in parallel
-  --agent <type>     Agent to use: claude or codex (auto-detects Claude, then Codex)
+  --agent <type>     Required backend for actual reviews: claude or codex
+  --model <name>     Required backend-compatible model for actual reviews
   --reviewer <name>  Run only this reviewer
   --target <path>    Review target directory (for self-review: skills/release-quality-review)
   --skip-evidence    Skip automatic evidence collection
@@ -339,11 +344,11 @@ Options:
   --help, -h         Show this help
 
 Examples:
-  node review-runner.mjs --profile release-gate
-  node review-runner.mjs --profile default --parallel
-  node review-runner.mjs --agent codex
+  node review-runner.mjs --profile release-gate --agent codex --model gpt-5.4
+  node review-runner.mjs --profile default --parallel --agent claude --model claude-sonnet-4-6
+  node review-runner.mjs --agent codex --model gpt-5.4
   node review-runner.mjs --reviewer destructive-qa --dry-run
-  node review-runner.mjs --target skills/release-quality-review --profile quick
+  node review-runner.mjs --target skills/release-quality-review --profile quick --dry-run
   `);
 }
 
@@ -496,6 +501,33 @@ function collectEvidence(config) {
   return evidence;
 }
 
+function collectDryRunEvidence() {
+  const targetPrefix = REVIEW_TARGET === PROJECT_ROOT
+    ? null
+    : relative(PROJECT_ROOT, REVIEW_TARGET).replaceAll('\\', '/');
+  const pathArgs = targetPrefix ? ['--', targetPrefix] : [];
+  const changedFiles = nodeExecFileSync(
+    'git',
+    ['diff', '--name-only', resolvedDiffBase, ...pathArgs],
+    { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000, env: TOOL_ENV },
+  ).trim().split('\n').filter(Boolean);
+  const untracked = nodeExecFileSync(
+    'git',
+    ['ls-files', '--others', '--exclude-standard'],
+    { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000, env: TOOL_ENV },
+  ).trim().split('\n').filter(file => file && (!targetPrefix || file.startsWith(`${targetPrefix}/`)));
+  const diff = nodeExecFileSync(
+    'git',
+    ['diff', resolvedDiffBase, ...pathArgs],
+    { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000, maxBuffer: 10 * 1024 * 1024, env: TOOL_ENV },
+  );
+  return {
+    timestamp: new Date().toISOString(),
+    git: { changedFiles: [...new Set([...changedFiles, ...untracked])], diff },
+    structure: {},
+  };
+}
+
 function listFiles(root) {
   const files = [];
   for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -505,39 +537,6 @@ function listFiles(root) {
     else if (entry.isFile()) files.push(full);
   }
   return files;
-}
-
-// Detect conditional reviewers based on changes
-function detectConditionalReviewers(profile, evidence) {
-  if (!profile.conditional_reviewers.length) return [];
-
-  const triggered = [];
-  const changedFiles = evidence.git.changedFiles || [];
-  const diff = evidence.git.diff || '';
-
-  // For self-review, all conditional reviewers are relevant
-  const isSelfReview = REVIEW_TARGET !== PROJECT_ROOT;
-
-  for (const reviewer of profile.conditional_reviewers) {
-    let shouldTrigger = false;
-
-    // In self-review mode, trigger only reviewers that are defined in the profile
-    if (isSelfReview) {
-      // Only trigger if the profile actually defines conditional reviewers
-      shouldTrigger = profile.conditional_reviewers && profile.conditional_reviewers.length > 0;
-    } else {
-      const conditions = profile.trigger_conditions?.[reviewer];
-      shouldTrigger = conditions
-        ? matchesTriggerConditions(changedFiles, diff, conditions)
-        : true;
-    }
-
-    if (shouldTrigger) {
-      triggered.push(reviewer);
-    }
-  }
-
-  return triggered;
 }
 
 // Detect change scale and suggest appropriate profile
@@ -722,7 +721,7 @@ function getGitInfo() {
 }
 
 // Generate reviewer prompt
-function generateReviewerPrompt(reviewerName, currentRound, candidateIdentity) {
+function generateReviewerPrompt(reviewerName, currentRound, candidateIdentity, reviewBackend, reviewModel) {
   const reviewerContent = loadReviewer(reviewerName);
   if (!reviewerContent) return null;
   const { commit: candidateCommit, tree: candidateTree } = candidateIdentity;
@@ -772,6 +771,8 @@ candidate_commit: ${candidateCommit}
 candidate_tree: ${candidateTree}
 score: <0-100 integer>
 status: <pass|fail>
+review_backend: ${reviewBackend}
+review_model: ${reviewModel}
 \`\`\`
 实际输出目录必须是 ${REPORT_DIR}/round-${String(currentRound).padStart(3, '0')}/${reviewerName}/。
 
@@ -789,7 +790,10 @@ status: <pass|fail>
 }
 
 // Validate resume artifacts for credibility
-async function validateResumeArtifacts(reviewerDir, reviewer, expectedProfile, expectedRound, currentIdentity) {
+async function validateResumeArtifacts(
+  reviewerDir, reviewer, expectedProfile, expectedRound, currentIdentity,
+  expectedBackend, expectedModel,
+) {
   const requiredFiles = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md'];
   try {
     const contents = await Promise.all(requiredFiles.map(file =>
@@ -807,6 +811,8 @@ async function validateResumeArtifacts(reviewerDir, reviewer, expectedProfile, e
     if (parsed.round !== expectedRound) mismatches.push(`round=${parsed.round ?? 'missing'}`);
     if (parsed.candidateCommit !== currentIdentity.commit) mismatches.push(`candidate_commit=${parsed.candidateCommit ?? 'missing'}`);
     if (parsed.candidateTree !== currentIdentity.tree) mismatches.push(`candidate_tree=${parsed.candidateTree ?? 'missing'}`);
+    if (parsed.reviewBackend !== expectedBackend) mismatches.push(`review_backend=${parsed.reviewBackend ?? 'missing'}`);
+    if (parsed.reviewModel !== expectedModel) mismatches.push(`review_model=${parsed.reviewModel ?? 'missing'}`);
     if (!Number.isInteger(parsed.score) || parsed.score < 0 || parsed.score > 100) mismatches.push('score=invalid');
     if (!['pass', 'fail'].includes(parsed.status)) mismatches.push(`status=${parsed.status ?? 'missing'}`);
     const emptyFiles = requiredFiles.filter((_file, index) => contents[index].trim() === '');
@@ -822,25 +828,25 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-function getAgentInvocation(agent, prompt) {
+function getAgentInvocation(agent, selectedModel, prompt) {
   if (agent === 'claude') {
     return {
       command: 'claude',
-      args: ['-p', '--permission-mode', 'acceptEdits', '--no-session-persistence', prompt],
+      args: ['-p', '--model', selectedModel, '--permission-mode', 'acceptEdits', '--no-session-persistence', prompt],
     };
   }
   if (agent === 'codex') {
     return {
       command: 'codex',
-      args: ['exec', '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt],
+      args: ['exec', '--model', selectedModel, '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt],
     };
   }
   return { command: agent, args: ['-p', prompt] };
 }
 
-function bindRoundBackend(roundDir, backend) {
+function bindRoundBackend(roundDir, backend, selectedModel) {
   const lockPath = resolveWithinRoot(roundDir, 'review-backend.json', 'review backend lock');
-  const record = { backend };
+  const record = { backend, model: selectedModel };
   try {
     writeFileSync(lockPath, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
     return record;
@@ -860,7 +866,27 @@ function bindRoundBackend(roundDir, backend) {
     failure.exitCode = 4;
     throw failure;
   }
+  if (typeof existing.model !== 'string' || existing.model !== selectedModel) {
+    const failure = new Error(`round model is locked to ${existing.model || 'invalid'}, cannot use ${selectedModel}`);
+    failure.exitCode = 4;
+    throw failure;
+  }
   return existing;
+}
+
+async function bindRoundMetadata(roundDir, backend, selectedModel) {
+  const metadataPath = join(roundDir, 'metadata.json');
+  if (!existsSync(metadataPath)) return;
+  const metadata = JSON.parse(readContainedFileSync(roundDir, metadataPath, 'utf8'));
+  if (metadata.review_backend && metadata.review_backend !== backend) {
+    throw new Error(`round metadata backend is locked to ${metadata.review_backend}, cannot use ${backend}`);
+  }
+  if (metadata.review_model && metadata.review_model !== selectedModel) {
+    throw new Error(`round metadata model is locked to ${metadata.review_model}, cannot use ${selectedModel}`);
+  }
+  metadata.review_backend = backend;
+  metadata.review_model = selectedModel;
+  await writeContainedFile(roundDir, metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
 }
 
 // Scale-based timeout calculation
@@ -975,29 +1001,12 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   console.log(`\n${c.blue}ℹ${c.reset} Round: ${currentRound}`);
   console.log(`${c.blue}ℹ${c.reset} Report: ${roundDir}`);
 
-  // Dry run mode check
-  if (dryRun) {
-    console.log(`\n${c.yellow}DRY RUN MODE${c.reset}`);
-    console.log('\nReviewer definitions:');
-    const allReviewers = reviewerOverride
-      ? [reviewerOverride]
-      : [...profileConfig.resident_reviewers, ...profileConfig.conditional_reviewers,
-          ...(profileConfig.gate?.require_adversarial ? profileConfig.adversarial_reviewers : [])];
-    let valid = true;
-    for (const name of allReviewers) {
-      const exists = existsSync(join(SKILL_DIR, 'reviewers', `${name}.md`));
-      console.log(`  ${exists ? c.green + '✓' : c.red + '✗'} ${name}`);
-      valid &&= exists;
-    }
-    if (!valid) process.exit(4);
-    console.log(`\n${c.green}Dry run complete${c.reset}`);
-    return { roundDir, evidence: {}, allReviewers: [], results: [] };
+  if (!dryRun) {
+    ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR);
+    ensureContainedDirectorySync(REPORT_DIR, roundDir);
   }
 
-  ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR);
-  ensureContainedDirectorySync(REPORT_DIR, roundDir);
-
-  if (profile === 'agentic-release-gate') {
+  if (!dryRun && profile === 'agentic-release-gate') {
     const requiredArtifacts = ['generated-goal.md', 'changes.md', 'diff-summary.md', 'risk.md', 'handoff.md'];
     const missingArtifacts = requiredArtifacts.filter(file => !existsSync(join(roundDir, file)));
     if (missingArtifacts.length > 0) {
@@ -1008,11 +1017,13 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
   // Collect evidence with config
   const config = loadConfig();
-  const evidence = skipEvidence
-    ? (profile === 'agentic-release-gate'
-        ? loadPersistedRoundScope(roundDir)
-        : { timestamp: new Date().toISOString(), git: {}, structure: {} })
-    : collectEvidence(config);
+  const evidence = dryRun
+    ? collectDryRunEvidence()
+    : skipEvidence
+      ? (profile === 'agentic-release-gate'
+          ? loadPersistedRoundScope(roundDir)
+          : { timestamp: new Date().toISOString(), git: {}, structure: {} })
+      : collectEvidence(config);
 
   // Detect change scale (right-size throttle)
   const scaleInfo = skipEvidence && evidence.scale?.scale
@@ -1031,15 +1042,33 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     console.log(`${c.blue}ℹ Reason:${c.reset} ${scaleInfo.reason}`);
   }
 
-  // Detect conditional reviewers
-  const triggeredConditional = detectConditionalReviewers(profileConfig, evidence);
-  const allReviewers = reviewerOverride
-    ? [reviewerOverride]
-    : [
-        ...profileConfig.resident_reviewers,
-        ...triggeredConditional,
-        ...(profileConfig.gate?.require_adversarial ? profileConfig.adversarial_reviewers : []),
-      ];
+  let reviewerSelection;
+  try {
+    reviewerSelection = selectReviewers(
+      profileConfig,
+      evidence.git.changedFiles || [],
+      evidence.git.diff || '',
+    );
+  } catch (error) {
+    console.error(`Invalid reviewer configuration: ${error.message}`);
+    process.exit(4);
+  }
+  const triggeredConditional = reviewerSelection.triggeredConditional;
+  const allReviewers = reviewerOverride ? [reviewerOverride] : reviewerSelection.reviewers;
+
+  if (dryRun) {
+    console.log(`\n${c.yellow}DRY RUN MODE${c.reset}`);
+    console.log('\nSelected reviewers:');
+    let valid = true;
+    for (const name of allReviewers) {
+      const exists = existsSync(join(SKILL_DIR, 'reviewers', `${name}.md`));
+      console.log(`  ${exists ? c.green + '✓' : c.red + '✗'} ${name}`);
+      valid &&= exists;
+    }
+    if (!valid) process.exit(4);
+    console.log(`\n${c.green}Dry run complete${c.reset}`);
+    return { roundDir, evidence, allReviewers, results: [] };
+  }
 
   // Persist phase plan BEFORE running reviews
   persistPhasePlan(roundDir, currentRound, allReviewers, evidence, profileConfig);
@@ -1063,17 +1092,16 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   const scale = evidence.scale?.scale || 'medium';
   const scaledTimeout = getScaledTimeout(scale);
 
-  // Auto-detect agent if not specified
-  const resolvedAgent = agentCli || detectAvailableAgent();
-  if (!resolvedAgent) {
-    log.error('No agent CLI available (checked: claude, codex)');
-    process.exit(5);
-  }
-  bindRoundBackend(roundDir, resolvedAgent);
-  log.info(`Using agent: ${resolvedAgent}`);
+  const resolvedAgent = agentCli;
+  const resolvedModel = model;
+  bindRoundBackend(roundDir, resolvedAgent, resolvedModel);
+  await bindRoundMetadata(roundDir, resolvedAgent, resolvedModel);
+  log.info(`Using agent: ${resolvedAgent}, model: ${resolvedModel}`);
   const candidateIdentity = getGitInfo();
   const reviewerPrompts = new Map(allReviewers.map(reviewer => [
-    reviewer, generateReviewerPrompt(reviewer, currentRound, candidateIdentity),
+    reviewer, generateReviewerPrompt(
+      reviewer, currentRound, candidateIdentity, resolvedAgent, resolvedModel,
+    ),
   ]));
 
   // Use config for delays
@@ -1104,7 +1132,10 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       ensureContainedDirectorySync(roundDir, reviewerDir);
 
       // Check if reviewer already has credible results (resume support)
-      const validation = await validateResumeArtifacts(reviewerDir, reviewer, profile, currentRound, candidateIdentity);
+      const validation = await validateResumeArtifacts(
+        reviewerDir, reviewer, profile, currentRound, candidateIdentity,
+        resolvedAgent, resolvedModel,
+      );
       if (validation.valid) {
         console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
         resolve({ name: reviewer, status: 'completed', skipped: true });
@@ -1137,7 +1168,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         }
 
         const result = await new Promise(innerResolve => {
-          const invocation = getAgentInvocation(resolvedAgent, prompt);
+          const invocation = getAgentInvocation(resolvedAgent, resolvedModel, prompt);
           const proc = spawn(invocation.command, invocation.args, {
             cwd: PROJECT_ROOT,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -1176,7 +1207,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             activeReviewers.delete(`${reviewer}-${attempt}`);
 
             let postValidation = await validateResumeArtifacts(
-              reviewerDir, reviewer, profile, currentRound, candidateIdentity
+              reviewerDir, reviewer, profile, currentRound, candidateIdentity,
+              resolvedAgent, resolvedModel,
             );
 
             // Preserve canonical files written by the reviewer; parse stdout only as a fallback.
@@ -1187,7 +1219,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
                   candidateIdentity.commit, candidateIdentity.tree
                 );
                 postValidation = await validateResumeArtifacts(
-                  reviewerDir, reviewer, profile, currentRound, candidateIdentity
+                  reviewerDir, reviewer, profile, currentRound, candidateIdentity,
+                  resolvedAgent, resolvedModel,
                 );
               } catch (e) {
                 console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
@@ -1274,7 +1307,10 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       ensureContainedDirectorySync(roundDir, reviewerDir);
 
       // Check resume artifacts first
-      const validation = await validateResumeArtifacts(reviewerDir, reviewer, profile, currentRound, candidateIdentity);
+      const validation = await validateResumeArtifacts(
+        reviewerDir, reviewer, profile, currentRound, candidateIdentity,
+        resolvedAgent, resolvedModel,
+      );
       if (validation.valid) {
         console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
         results.push({ name: reviewer, status: 'completed', skipped: true });
@@ -1310,7 +1346,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           await sleep(delay);
         }
 
-        const invocation = getAgentInvocation(resolvedAgent, prompt);
+        const invocation = getAgentInvocation(resolvedAgent, resolvedModel, prompt);
         const proc = spawn(invocation.command, invocation.args, {
           cwd: PROJECT_ROOT,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -1374,7 +1410,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         if (forceTimer) clearTimeout(forceTimer);
 
         let postValidation = await validateResumeArtifacts(
-          reviewerDir, reviewer, profile, currentRound, candidateIdentity
+          reviewerDir, reviewer, profile, currentRound, candidateIdentity,
+          resolvedAgent, resolvedModel,
         );
 
         // Preserve canonical files written by the reviewer; parse stdout only as a fallback.
@@ -1385,7 +1422,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
               candidateIdentity.commit, candidateIdentity.tree
             );
             postValidation = await validateResumeArtifacts(
-              reviewerDir, reviewer, profile, currentRound, candidateIdentity
+              reviewerDir, reviewer, profile, currentRound, candidateIdentity,
+              resolvedAgent, resolvedModel,
             );
           } catch (e) {
             console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: file write parse error: ${e.message}`);
@@ -1425,6 +1463,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     profile,
     round: currentRound,
     reviewBackend: resolvedAgent,
+    reviewModel: resolvedModel,
     reviewers: allReviewers,
     triggeredConditional,
     timestamp: new Date().toISOString(),

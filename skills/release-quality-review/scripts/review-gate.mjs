@@ -50,7 +50,7 @@ import {
   parseScore,
   parseBlockers,
   parseYamlResult,
-  matchesTriggerConditions,
+  selectReviewers,
   findTrivialVerificationScripts,
   hasConcreteVerificationOutput,
   validateCleanCandidateEvidence,
@@ -153,26 +153,25 @@ async function runGate() {
     log.info(` Resident reviewers: ${JSON.stringify(yamlProfile.resident_reviewers)}`);
     log.info(` Conditional reviewers: ${JSON.stringify(yamlProfile.conditional_reviewers)}`);
 
-    reviewers = [...yamlProfile.resident_reviewers];
-    const triggeredConditional = (() => {
-      if (!yamlProfile.conditional_reviewers || yamlProfile.conditional_reviewers.length === 0) return [];
-      const gitOutput = execFileSync('git', ['diff', '--name-only', resolvedDiffBase], { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000 });
-      const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000 });
-      const changedFiles = [...new Set(`${gitOutput}\n${untracked}`.split('\n').filter(f => f.trim()))];
-      const diffContent = execFileSync('git', ['diff', resolvedDiffBase], { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, maxBuffer: 10 * 1024 * 1024 });
-      return yamlProfile.conditional_reviewers.filter(r => {
-        const conditions = (yamlProfile.trigger_conditions || {})[r];
-        return !conditions || matchesTriggerConditions(changedFiles, diffContent, conditions);
-      });
-    })();
+    const gitOutput = execFileSync('git', ['diff', '--name-only', resolvedDiffBase], { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000 });
+    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000 });
+    const changedFiles = [...new Set(`${gitOutput}\n${untracked}`.split('\n').filter(f => f.trim()))];
+    const diffContent = execFileSync('git', ['diff', resolvedDiffBase], { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, maxBuffer: 10 * 1024 * 1024 });
+    let selection;
+    try {
+      selection = selectReviewers(yamlProfile, changedFiles, diffContent);
+    } catch (error) {
+      log.error(`Invalid reviewer configuration: ${error.message}`);
+      return false;
+    }
+    reviewers = selection.reviewers;
+    const triggeredConditional = selection.triggeredConditional;
     if (triggeredConditional.length > 0) {
       log.info(`Conditional reviewers triggered: ${triggeredConditional.join(', ')}`);
-      reviewers = [...reviewers, ...triggeredConditional];
     }
 
     if (yamlProfile.gate?.require_adversarial && yamlProfile.adversarial_reviewers?.length > 0) {
       log.info(`Adversarial reviewers (required): ${JSON.stringify(yamlProfile.adversarial_reviewers)}`);
-      reviewers = [...reviewers, ...yamlProfile.adversarial_reviewers];
     }
 
     profileConfig = {
@@ -356,8 +355,31 @@ async function runGate() {
     // Phase plan is best-effort
   }
 
+  let backendLock = {};
+  const backendLockPath = join(roundDir, 'review-backend.json');
+  if (existsSync(backendLockPath)) {
+    try {
+      backendLock = JSON.parse(readContainedFileSync(roundDir, backendLockPath, 'utf8'));
+    } catch (error) {
+      log.error(`Invalid review backend lock: ${error.message}`);
+    }
+  }
+  let reviewIdentityValid = false;
+  try {
+    const metadata = JSON.parse(readContainedFileSync(roundDir, join(roundDir, 'metadata.json'), 'utf8'));
+    reviewIdentityValid = ['claude', 'codex'].includes(backendLock.backend) &&
+      typeof backendLock.model === 'string' && backendLock.model.length > 0 &&
+      metadata.review_backend === backendLock.backend && metadata.review_model === backendLock.model;
+  } catch {
+    reviewIdentityValid = false;
+  }
+
   // Load scores for validated reviewers
-  const existingScores = loadExistingScores(roundDir, reviewers, currentCandidateCommit, currentCandidateTree, profile, effectiveRoundNumber, (r, p) => validateReviewerIdentity(SKILL_DIR, r));
+  const existingScores = loadExistingScores(
+    roundDir, reviewers, currentCandidateCommit, currentCandidateTree, profile,
+    effectiveRoundNumber, backendLock.backend, backendLock.model,
+    (r, p) => validateReviewerIdentity(SKILL_DIR, r),
+  );
 
   const minScore = Number((profileConfig.gate?.min_score) ?? 90);
   const allValid = reviewers.every(r => existingScores[r].isValidReviewer !== false);
@@ -456,7 +478,7 @@ async function runGate() {
   const generatedArtifactsSafe = sensitiveArtifactFindings.length === 0;
   const arbitrationEligible = !singleReviewer && excludeReviewers.length === 0;
 
-  const gatePassed = allPassed && !hasRedlines && evidenceValidationPassed && goalModeViolations.length === 0 && goalInstructionValid && artifactCompletenessPassed && generatedArtifactsSafe && automatedChecksPassed && arbitrationEligible;
+  const gatePassed = allPassed && reviewIdentityValid && !hasRedlines && evidenceValidationPassed && goalModeViolations.length === 0 && goalInstructionValid && artifactCompletenessPassed && generatedArtifactsSafe && automatedChecksPassed && arbitrationEligible;
 
   log.title('GATE STATUS');
 
@@ -508,6 +530,7 @@ async function runGate() {
     if (goalRequired && goalInstructionResult && !goalInstructionResult.passed) log.error(`Goal instruction invalid (${goalInstructionResult.score}/100) - contains plan language`);
     if (!artifactCompletenessPassed) log.error('Required agentic Goal, evidence, risk, and handoff artifacts are incomplete');
     if (!generatedArtifactsSafe) log.error(`Generated artifact security scan failed: ${sensitiveArtifactFindings.join(', ')}`);
+    if (!reviewIdentityValid) log.error('Review backend/model identity is missing or does not match round metadata');
 
     generateSummary(roundDir, profile, effectiveRoundNumber, existingScores, false, evidence, reviewerPacketPassed);
     persistFinalArbitration(roundDir, false, 'one or more release gates failed', reviewers, process.argv);

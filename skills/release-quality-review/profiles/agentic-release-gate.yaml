@@ -19,6 +19,10 @@
 | 目标合规 | 可选 | 强制检查 |
 | 交接完整性 | 可选 | 强制检查 |
 
+Agentic profile 固定运行 4 个常驻和 4 个对抗 Reviewer。4 个条件 Reviewer
+只在候选 diff 命中各自 `trigger_conditions` 时运行，因此通常为 8-12 个，
+而不是为了固定数量无条件启动。
+
 ## 评审配置
 
 ```yaml
@@ -36,9 +40,20 @@ resident_reviewers:
 # 条件触发 Reviewers (按变更类型)
 conditional_reviewers:
   - native-designer      # 有 UI 变更时
-  - zero-doc-user       # 始终检查
+  - zero-doc-user       # 有文档/新用户路径变更时
   - terminal-veteran    # 有 CLI/本地服务时
   - data-security      # 有 token/auth 变更时
+
+trigger_conditions:
+  native-designer:
+    files: ['**/*.tsx', '**/*.jsx', '**/*.css', '**/ui/**']
+  zero-doc-user:
+    files: ['README.md', '**/README.md', '**/docs/**', '**/SKILL.md']
+  terminal-veteran:
+    files: ['**/cli/**', '**/local-server/**', '**/scripts/**', '**/*.mjs', 'package.json']
+  data-security:
+    files: ['**/auth/**', '**/storage/**', '**/security/**', '**/security-utils.mjs', '**/candidate-runtime.mjs']
+    patterns: ['token', 'secret', 'password', 'api-key', 'credential', 'sandbox', 'permission']
 
 # 对抗性审查器 (XLarge 规模强制启用)
 adversarial_reviewers:

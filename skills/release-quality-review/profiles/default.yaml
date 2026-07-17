@@ -22,6 +22,12 @@ conditional_reviewers:
   - terminal-veteran     # 有 CLI/本地服务时
   - architecture-maintainer  # 有架构变更时
 
+trigger_conditions:
+  terminal-veteran:
+    files: ['**/cli/**', '**/local-server/**', '**/scripts/**', '**/*.mjs', 'package.json']
+  architecture-maintainer:
+    files: ['**/routes/**', '**/storage/**', '**/execution/**', '**/lib/**']
+
 # 通过条件
 gate:
   min_score: 90

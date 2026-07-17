@@ -309,6 +309,8 @@ export function parseYamlResult(yamlContent) {
       round: null,
       candidateCommit: null,
       candidateTree: null,
+      reviewBackend: null,
+      reviewModel: null,
       score: null,
       status: null,
       blockers: [],
@@ -323,6 +325,8 @@ export function parseYamlResult(yamlContent) {
     round: null,
     candidateCommit: null,
     candidateTree: null,
+    reviewBackend: null,
+    reviewModel: null,
     score: null,
     status: null,
     blockers: [],
@@ -441,6 +445,12 @@ export function parseYamlResult(yamlContent) {
         case 'candidate_tree':
           if (/^[0-9a-f]{40}$/i.test(value)) result.candidateTree = value.toLowerCase();
           break;
+        case 'review_backend':
+          if (/^(?:claude|codex)$/.test(value)) result.reviewBackend = value;
+          break;
+        case 'review_model':
+          if (/^[A-Za-z0-9._:/-]{1,128}$/.test(value)) result.reviewModel = value;
+          break;
         case 'score':
           const scoreMatch = value.match(/^(\d+)(?:\/100)?$/);
           if (scoreMatch) {
@@ -501,11 +511,16 @@ export function validateResultYamlContract(yamlContent) {
     'blockers', 'blocking_reason', 'contexts', 'dimension_scores', 'dimensions', 'evaluated_at',
     'evidence', 'evidence_files', 'evidence_summary', 'gate_requirements', 'historical_evidence',
     'notes', 'owasp_check', 'pending', 'recommendation', 'redlines', 'reviewed_at',
-    'reviewer_type', 'self_verification_patterns', 'standards_met', 'timestamp', 'total',
+    'review_backend', 'review_model', 'reviewer_type', 'self_verification_patterns', 'standards_met', 'timestamp', 'total',
     'triggered_by', 'verdict', 'verified_fixes', 'weighted_breakdown',
   ]);
   const topLevel = [];
   const seen = new Map();
+  const boundIdentity = new Map([
+    ['review_backend', /^(?:claude|codex)$/],
+    ['review_model', /^[A-Za-z0-9._:/-]{1,128}$/],
+  ]);
+  const identitySeen = new Set();
   for (const line of yamlContent.split('\n')) {
     if (!line || /^\s/.test(line) || line.trimStart().startsWith('#')) continue;
     const match = line.match(/^([A-Za-z_][A-Za-z0-9_-]*):(?:\s*(.*))?$/);
@@ -516,6 +531,11 @@ export function validateResultYamlContract(yamlContent) {
     if (required.has(key)) {
       if (seen.has(key)) return { valid: false, error: `duplicate top-level field: ${key}` };
       seen.set(key, match[2] ?? '');
+    }
+    if (boundIdentity.has(key)) {
+      if (identitySeen.has(key)) return { valid: false, error: `duplicate top-level field: ${key}` };
+      if (!boundIdentity.get(key).test(match[2] ?? '')) return { valid: false, error: `invalid top-level field: ${key}` };
+      identitySeen.add(key);
     }
   }
   const requiredKeys = [...required.keys()];
@@ -598,6 +618,7 @@ export function detectChangeScale(changedFiles = [], addedLines = 0, deletedLine
 }
 
 export function matchesTriggerConditions(changedFiles = [], diff = '', conditions = {}) {
+  if (conditions.always === true) return true;
   const filePatterns = conditions.files || [];
   const contentPatterns = conditions.patterns || [];
   const fileMatched = filePatterns.some(pattern => {
@@ -616,6 +637,47 @@ export function matchesTriggerConditions(changedFiles = [], diff = '', condition
   const normalizedDiff = String(diff).toLowerCase();
   const contentMatched = contentPatterns.some(pattern => normalizedDiff.includes(String(pattern).toLowerCase()));
   return fileMatched || contentMatched;
+}
+
+/**
+ * Select the reviewers required for a profile and candidate diff.
+ * Conditional reviewers must declare an explicit trigger contract.
+ */
+export function selectReviewers(profile, changedFiles = [], diff = '') {
+  const residentReviewers = profile?.resident_reviewers || [];
+  const conditionalReviewers = profile?.conditional_reviewers || [];
+  const adversarialReviewers = profile?.adversarial_reviewers || [];
+  const triggerConditions = profile?.trigger_conditions || {};
+  const triggeredConditional = [];
+
+  for (const reviewer of conditionalReviewers) {
+    const conditions = triggerConditions[reviewer];
+    const hasTrigger = conditions && (
+      conditions.always === true
+      || (Array.isArray(conditions.files) && conditions.files.length > 0)
+      || (Array.isArray(conditions.patterns) && conditions.patterns.length > 0)
+    );
+    if (!hasTrigger) {
+      throw new Error(
+        `Profile ${profile?.name || '<unknown>'} conditional reviewer ${reviewer} is missing trigger_conditions`,
+      );
+    }
+    if (matchesTriggerConditions(changedFiles, diff, conditions)) {
+      triggeredConditional.push(reviewer);
+    }
+  }
+
+  const requiredAdversarial = profile?.gate?.require_adversarial
+    ? adversarialReviewers
+    : [];
+  return {
+    reviewers: [...new Set([
+      ...residentReviewers,
+      ...triggeredConditional,
+      ...requiredAdversarial,
+    ])],
+    triggeredConditional,
+  };
 }
 
 // ============================================================================
@@ -714,7 +776,7 @@ export function parseYamlProfile(content, name) {
       }
 
       if (currentSection === 'trigger conditions') {
-        if (['terminal-veteran', 'native-designer', 'data-security', 'zero-doc-user'].includes(key)) {
+        if (profile.conditional_reviewers.includes(key)) {
           currentTriggerKey = key;
           if (!profile.trigger_conditions[key]) {
             profile.trigger_conditions[key] = { files: [], patterns: [] };
@@ -787,7 +849,9 @@ function parseYamlCodeBlock(yamlContent, profile, defaultArrayKey, defaultTrigge
       } else if (key === 'patterns' && currentTriggerKey) {
         const patterns = value.replace(/^\[|\]$/g, '').split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
         profile.trigger_conditions[currentTriggerKey].patterns = patterns;
-      } else if (['terminal-veteran', 'native-designer', 'data-security', 'zero-doc-user'].includes(key)) {
+      } else if (key === 'always' && currentTriggerKey) {
+        profile.trigger_conditions[currentTriggerKey].always = value === 'true';
+      } else if (profile.conditional_reviewers.includes(key)) {
         currentTriggerKey = key;
         currentArrayKey = '';
         if (!profile.trigger_conditions[key]) {

@@ -27,6 +27,17 @@ conditional_reviewers:
   - terminal-veteran
   - data-security
 
+# Full profile intentionally runs every conditional reviewer.
+trigger_conditions:
+  native-designer:
+    always: true
+  zero-doc-user:
+    always: true
+  terminal-veteran:
+    always: true
+  data-security:
+    always: true
+
 # 通过条件
 gate:
   min_score: 90

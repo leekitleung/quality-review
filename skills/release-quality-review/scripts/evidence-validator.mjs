@@ -349,6 +349,14 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
         desc: `reviewer packet 未绑定当前 candidate commit/tree`,
       });
     }
+    if (!candidateIdentity.reviewIdentityValid ||
+        packet.reviewBackend !== candidateIdentity.backend ||
+        packet.reviewModel !== candidateIdentity.model) {
+      allViolations.push({
+        type: 'review_backend_model_mismatch',
+        desc: 'reviewer packet 未绑定本轮 backend/model',
+      });
+    }
   }
 
   // Run all checks
@@ -535,18 +543,27 @@ function main({ targetRound, targetReviewer, diffBase }) {
   console.log(`${c.blue}ℹ${c.reset} Reviewers: ${reviewers.join(', ')}\n`);
 
   // Validate each reviewer
-  let candidateIdentity = { commit: null, tree: null, valid: false };
+  let candidateIdentity = {
+    commit: null, tree: null, valid: false,
+    backend: null, model: null, reviewIdentityValid: false,
+  };
   try {
     const metadata = JSON.parse(readFileSync(join(roundDir, 'metadata.json'), 'utf8'));
+    const backendLock = JSON.parse(readFileSync(join(roundDir, 'review-backend.json'), 'utf8'));
     const commit = metadata.candidate_commit;
     const tree = metadata.candidate_tree;
     candidateIdentity = {
       commit,
       tree,
       valid: /^[0-9a-f]{40}$/i.test(commit || '') && /^[0-9a-f]{40}$/i.test(tree || ''),
+      backend: backendLock.backend,
+      model: backendLock.model,
+      reviewIdentityValid: ['claude', 'codex'].includes(backendLock.backend) &&
+        typeof backendLock.model === 'string' && backendLock.model.length > 0 &&
+        metadata.review_backend === backendLock.backend && metadata.review_model === backendLock.model,
     };
   } catch {
-    log.fail('Missing or invalid metadata.json candidate identity');
+    log.fail('Missing or invalid metadata/backend identity');
   }
 
   const results = reviewers.map(r => validateReviewer(roundDir, r, diffFiles, candidateIdentity));

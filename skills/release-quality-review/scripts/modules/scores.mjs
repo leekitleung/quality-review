@@ -31,7 +31,10 @@ export function validateReviewerIdentity(skillDir, reviewer) {
  * @param {function} validateReviewerIdentity - Reviewer validator
  * @returns {object} Results map keyed by reviewer name
  */
-export function loadExistingScores(roundDir, reviewers, expectedCandidateCommit, expectedCandidateTree, profile, roundNumber, validateReviewerIdentity) {
+export function loadExistingScores(
+  roundDir, reviewers, expectedCandidateCommit, expectedCandidateTree, profile, roundNumber,
+  expectedBackend, expectedModel, validateReviewerIdentity,
+) {
   const results = {};
 
   for (const reviewer of reviewers) {
@@ -52,6 +55,8 @@ export function loadExistingScores(roundDir, reviewers, expectedCandidateCommit,
     let declaredRound = null;
     let declaredCandidateCommit = null;
     let declaredCandidateTree = null;
+    let declaredBackend = null;
+    let declaredModel = null;
     let packetError = null;
 
     // Try result.yaml first (if exists)
@@ -72,6 +77,8 @@ export function loadExistingScores(roundDir, reviewers, expectedCandidateCommit,
         declaredRound = yamlResult.round;
         declaredCandidateCommit = yamlResult.candidateCommit;
         declaredCandidateTree = yamlResult.candidateTree;
+        declaredBackend = yamlResult.reviewBackend;
+        declaredModel = yamlResult.reviewModel;
 
         const resultBlockers = yamlResult.blockers.map(b => {
           if (typeof b === 'string') return b;
@@ -155,6 +162,9 @@ export function loadExistingScores(roundDir, reviewers, expectedCandidateCommit,
     if (packetPresent && declaredRound !== roundNumber) packetError = `Round mismatch: expected ${roundNumber}, got ${declaredRound ?? 'missing'}`;
     if (packetPresent && declaredCandidateCommit !== expectedCandidateCommit) packetError = `Candidate commit mismatch: expected ${expectedCandidateCommit}, got ${declaredCandidateCommit || 'missing'}`;
     if (packetPresent && declaredCandidateTree !== expectedCandidateTree) packetError = `Candidate tree mismatch: expected ${expectedCandidateTree}, got ${declaredCandidateTree || 'missing'}`;
+    if (packetPresent && (!expectedBackend || !expectedModel)) packetError = 'Review backend/model lock is missing';
+    if (packetPresent && declaredBackend !== expectedBackend) packetError = `Review backend mismatch: expected ${expectedBackend}, got ${declaredBackend || 'missing'}`;
+    if (packetPresent && declaredModel !== expectedModel) packetError = `Review model mismatch: expected ${expectedModel}, got ${declaredModel || 'missing'}`;
     if (packetPresent && !['pass', 'fail'].includes(String(status || '').toLowerCase())) packetError = 'result.yaml status must be pass or fail';
     blockers = [...new Set(blockers.map(item => typeof item === 'string' ? item : JSON.stringify(item)))];
 
