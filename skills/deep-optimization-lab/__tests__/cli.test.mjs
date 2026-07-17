@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -26,6 +26,21 @@ test('experiment runner completes a documented dry run without external YAML dep
 
   assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
   assert.match(result.stdout, /DRY RUN MODE/);
+});
+
+test('documented dry run bootstraps its baseline in a clean workspace', t => {
+  const workspace = mkdtempSync(join(tmpdir(), 'deep-optimization-lab-clean-'));
+  t.after(() => rmSync(workspace, { recursive: true, force: true }));
+  const skillCopy = join(workspace, 'skills', 'deep-optimization-lab');
+  cpSync(join(PROJECT_ROOT, 'skills', 'deep-optimization-lab'), skillCopy, { recursive: true });
+  const result = spawnSync(process.execPath, [
+    join(skillCopy, 'scripts', 'experiment-runner.mjs'),
+    '--hypothesis', 'improve-cli-help-text', '--profile', 'project-quality', '--dry-run',
+  ], { cwd: workspace, encoding: 'utf8', timeout: 120000 });
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+  assert.match(result.stdout, /DRY RUN MODE/);
+  assert.equal(existsSync(join(workspace, 'experiment-logs', 'baseline.yaml')), true);
 });
 
 test('experiment runner rejects a shell-shaped profile without executing it', t => {

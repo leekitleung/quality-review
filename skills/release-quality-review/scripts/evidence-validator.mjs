@@ -201,7 +201,7 @@ function verifyFileLineReferences(content, roundDir) {
 }
 
 // Check for file:line references quality
-function checkEvidenceQuality(content) {
+function checkEvidenceQuality(content, requireCommandEvidence = false) {
   const issues = [];
   const violations = [];
 
@@ -231,6 +231,12 @@ function checkEvidenceQuality(content) {
       desc: `证据不足：仅 ${fileLineRefs.length} 个文件引用, ${commandOutputs.length} 个命令输出, ${testOutputs.length} 个测试结果`,
       minRefs: 5,
       minCommands: 1,
+    });
+  }
+  if (requireCommandEvidence && commandOutputs.length === 0) {
+    violations.push({
+      type: 'missing_command_evidence',
+      desc: 'status: pass 的 reviewer packet 必须包含至少一个带 exit 0 和输出摘要的共享命令证据',
     });
   }
 
@@ -402,7 +408,7 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
   allViolations.push(...fileRefCheck.violations);
   allWarnings.push(...fileRefCheck.warnings);
 
-  const quality = checkEvidenceQuality(content);
+  const quality = checkEvidenceQuality(content, packet?.status === 'pass');
 
   // Include quality violations in total violations
   allViolations.push(...quality.violations);

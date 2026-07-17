@@ -204,6 +204,7 @@ async function collectBaseline() {
   }
 
   // Save baseline
+  mkdirSync(outputDir, { recursive: true });
   const baselineFile = join(outputDir, 'baseline.yaml');
   const baselineYaml = JSON.stringify(baseline, null, 2);
   writeFileSync(baselineFile, baselineYaml);

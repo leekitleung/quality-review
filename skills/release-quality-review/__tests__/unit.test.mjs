@@ -65,7 +65,10 @@ import {
 } from '../lib/evidence-utils.mjs';
 import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
 import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
-import { collectEvidence, prepareTrustedAuditWorkspace, runAutomatedChecks, runEvidenceCommand } from '../scripts/modules/evidence.mjs';
+import {
+  collectEvidence, formatGitEvidenceFailure, prepareTrustedAuditWorkspace,
+  runAutomatedChecks, runEvidenceCommand,
+} from '../scripts/modules/evidence.mjs';
 import { createCandidateRuntime, validateCandidateCheckoutIdentity } from '../lib/candidate-runtime.mjs';
 import {
   extractRadarCandidates, fetchRadarReviewerModel, selectRadarReviewerModel,
@@ -884,6 +887,12 @@ test.describe('adversarial review detection', () => {
 });
 
 test.describe('security boundaries', () => {
+  test('sandboxed Git evidence failures include the host recovery action', () => {
+    const message = formatGitEvidenceFailure(new Error('outer sandbox capability check failed closed'));
+    assertTrue(message.includes('outer sandbox capability check failed closed'));
+    assertTrue(message.includes('Run from a normal macOS host shell or supported CI runner.'));
+  });
+
   test('rejects paths that escape the repository', () => {
     let rejected = false;
     try {
@@ -1574,9 +1583,6 @@ test.describe('CLI fail-closed integration', () => {
       assertEqual(/\blet REPORT_DIR\b/.test(content), false, script);
       assertTrue(content.includes('const REPORT_DIR = resolveReportDirectoryOrExit()'), script);
     }
-    const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
-    assertTrue(runner.includes('Run from a normal macOS host shell or supported CI runner.'),
-      'Sandbox capability failures must include an actionable recovery path');
   });
 
   test('actual reviews require a backend and reject incompatible explicit models', () => {
@@ -1848,11 +1854,12 @@ test.describe('CLI fail-closed integration', () => {
     }
   });
 
-  test('runner resolves the diff base with read-only project access', () => {
+  test('runner delegates production evidence collection to the Gate', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
-    assertTrue(runner.includes('sandboxReadOnlyRoots: [PROJECT_ROOT]'));
-    assertTrue(runner.includes("branch: execSync('git branch --show-current 2>/dev/null', gitOptions)"),
-      'Runner Git evidence must use the sandboxed production execSync path');
+    assertTrue(runner.includes('persistRoundEvidenceBeforeReview(roundDir, profile, currentRound)'));
+    assertTrue(runner.includes('evidence = loadPersistedRoundScope(roundDir)'));
+    assertEqual(runner.includes('function collectEvidence('), false,
+      'Runner must not maintain a second production evidence collector');
   });
 
   test('release evidence exposes a coverage command and versioned changelog', () => {
@@ -2183,7 +2190,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
         env: {
           ...process.env, PATH: `${fakeBin}:${process.env.PATH}`,
-          RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '1000', RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+          RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '4000', RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
           RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0', RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
         },
       });
@@ -2283,13 +2290,16 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         'skills/release-quality-review/scripts/evidence-validator.mjs:1',
         'skills/release-quality-review/scripts/review-gate.mjs:1',
         'skills/release-quality-review/scripts/review-runner.mjs:1',
+        'skills/release-quality-review/lib/review-utils.mjs:1',
+        'skills/release-quality-review/lib/security-utils.mjs:1',
       ].join('\n'));
       const ratioResult = spawnSync('node', [
         join(SKILL_DIR, 'scripts', 'evidence-validator.mjs'), '--round', `round-${String(roundNumber).padStart(3, '0')}`,
         '--reviewer', 'product-flow', '--base', 'HEAD',
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(ratioResult.status, 1, `Expected score ratio rejection, output: ${ratioResult.stdout}${ratioResult.stderr}`);
-      assertTrue(ratioResult.stdout.includes('insufficient_evidence'), 'Expected score ratio not to count as test output');
+      assertTrue(ratioResult.stdout.includes('missing_command_evidence'),
+        'Five unrelated static citations must not authorize a passing packet');
     } finally {
       rmSync(round, { recursive: true, force: true });
     }

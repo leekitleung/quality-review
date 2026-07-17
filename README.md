@@ -208,7 +208,8 @@ npm run skill:gate -- --profile agentic-release-gate --round "$REVIEW_ROUND" --b
 
 Approval exists only when both commands exit `0`. The authoritative approval
 report is `quality-reports/$REVIEW_ROUND_DIR/final-report.md`; it is never a shared
-cross-round file.
+cross-round file. The Gate is the only production evidence collector; the Runner
+persists evidence through the Gate and then consumes the candidate-bound round scope.
 
 Troubleshooting:
 
@@ -235,7 +236,8 @@ Troubleshooting:
   with empty blocker/redline arrays; all other packets must declare `fail`.
 - Evidence-source failure: quote at least one persisted shared check in
   `score.md` as `Command`, `Exit code`, and `Output` lines, including the actual
-  machine-readable summary from `evidence/automated-checks.json`.
+  machine-readable summary from `evidence/automated-checks.json`. A passing
+  reviewer packet cannot satisfy this requirement with static file citations alone.
 - Round identity conflict: do not reuse a round after the candidate changes;
   choose a new positive round number.
 - Persisted-evidence mismatch: rerun `skill:verify-clean` first, then rerun the

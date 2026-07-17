@@ -10,6 +10,14 @@ import {
 } from '../../lib/review-utils.mjs';
 import { createCandidateRuntime } from '../../lib/candidate-runtime.mjs';
 
+export function formatGitEvidenceFailure(error) {
+  const message = redactSensitiveText(error?.message || error);
+  const recovery = /(?:outer sandbox|filesystem sandbox)/i.test(message)
+    ? ' Run from a normal macOS host shell or supported CI runner.'
+    : '';
+  return `git evidence collection failed: ${message}.${recovery}`;
+}
+
 export function prepareTrustedAuditWorkspace(candidateRoot, isolatedHome) {
   const auditRoot = join(isolatedHome, 'trusted-audit');
   mkdirSync(auditRoot, { recursive: true });
@@ -71,8 +79,8 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
       changedFiles,
     };
     evidence.scale = detectChangeScale(changedFiles, totals.added, totals.deleted);
-  } catch (e) {
-    log.warn('Could not collect git evidence');
+  } catch (error) {
+    throw new Error(formatGitEvidenceFailure(error));
   }
 
   if (evidence.git.status !== '') {

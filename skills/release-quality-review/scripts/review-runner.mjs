@@ -55,9 +55,7 @@ const REPORT_DIR = resolveReportDirectoryOrExit();
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 const TOOL_ENV = createSubprocessEnv();
 const OUTER_SANDBOX_ATTESTATION = outerSandboxAttestationFromEnv();
-const {
-  env: CANDIDATE_ENV, execSync, execFileSync,
-} = createCandidateRuntime(PROJECT_ROOT, 'runner', OUTER_SANDBOX_ATTESTATION);
+const { env: CANDIDATE_ENV } = createCandidateRuntime(PROJECT_ROOT, 'runner', OUTER_SANDBOX_ATTESTATION);
 const REVIEWER_TIMEOUT_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_TIMEOUT_MS, 15 * 60 * 1000);
 const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS, 5000);
 const REVIEWER_RETRY_MAX = parseInt(process.env.RELEASE_QUALITY_REVIEWER_RETRY_MAX || '2', 10);
@@ -284,134 +282,6 @@ function loadReviewer(name) {
   return readFileSync(path, 'utf-8');
 }
 
-// Collect evidence with config
-function collectEvidence(config) {
-  log.info('Collecting evidence...');
-  const isSelfReview = REVIEW_TARGET !== PROJECT_ROOT;
-  const targetName = isSelfReview ? 'Skill Self-Review' : 'Project';
-
-  const evidence = {
-    timestamp: new Date().toISOString(),
-    target: targetName,
-    git: {},
-    structure: {},
-    config: {},
-  };
-  const gitOptions = {
-    encoding: 'utf-8', cwd: PROJECT_ROOT, env: CANDIDATE_ENV,
-    sandboxReadOnlyRoots: [PROJECT_ROOT],
-  };
-
-  // Git info (always from PROJECT_ROOT)
-  let gitEvidenceError = null;
-  try {
-    evidence.git = {
-      branch: execSync('git branch --show-current 2>/dev/null', gitOptions).trim(),
-      commit: execSync('git rev-parse --short HEAD 2>/dev/null', gitOptions).trim(),
-      status: execSync('git status --short 2>/dev/null', gitOptions).trim(),
-      diffStats: execSync(`git diff --stat ${resolvedDiffBase} 2>/dev/null`, gitOptions).trim(),
-    };
-
-    // For self-review, only show changes in the skill directory
-    if (isSelfReview) {
-      evidence.git.changedFiles = execSync(
-        `git diff --name-only ${resolvedDiffBase} 2>/dev/null | grep "^skills/release-quality-review/" || true`,
-        gitOptions
-      ).trim().split('\n').filter(Boolean);
-      evidence.git.diff = execSync(
-        `git diff ${resolvedDiffBase} 2>/dev/null -- "skills/release-quality-review/" || true`,
-        { ...gitOptions, maxBuffer: 10 * 1024 * 1024 }
-      ).trim();
-    } else {
-      evidence.git.changedFiles = execSync(`git diff --name-only ${resolvedDiffBase} 2>/dev/null`, gitOptions)
-        .trim().split('\n').filter(Boolean);
-      evidence.git.diff = execSync(`git diff ${resolvedDiffBase} 2>/dev/null`, { ...gitOptions, maxBuffer: 10 * 1024 * 1024 }).trim();
-    }
-    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
-      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, env: CANDIDATE_ENV,
-      sandboxReadOnlyRoots: [PROJECT_ROOT],
-    }).trim().split('\n').filter(Boolean);
-    evidence.git.changedFiles = [...new Set([...(evidence.git.changedFiles || []), ...untracked])];
-  } catch (e) {
-    gitEvidenceError = e;
-    log.warn(`Could not collect git info: ${redactSensitiveText(e.message)}`);
-  }
-  if (gitEvidenceError) {
-    const message = redactSensitiveText(gitEvidenceError.message);
-    const recovery = /(?:outer sandbox|filesystem sandbox)/i.test(message)
-      ? ' Run from a normal macOS host shell or supported CI runner.'
-      : '';
-    throw new Error(`git evidence collection failed: ${message}.${recovery}`);
-  }
-  if (evidence.git.status !== '') throw new Error('source checkout must be clean before evidence collection');
-
-  // Project/Skill structure (from REVIEW_TARGET)
-  const targetRoot = REVIEW_TARGET;
-  try {
-    if (existsSync(join(targetRoot, 'apps'))) {
-      evidence.structure.apps = readdirSync(join(targetRoot, 'apps')).filter(f => {
-        try { return statSync(join(targetRoot, 'apps', f)).isDirectory(); } catch { return false; }
-      });
-    }
-    if (existsSync(join(targetRoot, 'packages'))) {
-      evidence.structure.packages = readdirSync(join(targetRoot, 'packages')).filter(f => {
-        try { return statSync(join(targetRoot, 'packages', f)).isDirectory(); } catch { return false; }
-      });
-    }
-    // For skill self-review, list the skill structure
-    if (isSelfReview) {
-      evidence.structure.skill = {
-        reviewers: readdirSync(join(targetRoot, 'reviewers')).filter(f => f.endsWith('.md')),
-        rubrics: readdirSync(join(targetRoot, 'rubrics')).filter(f => f.endsWith('.md')),
-        scripts: readdirSync(join(targetRoot, 'scripts')).filter(f => f.endsWith('.mjs')),
-        profiles: readdirSync(join(targetRoot, 'profiles')).filter(f => f.endsWith('.yaml')),
-      };
-    }
-
-    const targetFiles = listFiles(targetRoot);
-    evidence.structure.testFiles = String(targetFiles.filter(file => /\.(test|spec)\.ts$/.test(file)).length);
-    evidence.structure.sourceFiles = String(targetFiles.filter(file => /\.(ts|tsx)$/.test(file) && !file.endsWith('.d.ts')).length);
-
-    // Calculate test ratio
-    const testCount = parseInt(evidence.structure.testFiles) || 0;
-    const sourceCount = parseInt(evidence.structure.sourceFiles) || 1;
-    evidence.structure.testRatio = Math.round((testCount / sourceCount) * 100) / 100;
-
-    // Check for CI workflows
-    evidence.structure.ciWorkflows = existsSync(join(targetRoot, '.github', 'workflows')) ?
-      readdirSync(join(targetRoot, '.github', 'workflows')).filter(f => f.endsWith('.yml') || f.endsWith('.yaml')).length : 0;
-
-    // Check for README
-    evidence.structure.hasReadme = existsSync(join(targetRoot, 'README.md')) ||
-                                    existsSync(join(targetRoot, 'README.txt')) ||
-                                    existsSync(join(targetRoot, 'readme.md'));
-
-    // Check for oversized files (>2000 lines)
-    evidence.structure.oversizedFiles = [];
-    const findResult = targetFiles.filter(file => /\.(ts|tsx)$/.test(file)).slice(0, 50);
-    for (const file of findResult) {
-      try {
-        const lines = readFileSync(file, 'utf-8').split('\n').length;
-        if (lines > 2000) {
-          evidence.structure.oversizedFiles.push({ file, lines });
-        }
-      } catch {}
-    }
-    evidence.structure.largeFiles = evidence.structure.oversizedFiles.length;
-
-  } catch (e) {
-    // Ignore - some checks may fail
-  }
-
-  // Gate is the single producer and validator of automated command evidence.
-  evidence.testResults = { available: false, delegatedToGate: true };
-
-  log.success(`Git: ${evidence.git.branch || '?'} @ ${evidence.git.commit || '?'}`);
-  log.success(`Changed: ${evidence.git.changedFiles?.length || 0} files`);
-
-  return evidence;
-}
-
 function collectDryRunEvidence() {
   const targetPrefix = REVIEW_TARGET === PROJECT_ROOT
     ? null
@@ -437,17 +307,6 @@ function collectDryRunEvidence() {
     git: { changedFiles: [...new Set([...changedFiles, ...untracked])], diff },
     structure: {},
   };
-}
-
-function listFiles(root) {
-  const files = [];
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (entry.name === 'node_modules' || entry.name === '.git') continue;
-    const full = join(root, entry.name);
-    if (entry.isDirectory()) files.push(...listFiles(full));
-    else if (entry.isFile()) files.push(full);
-  }
-  return files;
 }
 
 function detectEvidenceChangeScale(evidence) {
@@ -572,6 +431,7 @@ function generateReviewerPrompt(
 - ✅ 其他命令也必须使用同样的 Command/Exit code/Output 三行格式，Output 包含原始摘要
 - ❌ 不得只写“测试通过”“共享证据为 pass”而省略命令、exit code 或输出摘要
 - ✅ 每个 blockers/redlines 条目必须在 blockers.md 中有独立标题，标题原样包含该条目的完整文本或唯一标识符
+- ✅ file:line 引用必须使用文件的实际物理行号，不得把 JSON 内嵌输出的行偏移当作文件行号
 - ✅ 引用**历史报告**或**其他 Reviewer 的发现**
 - ✅ 提供具体的错误信息、堆栈跟踪或命令输出
 
@@ -939,16 +799,23 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
   // Collect evidence with config
   const config = loadConfig();
-  const evidence = dryRun
-    ? collectDryRunEvidence()
-    : skipEvidence
-      ? (profile === 'agentic-release-gate'
-          ? loadPersistedRoundScope(roundDir)
-          : { timestamp: new Date().toISOString(), git: {}, structure: {} })
-      : collectEvidence(config);
+  let evidence;
+  if (dryRun) {
+    evidence = collectDryRunEvidence();
+  } else if (skipEvidence) {
+    evidence = profile === 'agentic-release-gate'
+      ? loadPersistedRoundScope(roundDir)
+      : { timestamp: new Date().toISOString(), git: {}, structure: {} };
+  } else {
+    log.info('Collecting evidence through the authoritative Gate collector...');
+    persistRoundEvidenceBeforeReview(roundDir, profile, currentRound);
+    evidence = loadPersistedRoundScope(roundDir);
+    log.success(`Git: ${evidence.git.branch || '?'} @ ${evidence.git.commit || '?'}`);
+    log.success(`Changed: ${evidence.git.changedFiles?.length || 0} files`);
+  }
 
   // Detect change scale (right-size throttle)
-  const scaleInfo = skipEvidence && evidence.scale?.scale
+  const scaleInfo = evidence.scale?.scale
     ? {
         ...evidence.scale,
         fileCount: evidence.scale.fileCount ?? evidence.scale.files ?? evidence.git.changedFiles?.length ?? 0,
@@ -994,10 +861,6 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
   // Persist phase plan BEFORE running reviews
   persistPhasePlan(roundDir, currentRound, allReviewers, evidence, profileConfig);
-  if (!skipEvidence) {
-    persistRoundEvidenceBeforeReview(roundDir, profile, currentRound);
-  }
-
   console.log(`\n${c.cyan}Reviewers:${c.reset}`);
   console.log(`  Resident: ${profileConfig.resident_reviewers.join(', ')}`);
   if (triggeredConditional.length > 0) {
