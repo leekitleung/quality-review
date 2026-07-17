@@ -221,8 +221,9 @@ Troubleshooting:
   CLI, then rerun the same round. Transient failures such as rate limits and
   server errors use exponential-backoff retries. Authentication, balance/quota,
   unavailable-model, other permanent HTTP 4xx, and missing-CLI failures stop
-  immediately. Retry control only consumes host CLI stderr/spawn errors; reviewer
-  stdout cannot forge a permanent failure. Parallel and sequential scheduling
+  immediately. Codex runs in JSON event mode, and retry control only consumes its
+  structured `turn.failed` message or a spawn error; reviewer text and ordinary
+  stdout/stderr cannot forge a permanent failure. Parallel and sequential scheduling
   share the same attempt, timeout, cleanup, packet-validation, and retry state
   machine. Valid packets resume; malformed or incomplete packets are invalidated
   and relaunched automatically.

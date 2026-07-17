@@ -575,7 +575,7 @@ function generateReviewerPrompt(
 - blockers.md - P0/P1 必须修复的问题
 - improvement-list.md - P2/P3 改进建议
 
-你只允许写入上面列出的四个 packet 文件。result.yaml 只允许包含下列 11 个顶层字段，顺序和名称必须完全一致；不得添加 summary、dimensions、evidence 或任何其他顶层字段。score 必须是整数，status 必须是小写 pass 或 fail。仅当 score >= 90 且 blockers/redlines 都为空时 status 才能是 pass；其他情况必须是 fail：
+你只允许写入上面列出的四个 packet 文件。result.yaml 只允许包含下列 11 个顶层字段，顺序和名称必须完全一致；不得添加 summary、dimensions、evidence 或任何其他顶层字段。score 必须是整数，status 必须是小写 pass 或 fail。status 只表示你自己的 reviewer verdict，不表示整轮 Gate 或其他 reviewer 的结果。仅当 score >= 90 且 blockers/redlines 都为空时 status 才能是 pass；其他情况必须是 fail：
 \`\`\`yaml
 reviewer: ${reviewerName}
 profile: ${profile}
@@ -660,6 +660,22 @@ function isPermanentAgentFailure(diagnostic) {
   ].some(pattern => pattern.test(message));
 }
 
+function extractStructuredAgentFailure(agent, stdout) {
+  if (agent !== 'codex') return '';
+  const failures = [];
+  for (const line of String(stdout || '').split('\n')) {
+    try {
+      const event = JSON.parse(line);
+      if (event?.type === 'turn.failed' && typeof event.error?.message === 'string') {
+        failures.push(event.error.message);
+      }
+    } catch {
+      // Non-JSON output is diagnostic-only and cannot control retry behavior.
+    }
+  }
+  return failures.join('\n');
+}
+
 function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
   if (agent === 'claude') {
     return {
@@ -673,7 +689,7 @@ function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
       : [];
     return {
       command: 'codex',
-      args: ['exec', '--model', selectedModel, ...effortArgs, '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt],
+      args: ['exec', '--json', '--model', selectedModel, ...effortArgs, '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt],
     };
   }
   return { command: agent, args: ['-p', prompt] };
@@ -1079,7 +1095,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       if (status === 'failed' && diagnostic) {
         console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
       }
-      const permanentSource = [stderrTail, processError].filter(Boolean).join('\n');
+      const permanentSource = [extractStructuredAgentFailure(resolvedAgent, stdoutTail), processError]
+        .filter(Boolean).join('\n');
       resolve({
         name: reviewer, status, attempt, diagnostic, abortedKind,
         permanentFailure: isPermanentAgentFailure(permanentSource),

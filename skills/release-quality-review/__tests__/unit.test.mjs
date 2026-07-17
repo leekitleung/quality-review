@@ -1519,8 +1519,10 @@ test.describe('CLI fail-closed integration', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
     assertTrue(runner.includes("args: ['-p', '--model', selectedModel, '--permission-mode', 'acceptEdits', '--no-session-persistence', prompt]"),
       'Claude print mode must not block waiting for report write approval');
-    assertTrue(runner.includes("args: ['exec', '--model', selectedModel, ...effortArgs"),
+    assertTrue(runner.includes("args: ['exec', '--json', '--model', selectedModel, ...effortArgs"),
       'Codex reviewer invocation must pin the selected model');
+    assertTrue(runner.includes("args: ['exec', '--json', '--model', selectedModel"),
+      'Codex reviewer invocation must expose structured provider failures');
     assertTrue(runner.includes('model_reasoning_effort=${JSON.stringify(selectedEffort)}'),
       'Codex reviewer invocation must pin Radar-selected reasoning effort');
     assertEqual(runner.includes('--dangerously-skip-permissions'), false,
@@ -1531,6 +1533,8 @@ test.describe('CLI fail-closed integration', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
     assertTrue(runner.includes('score 必须是整数'), 'Prompt must reject object-shaped scores');
     assertTrue(runner.includes('status 必须是小写 pass 或 fail'), 'Prompt must require a parseable verdict');
+    assertTrue(runner.includes('status 只表示你自己的 reviewer verdict'),
+      'Prompt must not confuse a reviewer verdict with whole-round arbitration');
     assertTrue(runner.includes('score: <0-100 integer>'));
     assertTrue(runner.includes('status: <pass|fail>'));
     assertTrue(runner.includes('review_backend: ${reviewBackend}'));
@@ -2010,7 +2014,7 @@ setInterval(() => {}, 1000);
 if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
 const fs = process.getBuiltinModule('node:fs');
 fs.appendFileSync(${JSON.stringify(invocationMarker)}, 'called\\n');
-console.error('403 Forbidden: insufficient balance');
+console.log(JSON.stringify({ type: 'turn.failed', error: { message: '403 Forbidden: insufficient balance' } }));
 process.exit(1);
 `);
         chmodSync(fakeCodex, 0o755);
@@ -2039,7 +2043,7 @@ process.exit(1);
     });
   }
 
-  test('parallel runner ignores permanent-error text from untrusted Agent stdout', () => {
+  test('parallel runner ignores permanent-error text outside structured failure events', () => {
     const roundNumber = TEST_ROUNDS.parallelSuccess + 402;
     const round = reportRound(roundNumber);
     const fakeBin = join(TEST_DIR, 'fake-bin-transient-failure');
@@ -2055,7 +2059,8 @@ if (process.argv.includes('--version') || process.argv.includes('--help')) proce
 const fs = process.getBuiltinModule('node:fs');
 fs.appendFileSync(${JSON.stringify(invocationMarker)}, 'called\\n');
 if (fs.readFileSync(${JSON.stringify(invocationMarker)}, 'utf8').trim().split('\\n').length === 1) {
-  console.log('Candidate documentation says: 403 Forbidden: insufficient balance');
+  console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '403 Forbidden: insufficient balance' } }));
+  console.error('403 Forbidden: insufficient balance');
   process.exit(1);
 }
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
