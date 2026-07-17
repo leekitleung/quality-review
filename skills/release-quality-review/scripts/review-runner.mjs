@@ -29,12 +29,18 @@ import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
 import {
   createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
   outerSandboxAttestationFromEnv, readContainedFile, readContainedFileSync, redactSensitiveText,
-  resolveWithinRoot, writeContainedFile,
+  resolveReportDirectory, resolveWithinRoot, writeContainedFile,
 } from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
-const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
+let REPORT_DIR;
+try {
+  REPORT_DIR = resolveReportDirectory(PROJECT_ROOT);
+} catch (error) {
+  console.error(error.message);
+  process.exit(4);
+}
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 const TOOL_ENV = createSubprocessEnv();
 const OUTER_SANDBOX_ATTESTATION = outerSandboxAttestationFromEnv();
@@ -278,7 +284,7 @@ function validateAgentModel(agent, selectedModel) {
   return null;
 }
 
-if (!dryRun) {
+if (!dryRun || agentCli || model) {
   const modelError = validateAgentModel(agentCli, model);
   if (modelError) {
     console.error(modelError);
@@ -748,10 +754,13 @@ function generateReviewerPrompt(reviewerName, currentRound, candidateIdentity, r
 - ❌ 不要引用你自己刚刚修改的代码作为"证据"
 - ❌ 不要在没有实际运行的情况下声称"功能正常"
 - ❌ 不要使用模糊描述如"代码看起来正确"
+- ❌ 不要运行 review-runner、review-gate、npm test、npm run build 或其他共享测试/门禁命令
+- ❌ 不要修改源码、本轮共享 metadata/evidence，或其他 Reviewer 的目录
 
 **必须行为：**
 - ✅ 引用**现有文件**中的代码行号（不是你刚写的）
 - ✅ 引用**已有测试**的输出结果
+- ✅ 使用本轮已持久化的 evidence/automated-checks.json 引用共享测试结果，并摘录命令、exit code 和测试摘要
 - ✅ 引用**历史报告**或**其他 Reviewer 的发现**
 - ✅ 提供具体的错误信息、堆栈跟踪或命令输出
 
@@ -762,7 +771,7 @@ function generateReviewerPrompt(reviewerName, currentRound, candidateIdentity, r
 - blockers.md - P0/P1 必须修复的问题
 - improvement-list.md - P2/P3 改进建议
 
-result.yaml 的前七个顶层字段必须严格使用以下格式；score 必须是整数，status 必须是小写 pass 或 fail，不能改名、嵌套或改成对象：
+你只允许写入上面列出的四个 packet 文件。result.yaml 只允许包含下列 11 个顶层字段，顺序和名称必须完全一致；不得添加 summary、dimensions、evidence 或任何其他顶层字段。score 必须是整数，status 必须是小写 pass 或 fail：
 \`\`\`yaml
 reviewer: ${reviewerName}
 profile: ${profile}
@@ -773,6 +782,8 @@ score: <0-100 integer>
 status: <pass|fail>
 review_backend: ${reviewBackend}
 review_model: ${reviewModel}
+blockers: []
+redlines: []
 \`\`\`
 实际输出目录必须是 ${REPORT_DIR}/round-${String(currentRound).padStart(3, '0')}/${reviewerName}/。
 
@@ -1169,11 +1180,15 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
         const result = await new Promise(innerResolve => {
           const invocation = getAgentInvocation(resolvedAgent, resolvedModel, prompt);
+          const reviewerReportDir = relative(
+            PROJECT_ROOT,
+            join(REPORT_DIR, '.reviewer-sandboxes', `round-${String(currentRound).padStart(3, '0')}`, reviewer),
+          );
           const proc = spawn(invocation.command, invocation.args, {
             cwd: PROJECT_ROOT,
             stdio: ['ignore', 'pipe', 'pipe'],
             detached: process.platform !== 'win32',
-            env: TOOL_ENV,
+            env: { ...TOOL_ENV, RELEASE_QUALITY_REPORT_DIR: reviewerReportDir },
           });
           let diagnostic = '';
           let settled = false;
@@ -1347,11 +1362,15 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         }
 
         const invocation = getAgentInvocation(resolvedAgent, resolvedModel, prompt);
+        const reviewerReportDir = relative(
+          PROJECT_ROOT,
+          join(REPORT_DIR, '.reviewer-sandboxes', `round-${String(currentRound).padStart(3, '0')}`, reviewer),
+        );
         const proc = spawn(invocation.command, invocation.args, {
           cwd: PROJECT_ROOT,
           stdio: ['ignore', 'pipe', 'pipe'],
           detached: process.platform !== 'win32',
-          env: TOOL_ENV,
+          env: { ...TOOL_ENV, RELEASE_QUALITY_REPORT_DIR: reviewerReportDir },
         });
 
         let diagnostic = '';

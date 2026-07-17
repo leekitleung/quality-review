@@ -39,6 +39,7 @@ import {
 } from '../lib/review-utils.mjs';
 import {
   resolveWithinRoot,
+  resolveReportDirectory,
   ensureContainedDirectorySync,
   isPathWithin,
   isRealDirectory,
@@ -54,7 +55,10 @@ import {
   writeContainedFile,
 } from '../lib/security-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
-import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
+import {
+  checkMissingEvidenceOutput, extractCommandEvidence, extractFileLineReferences, extractTestOutputs,
+  resolveFileReference,
+} from '../lib/evidence-utils.mjs';
 import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
 import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
 import { collectEvidence, prepareTrustedAuditWorkspace, runAutomatedChecks, runEvidenceCommand } from '../scripts/modules/evidence.mjs';
@@ -77,7 +81,7 @@ const TEST_ROUNDS = {
   parallelSuccess: ROUND_BASE + 6,
   evidenceForgery: ROUND_BASE + 7,
 };
-const reportRound = round => join(PROJECT_ROOT, 'quality-reports', `round-${String(round).padStart(3, '0')}`);
+const reportRound = round => join(resolveReportDirectory(PROJECT_ROOT), `round-${String(round).padStart(3, '0')}`);
 
 // Create test directory at module load time
 mkdirSync(TEST_DIR, { recursive: true });
@@ -1311,6 +1315,10 @@ test.describe('CLI fail-closed integration', () => {
     assertTrue(runner.includes('status: <pass|fail>'));
     assertTrue(runner.includes('review_backend: ${reviewBackend}'));
     assertTrue(runner.includes('review_model: ${reviewModel}'));
+    assertTrue(runner.includes('只允许包含下列 11 个顶层字段'));
+    assertTrue(runner.includes('不得添加 summary、dimensions、evidence'));
+    assertTrue(runner.includes('不要运行 review-runner、review-gate、npm test、npm run build'));
+    assertTrue(runner.includes('evidence/automated-checks.json'));
   });
 
   test('actual reviews require an explicit compatible backend and model', () => {
@@ -1324,6 +1332,59 @@ test.describe('CLI fail-closed integration', () => {
       assertEqual(result.status, 4, `${result.stdout}${result.stderr}`);
       assertTrue(result.stderr.includes(expected), `${result.stdout}${result.stderr}`);
     }
+  });
+
+  test('dry-run validates backend and model whenever either is supplied', () => {
+    const runner = join(SKILL_DIR, 'scripts', 'review-runner.mjs');
+    const allowed = spawnSync('node', [runner, '--profile', 'quick', '--dry-run'], {
+      cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
+    });
+    assertEqual(allowed.status, 0, `${allowed.stdout}${allowed.stderr}`);
+    for (const [args, expected] of [
+      [['--agent', 'codex'], 'require explicit --agent and --model'],
+      [['--model', TEST_CODEX_MODEL], 'require explicit --agent and --model'],
+      [['--agent', 'codex', '--model', 'claude-sonnet-4-6'], 'not valid for codex'],
+      [['--agent', 'claude', '--model', 'gpt-5.4'], 'not valid for claude'],
+    ]) {
+      const result = spawnSync('node', [runner, '--profile', 'quick', '--dry-run', ...args], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
+      });
+      assertEqual(result.status, 4, `${result.stdout}${result.stderr}`);
+      assertTrue(result.stderr.includes(expected), `${result.stdout}${result.stderr}`);
+    }
+  });
+
+  test('report directory override stays repository-relative', () => {
+    assertEqual(
+      resolveReportDirectory(PROJECT_ROOT, { RELEASE_QUALITY_REPORT_DIR: 'quality-reports/isolated' }),
+      join(PROJECT_ROOT, 'quality-reports', 'isolated'),
+    );
+    for (const value of ['../outside', join(PROJECT_ROOT, 'quality-reports')]) {
+      let rejected = false;
+      try {
+        resolveReportDirectory(PROJECT_ROOT, { RELEASE_QUALITY_REPORT_DIR: value });
+      } catch {
+        rejected = true;
+      }
+      assertEqual(rejected, true);
+    }
+  });
+
+  test('extracts Markdown and punctuated file references without allowing traversal', () => {
+    const absolute = join(PROJECT_ROOT, 'skills/release-quality-review/__tests__/unit.test.mjs');
+    const refs = extractFileLineReferences([
+      'skills/release-quality-review/lib/evidence-utils.mjs:12',
+      '`skills/release-quality-review/scripts/review-runner.mjs:281`,',
+      `[unit](${absolute}:1619)。`,
+      'skills/release-quality-review/scripts/review-gate.mjs:42.',
+    ].join('\n'));
+    assertEqual(refs.length, 4);
+    assertEqual(refs[1].file, 'skills/release-quality-review/scripts/review-runner.mjs');
+    assertEqual(refs[2].file, absolute);
+    assertEqual(refs[2].line, 1619);
+    assertEqual(resolveFileReference(PROJECT_ROOT, refs[2].file), absolute);
+    assertEqual(resolveFileReference(PROJECT_ROOT, '../outside.mjs'), null);
+    assertEqual(resolveFileReference(PROJECT_ROOT, join(tmpdir(), 'outside.mjs')), null);
   });
 
   test('parallel review has no project concurrency cap or implicit start delay', () => {
@@ -1984,6 +2045,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     const roundNumber = TEST_ROUNDS.runner;
     const round = reportRound(roundNumber);
     const fakeBin = join(TEST_DIR, 'fake-bin-runner');
+    const reviewerReportDirMarker = join(TEST_DIR, 'reviewer-report-dir');
     try {
       mkdirSync(fakeBin);
       const fakeCodex = join(fakeBin, 'codex');
@@ -1992,6 +2054,7 @@ if (process.argv.includes('--help')) process.exit(0);
 if (!process.argv.includes('exec')) process.exit(3);
 const modelIndex = process.argv.indexOf('--model');
 if (modelIndex < 0 || process.argv[modelIndex + 1] !== ${JSON.stringify(TEST_CODEX_MODEL)}) process.exit(4);
+process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(reviewerReportDirMarker)}, process.env.RELEASE_QUALITY_REPORT_DIR || '');
 console.log('review completed');
 `);
       chmodSync(fakeCodex, 0o755);
@@ -2015,6 +2078,9 @@ console.log('review completed');
       assertEqual(existsSync(join(round, 'runner-metadata.json')), true);
       assertEqual(existsSync(join(round, 'product-flow', 'prompt.md')), true);
       assertEqual(existsSync(join(round, 'architecture-maintainer', 'prompt.md')), true);
+      const isolatedReportDir = readFileSync(reviewerReportDirMarker, 'utf8');
+      assertTrue(isolatedReportDir.includes('.reviewer-sandboxes'), isolatedReportDir);
+      assertEqual(isolatedReportDir.includes(`round-${String(roundNumber).padStart(3, '0')}/`), true);
       assertEqual(
         JSON.stringify(JSON.parse(readFileSync(join(round, 'review-backend.json'), 'utf8'))),
         JSON.stringify({ backend: 'codex', model: TEST_CODEX_MODEL }),

@@ -1,6 +1,24 @@
+import path from 'node:path';
+
 const COMMAND_PATTERN = /\b(?:pnpm|npm|yarn)\s+(?:run\s+)?[a-zA-Z0-9:._-]+(?:\s+--[^\s`),;]+)*/g;
 const EXIT_ZERO_PATTERN = /\b(?:exit(?:ed|_code)?|return(?:ed)?|status)\s*(?:code)?\s*[:=]?\s*`?0\b/i;
 const OUTPUT_SUMMARY_PATTERN = /#\s*(?:tests|pass|fail|skipped)\s+\d+|\b\d+\s+(?:passed|failed|skipped)\b|found\s+0\s+vulnerabilities|in sync\s*\(\d+\s+adapters\)|operation not permitted/i;
+
+const FILE_LINE_PATTERN = /`?((?:\/|\.\.?\/)?[A-Za-z0-9_.][A-Za-z0-9_./\\-]*\.(?:ts|tsx|js|jsx|mjs)):(\d+)`?/g;
+
+export function extractFileLineReferences(content) {
+  const refs = [];
+  for (const match of String(content || '').matchAll(FILE_LINE_PATTERN)) {
+    refs.push({ file: match[1], line: Number.parseInt(match[2], 10), full: match[0] });
+  }
+  return refs;
+}
+
+export function resolveFileReference(projectRoot, file) {
+  const resolved = path.resolve(projectRoot, file);
+  const relative = path.relative(path.resolve(projectRoot), resolved).replace(/\\/g, '/');
+  return relative === '' || (!relative.startsWith('../') && relative !== '..') ? resolved : null;
+}
 
 export function extractCommandEvidence(content) {
   const records = [];

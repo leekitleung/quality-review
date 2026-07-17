@@ -38,6 +38,14 @@ export function resolveWithinRoot(root, relative, label = 'path') {
   return resolved;
 }
 
+export function resolveReportDirectory(projectRoot, source = process.env) {
+  return resolveWithinRoot(
+    projectRoot,
+    source?.RELEASE_QUALITY_REPORT_DIR || 'quality-reports',
+    'RELEASE_QUALITY_REPORT_DIR',
+  );
+}
+
 export function shouldIncludeCanonicalFile(name) {
   return name !== '.DS_Store';
 }

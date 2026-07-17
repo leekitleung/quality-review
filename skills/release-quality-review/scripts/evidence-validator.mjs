@@ -13,13 +13,23 @@
  */
 
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
-import { join } from 'path';
+import { isAbsolute, join } from 'path';
 import { execFileSync } from 'child_process';
 import { parseYamlResult, validateResultYamlContract } from '../lib/review-utils.mjs';
-import { checkMissingEvidenceOutput, extractCommandEvidence, extractTestOutputs } from '../lib/evidence-utils.mjs';
+import {
+  checkMissingEvidenceOutput, extractCommandEvidence, extractFileLineReferences, extractTestOutputs,
+  resolveFileReference,
+} from '../lib/evidence-utils.mjs';
+import { resolveReportDirectory } from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
-const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
+let REPORT_DIR;
+try {
+  REPORT_DIR = resolveReportDirectory(PROJECT_ROOT);
+} catch (error) {
+  console.error(error.message);
+  process.exit(4);
+}
 
 function parseArgs(args) {
   let targetRound = null;
@@ -105,25 +115,32 @@ function verifyFileLineReferences(content, roundDir) {
   const violations = [];
   const warnings = [];
 
-  // Find all file:line references
-  const fileLinePattern = /([a-zA-Z][^\s:]+\.(ts|tsx|js|jsx|mjs)):(\d+)/g;
-  let match;
-  const refs = [];
-
-  while ((match = fileLinePattern.exec(content)) !== null) {
-    refs.push({
-      file: match[1],
-      line: parseInt(match[3], 10),
-      full: match[0]
-    });
-  }
+  const refs = extractFileLineReferences(content);
+  let trackedFiles = null;
+  const uniqueTrackedBasename = file => {
+    if (file.includes('/') || file.includes('\\')) return null;
+    trackedFiles ||= execFileSync('git', ['ls-files'], { cwd: PROJECT_ROOT, encoding: 'utf8' })
+      .split('\n').filter(Boolean);
+    const matches = trackedFiles.filter(candidate => candidate.split('/').at(-1) === file);
+    return matches.length === 1 ? join(PROJECT_ROOT, matches[0]) : null;
+  };
 
   // For each reference, check if the file exists
   for (const ref of refs) {
+    const directPath = resolveFileReference(PROJECT_ROOT, ref.file);
+    if (!directPath) {
+      violations.push({
+        type: 'invalid_file_reference',
+        desc: `引用了仓库外的文件: ${ref.file}:${ref.line}`,
+        ref: ref.full,
+      });
+      continue;
+    }
     // Normalize the file path relative to project root
     const projectRoot = PROJECT_ROOT;
-    const possiblePaths = [
-      join(projectRoot, ref.file),
+    const possiblePaths = isAbsolute(ref.file) ? [directPath] : [
+      directPath,
+      uniqueTrackedBasename(ref.file),
       join(projectRoot, 'apps', ref.file),
       join(projectRoot, 'packages', ref.file),
       join(roundDir, '..', '..', ref.file),
@@ -134,7 +151,7 @@ function verifyFileLineReferences(content, roundDir) {
     let checkedPath = null;
 
     for (const path of possiblePaths) {
-      if (existsSync(path)) {
+      if (path && existsSync(path)) {
         fileExists = true;
         checkedPath = path;
         break;

@@ -13,7 +13,7 @@ import { createHash } from 'node:crypto';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
-const REPORT_DIR = join(PROJECT_ROOT, 'quality-reports');
+let REPORT_DIR;
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 
 // Import from modules
@@ -62,8 +62,16 @@ import {
   redactSensitiveText,
   ensureContainedDirectorySync,
   readContainedFileSync,
+  resolveReportDirectory,
   writeContainedFileSync,
 } from '../lib/security-utils.mjs';
+
+try {
+  REPORT_DIR = resolveReportDirectory(PROJECT_ROOT);
+} catch (error) {
+  console.error(error.message);
+  process.exit(4);
+}
 
 // CLI and options
 const options = parseCliArgs(process.argv.slice(2));
