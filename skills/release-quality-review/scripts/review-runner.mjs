@@ -767,12 +767,18 @@ function loadPersistedRoundScope(roundDir) {
       metadata.base_commit !== resolvedDiffBase) {
     throw new Error('persisted round scope does not match the current candidate or diff base');
   }
+  if (metadata.profile !== profile || !Array.isArray(metadata.reviewers) || metadata.reviewers.length === 0 ||
+      new Set(metadata.reviewers).size !== metadata.reviewers.length || metadata.reviewers.some(name =>
+        typeof name !== 'string' || !/^[a-z0-9-]+$/.test(name) || !existsSync(join(SKILL_DIR, 'reviewers', `${name}.md`)))) {
+    throw new Error('persisted round scope has an invalid profile or reviewer selection');
+  }
   return {
     timestamp: metadata.collected_at,
     git: metadata.git || {},
     files: metadata.files || {},
     scale: metadata.scale || {},
     structure: {},
+    reviewers: metadata.reviewers,
   };
 }
 
@@ -842,8 +848,10 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     console.error(`Invalid reviewer configuration: ${error.message}`);
     process.exit(4);
   }
-  const triggeredConditional = reviewerSelection.triggeredConditional;
-  const allReviewers = reviewerOverride ? [reviewerOverride] : reviewerSelection.reviewers;
+  const gateReviewers = Array.isArray(evidence.reviewers) ? evidence.reviewers : null;
+  const allReviewers = reviewerOverride ? [reviewerOverride] : (gateReviewers || reviewerSelection.reviewers);
+  const conditionalReviewers = new Set(profileConfig.conditional_reviewers || []);
+  const triggeredConditional = allReviewers.filter(name => conditionalReviewers.has(name));
 
   if (dryRun) {
     console.log(`\n${c.yellow}DRY RUN MODE${c.reset}`);

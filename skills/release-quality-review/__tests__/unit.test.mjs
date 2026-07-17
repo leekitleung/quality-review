@@ -1858,6 +1858,8 @@ test.describe('CLI fail-closed integration', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
     assertTrue(runner.includes('persistRoundEvidenceBeforeReview(roundDir, profile, currentRound)'));
     assertTrue(runner.includes('evidence = loadPersistedRoundScope(roundDir)'));
+    assertTrue(runner.includes('(gateReviewers || reviewerSelection.reviewers)'),
+      'Actual reviews must consume the Gate-owned reviewer selection');
     assertEqual(runner.includes('function collectEvidence('), false,
       'Runner must not maintain a second production evidence collector');
   });
@@ -2630,6 +2632,7 @@ process.exit(3);
       mkdirSync(round, { recursive: true });
       writeFileSync(join(round, 'metadata.json'), JSON.stringify({
         profile: 'agentic-release-gate', round: roundNumber, collected_at: new Date().toISOString(),
+        reviewers: ['product-flow'],
         git: { branch: 'test', commit: candidateCommit.slice(0, 8), status: '', diff: '+ changed\n- old', changedFiles: ['a.mjs', 'b.mjs'] },
         files: {}, scale: { scale: 'small', files: 2, additions: 1, deletions: 1, total: 2 },
         candidate_commit: candidateCommit, candidate_tree: candidateTree,

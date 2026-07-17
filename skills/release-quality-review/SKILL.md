@@ -364,7 +364,8 @@ backend/model 校验的完整四文件 packet 才可视为完成。HTTP 4xx（40
 每个 machine blocker/redline 必须在 `blockers.md` 的独立标题中原样出现或使用同一唯一标识符。
 报告目录在三个 CLI 入口均以不可变值初始化；sandbox capability 失败必须直接输出 host-shell/CI 恢复动作。
 Gate 是唯一 production evidence collector；Runner 通过 Gate 持久化证据后只消费 candidate-bound
-round scope。`status: pass` 的 packet 必须至少包含一个结构化共享命令证据，静态 file:line 引用不能单独授权通过。
+round scope 和 Gate-owned reviewer selection，避免启动集合与最终仲裁集合分叉。`status: pass` 的 packet
+必须至少包含一个结构化共享命令证据，静态 file:line 引用不能单独授权通过。
 
 **环境变量配置**:
 ```bash

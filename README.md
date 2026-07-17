@@ -209,7 +209,9 @@ npm run skill:gate -- --profile agentic-release-gate --round "$REVIEW_ROUND" --b
 Approval exists only when both commands exit `0`. The authoritative approval
 report is `quality-reports/$REVIEW_ROUND_DIR/final-report.md`; it is never a shared
 cross-round file. The Gate is the only production evidence collector; the Runner
-persists evidence through the Gate and then consumes the candidate-bound round scope.
+persists evidence through the Gate and then consumes the candidate-bound round scope,
+including the Gate-owned reviewer selection. This keeps Runner launch and final Gate
+arbitration on the same conditional reviewer set.
 
 Troubleshooting:
 
