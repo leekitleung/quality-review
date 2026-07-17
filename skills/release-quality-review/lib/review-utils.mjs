@@ -268,7 +268,7 @@ export function parseBlockers(blockerContent) {
 
     if (/^none(?:\.|\b)/i.test(trimmed) ||
         /^(?:no|none|无).*?(?:p0|p1|blockers?)/i.test(trimmed) ||
-        /^#+\s*(?:P0|P1)(?:\s*\/\s*red\s*lines?|\s*\((?:must\s*fix|must\s*fix\s*before\s*release)\))?\s*$/i.test(trimmed) ||
+        /^#+\s*(?:P0|P1)(?:\s*\/\s*red\s*lines?|\s*\((?:red\s*lines?|must\s*fix|must\s*fix\s*before\s*release)\))?\s*$/i.test(trimmed) ||
         trimmed.match(/^#\s+.*Blockers$/i)) {
       continue;
     }
@@ -530,6 +530,13 @@ export function validateResultYamlContract(yamlContent) {
   for (const [key, pattern] of required) {
     if (!seen.has(key)) return { valid: false, error: `missing top-level field: ${key}` };
     if (!pattern.test(seen.get(key))) return { valid: false, error: `invalid top-level field: ${key}` };
+  }
+  const parsed = parseYamlResult(yamlContent);
+  const expectedStatus = parsed.score >= 90 && parsed.blockers.length === 0 && parsed.redlines.length === 0
+    ? 'pass'
+    : 'fail';
+  if (parsed.status !== expectedStatus) {
+    return { valid: false, error: `status must be ${expectedStatus} for the declared score and findings` };
   }
   return { valid: true, error: null };
 }

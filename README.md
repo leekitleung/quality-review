@@ -221,12 +221,20 @@ Troubleshooting:
   CLI, then rerun the same round. Transient failures such as rate limits and
   server errors use exponential-backoff retries. Authentication, balance/quota,
   unavailable-model, other permanent HTTP 4xx, and missing-CLI failures stop
-  immediately. Valid packets resume; malformed or incomplete packets are
-  invalidated and relaunched automatically.
+  immediately. Retry control only consumes host CLI stderr/spawn errors; reviewer
+  stdout cannot forge a permanent failure. Parallel and sequential scheduling
+  share the same attempt, timeout, cleanup, packet-validation, and retry state
+  machine. Valid packets resume; malformed or incomplete packets are invalidated
+  and relaunched automatically.
 - Exit `1`: inspect `summary.md`; scores below 90, P0/P1 blockers, or failed
   evidence require a fix and a fresh round.
 - Missing packet files: every reviewer directory needs `result.yaml`,
   `score.md`, `blockers.md`, and `improvement-list.md`.
+- Invalid packet status: `status: pass` is valid only for scores of at least 90
+  with empty blocker/redline arrays; all other packets must declare `fail`.
+- Evidence-source failure: quote at least one persisted shared check in
+  `score.md` as `Command`, `Exit code`, and `Output` lines, including the actual
+  machine-readable summary from `evidence/automated-checks.json`.
 - Round identity conflict: do not reuse a round after the candidate changes;
   choose a new positive round number.
 - Persisted-evidence mismatch: rerun `skill:verify-clean` first, then rerun the

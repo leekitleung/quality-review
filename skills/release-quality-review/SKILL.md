@@ -356,6 +356,10 @@ Codex round 不得使用 Claude backend/model，Claude round 不得使用 Codex 
 large/max 为 45 分钟。Agent 仅在退出收尾阶段超时时，只有通过 schema、candidate identity 和
 backend/model 校验的完整四文件 packet 才可视为完成。HTTP 4xx（408/425/429 除外）、认证、
 余额/配额、无效模型和 CLI 缺失等确定性错误不会重试；限流和服务端错误仍按配置重试。
+并行与串行调度共用同一 attempt/retry 状态机，永久错误判定只读取宿主 CLI stderr/spawn
+错误，Reviewer stdout 不参与控制流。`result.yaml` 仅在 score >= 90 且 blockers/redlines
+均为空时允许 `status: pass`，其他情况必须为 `fail`。Reviewer 在 `score.md` 引用共享自动化
+证据时必须写出可解析的 Command、Exit code、Output 三行及实际摘要，不能只声称“测试通过”。
 
 **环境变量配置**:
 ```bash

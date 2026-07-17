@@ -558,6 +558,12 @@ function generateReviewerPrompt(
 - ✅ 引用**现有文件**中的代码行号（不是你刚写的）
 - ✅ 引用**已有测试**的输出结果
 - ✅ 使用本轮已持久化的 evidence/automated-checks.json 引用共享测试结果，并摘录命令、exit code 和测试摘要
+- ✅ score.md 必须至少包含一个 validator 可解析的共享证据块；从 JSON 原样填写实际数字，例如：
+  Command: npm test
+  Exit code: 0
+  Output: # tests <N>; # pass <N>; # fail 0
+- ✅ 其他命令也必须使用同样的 Command/Exit code/Output 三行格式，Output 包含原始摘要
+- ❌ 不得只写“测试通过”“共享证据为 pass”而省略命令、exit code 或输出摘要
 - ✅ 引用**历史报告**或**其他 Reviewer 的发现**
 - ✅ 提供具体的错误信息、堆栈跟踪或命令输出
 
@@ -569,7 +575,7 @@ function generateReviewerPrompt(
 - blockers.md - P0/P1 必须修复的问题
 - improvement-list.md - P2/P3 改进建议
 
-你只允许写入上面列出的四个 packet 文件。result.yaml 只允许包含下列 11 个顶层字段，顺序和名称必须完全一致；不得添加 summary、dimensions、evidence 或任何其他顶层字段。score 必须是整数，status 必须是小写 pass 或 fail：
+你只允许写入上面列出的四个 packet 文件。result.yaml 只允许包含下列 11 个顶层字段，顺序和名称必须完全一致；不得添加 summary、dimensions、evidence 或任何其他顶层字段。score 必须是整数，status 必须是小写 pass 或 fail。仅当 score >= 90 且 blockers/redlines 都为空时 status 才能是 pass；其他情况必须是 fail：
 \`\`\`yaml
 reviewer: ${reviewerName}
 profile: ${profile}
@@ -1003,6 +1009,162 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     ? parseInt(config.execution.start_delay_ms, 10)
     : REVIEWER_START_DELAY_MS;
 
+  const activeReviewers = new Map();
+  let parallelAbortReason = null;
+  const abortAll = (reason, kind) => {
+    if (parallelAbortReason) return;
+    parallelAbortReason = reason;
+    for (const abort of activeReviewers.values()) abort(reason, kind);
+  };
+
+  const runReviewerAttempt = (reviewer, reviewerDir, prompt, attempt, abortPeers) => new Promise(resolve => {
+    const invocation = getAgentInvocation(resolvedAgent, resolvedModel, resolvedEffort, prompt);
+    const reviewerReportDir = relative(
+      PROJECT_ROOT,
+      join(REPORT_DIR, '.reviewer-sandboxes', `round-${String(currentRound).padStart(3, '0')}`, reviewer),
+    );
+    const proc = spawn(invocation.command, invocation.args, {
+      cwd: PROJECT_ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32',
+      env: { ...TOOL_ENV, RELEASE_QUALITY_REPORT_DIR: reviewerReportDir },
+    });
+    let stdoutTail = '';
+    let stderrTail = '';
+    let internalDiagnostic = '';
+    let processError = '';
+    let settled = false;
+    let abortedKind = null;
+    let forceTimer = null;
+    let timeoutTimer = null;
+    const key = `${reviewer}-${attempt}`;
+    const appendTail = (current, data) => (current + data.toString()).slice(-4000);
+    const combinedDiagnostic = () => [stdoutTail, stderrTail, processError, internalDiagnostic]
+      .filter(Boolean).join('\n').slice(-4000);
+    const signalProcessTree = signal => {
+      if (!proc.pid) return false;
+      try {
+        if (process.platform === 'win32') {
+          const args = ['/pid', String(proc.pid), '/t'];
+          if (signal === 'SIGKILL') args.push('/f');
+          spawn('taskkill', args, { stdio: 'ignore', env: CANDIDATE_ENV }).unref();
+        } else {
+          process.kill(-proc.pid, signal);
+        }
+        return true;
+      } catch (error) {
+        if (error.code !== 'ESRCH') internalDiagnostic = appendTail(internalDiagnostic, `\nprocess-tree ${signal} failed: ${error.message}`);
+        return false;
+      }
+    };
+    const finish = async (code, eventStatus = null) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (forceTimer) clearTimeout(forceTimer);
+      activeReviewers.delete(key);
+      const postValidation = await validateResumeArtifacts(
+        reviewerDir, reviewer, profile, currentRound, candidateIdentity,
+        resolvedAgent, resolvedModel,
+      );
+      const complete = postValidation.valid;
+      const timedOutWithValidPacket = abortedKind === 'timeout' && complete;
+      const status = timedOutWithValidPacket ? 'completed' :
+        (eventStatus || (!abortedKind && code === 0 && complete ? 'completed' : 'failed'));
+      if (!complete && postValidation.reason) {
+        internalDiagnostic = appendTail(internalDiagnostic, `\npacket validation failed: ${postValidation.reason}`);
+      }
+      console.log(`  ${status === 'completed' ? c.green + '✓' : c.red + '✗'}${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${status}`);
+      const diagnostic = combinedDiagnostic();
+      if (status === 'failed' && diagnostic) {
+        console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
+      }
+      const permanentSource = [stderrTail, processError].filter(Boolean).join('\n');
+      resolve({
+        name: reviewer, status, attempt, diagnostic, abortedKind,
+        permanentFailure: isPermanentAgentFailure(permanentSource),
+      });
+    };
+    const abort = (reason, kind = 'aborted') => {
+      if (settled || abortedKind) return;
+      abortedKind = kind;
+      internalDiagnostic = appendTail(internalDiagnostic, `\n${reason}`);
+      signalProcessTree('SIGTERM');
+      forceTimer = setTimeout(() => {
+        if (settled) return;
+        signalProcessTree('SIGKILL');
+        forceTimer = setTimeout(() => void finish(null, 'failed'), 100);
+      }, REVIEWER_KILL_GRACE_MS);
+    };
+
+    proc.stdout.on('data', data => { stdoutTail = appendTail(stdoutTail, data); });
+    proc.stderr.on('data', data => { stderrTail = appendTail(stderrTail, data); });
+    activeReviewers.set(key, abort);
+    timeoutTimer = setTimeout(() => {
+      const reason = `${reviewer} timed out after ${scaledTimeout}ms (scale: ${scale})`;
+      console.log(`  ${c.red}✗${c.reset} ${reason}`);
+      if (abortPeers) abortAll(reason, 'timeout');
+      else abort(reason, 'timeout');
+    }, scaledTimeout);
+    proc.on('close', code => {
+      if (abortedKind) return;
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (!signalProcessTree('SIGTERM')) {
+        void finish(code);
+        return;
+      }
+      forceTimer = setTimeout(() => {
+        signalProcessTree('SIGKILL');
+        forceTimer = setTimeout(() => void finish(code), 100);
+      }, REVIEWER_KILL_GRACE_MS);
+    });
+    proc.on('error', error => {
+      processError = error.message;
+      console.log(`  ${c.red}✗${c.reset} ${reviewer}: ${error.message}`);
+      if (abortPeers) abortAll(`${reviewer} process error: ${error.message}`, 'process-error');
+      void finish(null, 'error');
+    });
+  });
+
+  const runReviewer = async (reviewer, delay, abortPeers) => {
+    const reviewerDir = join(roundDir, reviewer);
+    ensureContainedDirectorySync(roundDir, reviewerDir);
+    const validation = await validateResumeArtifacts(
+      reviewerDir, reviewer, profile, currentRound, candidateIdentity,
+      resolvedAgent, resolvedModel,
+    );
+    if (validation.valid) {
+      console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
+      return { name: reviewer, status: 'completed', skipped: true };
+    }
+    if (validation.reason) {
+      console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: invalidating stale artifacts (${validation.reason}), re-running`);
+    }
+    await sleep(delay);
+    const prompt = reviewerPrompts.get(reviewer);
+    if (!prompt) {
+      console.log(`  ${c.red}✗${c.reset} ${reviewer}: definition not found`);
+      return { name: reviewer, status: 'failed' };
+    }
+    await writeContainedFile(roundDir, join(reviewerDir, 'prompt.md'), prompt);
+
+    let lastResult = null;
+    for (let attempt = 1; attempt <= REVIEWER_RETRY_MAX + 1; attempt++) {
+      if (attempt > 1) {
+        const retryDelay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 2) + Math.random() * RETRY_MAX_JITTER_MS;
+        log.info(`  Retry ${attempt - 1}/${REVIEWER_RETRY_MAX} for ${reviewer}: waiting ${Math.round(retryDelay)}ms`);
+        await sleep(retryDelay);
+      }
+      lastResult = await runReviewerAttempt(reviewer, reviewerDir, prompt, attempt, abortPeers);
+      if (lastResult.status === 'completed' || lastResult.abortedKind) return lastResult;
+      if (lastResult.permanentFailure) {
+        log.warn(`  ${reviewer}: not retrying permanent Agent failure`);
+        return lastResult;
+      }
+    }
+    return { ...lastResult, attempts: REVIEWER_RETRY_MAX + 1 };
+  };
+
   if (parallel) {
     log.info(`Execution: parallel, Scale: ${scale}, Effort: ${resolvedEffort || 'default'}, Timeout: ${scaledTimeout}ms ` +
       `(base: ${REVIEWER_TIMEOUT_MS}ms, scale x${timeoutPolicy.scaleMultiplier}, effort x${timeoutPolicy.effortMultiplier}), Start delay: ${startDelay}ms`);
@@ -1012,180 +1174,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       log.error(`Parallel mode requires ${agentCli} CLI on PATH; no reviewer agents were launched.`);
       process.exit(5);
     }
-
-    const activeReviewers = new Map();
-    let parallelAbortReason = null;
-    const abortAll = reason => {
-      if (parallelAbortReason) return;
-      parallelAbortReason = reason;
-      for (const abort of activeReviewers.values()) abort(reason);
-    };
-
-    // Parallel execution with retry support
-    const parallelResults = await Promise.all(allReviewers.map(reviewer => new Promise(async (resolve) => {
-      const reviewerDir = join(roundDir, reviewer);
-      ensureContainedDirectorySync(roundDir, reviewerDir);
-
-      // Check if reviewer already has credible results (resume support)
-      const validation = await validateResumeArtifacts(
-        reviewerDir, reviewer, profile, currentRound, candidateIdentity,
-        resolvedAgent, resolvedModel,
-      );
-      if (validation.valid) {
-        console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
-        resolve({ name: reviewer, status: 'completed', skipped: true });
-        return;
-      }
-      if (validation.reason) {
-        console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: invalidating stale artifacts (${validation.reason}), re-running`);
-      }
-
-      // Optional operator-configured start staggering; zero means fully parallel launch.
-      await sleep(startDelay);
-
-      const prompt = reviewerPrompts.get(reviewer);
-      if (!prompt) {
-        resolve({ name: reviewer, status: 'failed' });
-        return;
-      }
-      await writeContainedFile(roundDir, join(reviewerDir, 'prompt.md'), prompt);
-
-      let attempt = 0;
-      let lastError = null;
-
-      while (attempt <= REVIEWER_RETRY_MAX) {
-        attempt++;
-        if (attempt > 1) {
-          const exponentialDelay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 2);
-          const jitter = Math.random() * RETRY_MAX_JITTER_MS;
-          log.info(`  Retry ${attempt - 1}/${REVIEWER_RETRY_MAX} for ${reviewer}: waiting ${Math.round(exponentialDelay + jitter)}ms`);
-          await new Promise(r => setTimeout(r, exponentialDelay + jitter));
-        }
-
-        const result = await new Promise(innerResolve => {
-          const invocation = getAgentInvocation(resolvedAgent, resolvedModel, resolvedEffort, prompt);
-          const reviewerReportDir = relative(
-            PROJECT_ROOT,
-            join(REPORT_DIR, '.reviewer-sandboxes', `round-${String(currentRound).padStart(3, '0')}`, reviewer),
-          );
-          const proc = spawn(invocation.command, invocation.args, {
-            cwd: PROJECT_ROOT,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            detached: process.platform !== 'win32',
-            env: { ...TOOL_ENV, RELEASE_QUALITY_REPORT_DIR: reviewerReportDir },
-          });
-          let diagnostic = '';
-          let settled = false;
-          let aborted = false;
-          let abortedByTimeout = false;
-          let forceTimer = null;
-          const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
-          const signalProcessTree = signal => {
-            if (!proc.pid) return false;
-            try {
-              if (process.platform === 'win32') {
-                const args = ['/pid', String(proc.pid), '/t'];
-                if (signal === 'SIGKILL') args.push('/f');
-                spawn('taskkill', args, { stdio: 'ignore', env: CANDIDATE_ENV }).unref();
-              } else {
-                process.kill(-proc.pid, signal);
-              }
-              return true;
-            } catch (error) {
-              if (error.code !== 'ESRCH') diagnostic = `${diagnostic}\nprocess-tree ${signal} failed: ${error.message}`.slice(-4000);
-              return false;
-            }
-          };
-          proc.stdout.on('data', retainTail);
-          proc.stderr.on('data', retainTail);
-          const finish = async (code, eventStatus = null) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeoutTimer);
-            if (forceTimer) clearTimeout(forceTimer);
-            activeReviewers.delete(`${reviewer}-${attempt}`);
-
-            const postValidation = await validateResumeArtifacts(
-              reviewerDir, reviewer, profile, currentRound, candidateIdentity,
-              resolvedAgent, resolvedModel,
-            );
-
-            const complete = postValidation.valid;
-            const timedOutWithValidPacket = abortedByTimeout && complete;
-            const status = timedOutWithValidPacket ? 'completed' :
-              (eventStatus || (!aborted && code === 0 && complete ? 'completed' : 'failed'));
-            console.log(`  ${status === 'completed' ? c.green + '✓' : c.red + '✗'}${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${status}`);
-            if (!complete && postValidation.reason) {
-              diagnostic = `${diagnostic}\npacket validation failed: ${postValidation.reason}`.slice(-4000);
-            }
-            if (status === 'failed' && diagnostic) console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
-            innerResolve({ name: reviewer, status, attempt, diagnostic, abortedByTimeout });
-          };
-          const abort = reason => {
-            if (settled || aborted) return;
-            aborted = true;
-            abortedByTimeout = true;
-            diagnostic = `${diagnostic}\n${reason}`.slice(-4000);
-            signalProcessTree('SIGTERM');
-            forceTimer = setTimeout(() => {
-              if (settled) return;
-              signalProcessTree('SIGKILL');
-              forceTimer = setTimeout(() => void finish(null, 'failed'), 100);
-            }, REVIEWER_KILL_GRACE_MS);
-          };
-          activeReviewers.set(`${reviewer}-${attempt}`, abort);
-          const timeoutTimer = setTimeout(() => {
-            const reason = `${reviewer} timed out after ${scaledTimeout}ms (scale: ${scale})`;
-            console.log(`  ${c.red}✗${c.reset} ${reason}`);
-            abortAll(reason);
-          }, scaledTimeout);
-          proc.on('close', code => {
-            if (aborted) return;
-            clearTimeout(timeoutTimer);
-            if (!signalProcessTree('SIGTERM')) {
-              void finish(code);
-              return;
-            }
-            forceTimer = setTimeout(() => {
-              signalProcessTree('SIGKILL');
-              forceTimer = setTimeout(() => void finish(code), 100);
-            }, REVIEWER_KILL_GRACE_MS);
-          });
-          proc.on('error', error => {
-            console.log(`  ${c.red}✗${c.reset} ${reviewer}: ${error.message}`);
-            void finish(null, 'error');
-            abortAll(`${reviewer} process error: ${error.message}`);
-          });
-        });
-
-        // Check if this attempt succeeded
-        if (result.status === 'completed') {
-          resolve(result);
-          return;
-        }
-        lastError = result.diagnostic;
-
-        // Timeout-induced abort: do not retry, propagate failure immediately
-        if (result.abortedByTimeout) {
-          resolve(result);
-          return;
-        }
-
-        if (isPermanentAgentFailure(lastError)) {
-          log.warn(`  ${reviewer}: not retrying permanent Agent failure`);
-          resolve({ ...result, permanentFailure: true });
-          return;
-        }
-
-        // If not the last attempt, retry
-        if (attempt <= REVIEWER_RETRY_MAX) {
-          continue;
-        }
-      }
-
-      // All retries exhausted
-      resolve({ name: reviewer, status: 'failed', attempts: attempt, lastError });
-    })));
+    const parallelResults = await Promise.all(allReviewers.map(reviewer => runReviewer(reviewer, startDelay, true)));
     results.push(...parallelResults);
     if (parallelResults.some(result => result.status !== 'completed')) {
       const error = new Error(parallelAbortReason || 'one or more reviewer agents failed');
@@ -1193,156 +1182,16 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       reviewFailure = error;
     }
   } else {
-    // Sequential mode: execute reviewers one by one with delays
     log.info(`Execution: sequential with ${startDelay}ms delays`);
     for (let i = 0; i < allReviewers.length; i++) {
       const reviewer = allReviewers[i];
-      const reviewerDir = join(roundDir, reviewer);
-      ensureContainedDirectorySync(roundDir, reviewerDir);
-
-      // Check resume artifacts first
-      const validation = await validateResumeArtifacts(
-        reviewerDir, reviewer, profile, currentRound, candidateIdentity,
-        resolvedAgent, resolvedModel,
-      );
-      if (validation.valid) {
-        console.log(`  ${c.blue}↷${c.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
-        results.push({ name: reviewer, status: 'completed', skipped: true });
-        continue;
-      }
-      if (validation.reason) {
-        console.log(`  ${c.yellow}⚡${c.reset} ${reviewer}: invalidating stale artifacts (${validation.reason}), re-running`);
-      }
-
-      // Add delay between reviewers (skip delay for first reviewer if no previous ran)
-      if (i > 0) {
-        await sleep(startDelay);
-      }
-
-      const prompt = reviewerPrompts.get(reviewer);
-      if (!prompt) {
-        console.log(`  ${c.red}✗${c.reset} ${reviewer}: definition not found`);
-        results.push({ name: reviewer, status: 'failed' });
-        continue;
-      }
-      await writeContainedFile(roundDir, join(reviewerDir, 'prompt.md'), prompt);
-
-      // Execute reviewer via CLI
-      let attempt = 0;
-      let lastError = null;
-      let status = 'pending';
-
-      while (attempt <= REVIEWER_RETRY_MAX && status !== 'completed') {
-        attempt++;
-        if (attempt > 1) {
-          const delay = RETRY_BASE_DELAY_MS * Math.pow(2, attempt - 2) + Math.random() * RETRY_MAX_JITTER_MS;
-          log.info(`  Retry ${attempt - 1}/${REVIEWER_RETRY_MAX} for ${reviewer}: waiting ${Math.round(delay)}ms`);
-          await sleep(delay);
-        }
-
-        const invocation = getAgentInvocation(resolvedAgent, resolvedModel, resolvedEffort, prompt);
-        const reviewerReportDir = relative(
-          PROJECT_ROOT,
-          join(REPORT_DIR, '.reviewer-sandboxes', `round-${String(currentRound).padStart(3, '0')}`, reviewer),
-        );
-        const proc = spawn(invocation.command, invocation.args, {
-          cwd: PROJECT_ROOT,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          detached: process.platform !== 'win32',
-          env: { ...TOOL_ENV, RELEASE_QUALITY_REPORT_DIR: reviewerReportDir },
-        });
-
-        let diagnostic = '';
-        let settled = false;
-        let timedOut = false;
-        let forceTimer = null;
-        const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
-        const signalProcessTree = signal => {
-          if (!proc.pid) return false;
-          try {
-            if (process.platform === 'win32') {
-              const args = ['/pid', String(proc.pid), '/t'];
-              if (signal === 'SIGKILL') args.push('/f');
-              spawn('taskkill', args, { stdio: 'ignore', env: CANDIDATE_ENV }).unref();
-            } else {
-              process.kill(-proc.pid, signal);
-            }
-            return true;
-          } catch (error) {
-            if (error.code !== 'ESRCH') diagnostic = `${diagnostic}\nprocess-tree ${signal} failed: ${error.message}`.slice(-4000);
-            return false;
-          }
-        };
-        const timeoutTimer = setTimeout(() => {
-          if (!settled) {
-            timedOut = true;
-            diagnostic = `${diagnostic}\n${reviewer} timed out after ${scaledTimeout}ms; sending SIGTERM`.slice(-4000);
-            signalProcessTree('SIGTERM');
-            forceTimer = setTimeout(() => {
-              if (!settled) signalProcessTree('SIGKILL');
-            }, REVIEWER_KILL_GRACE_MS);
-          }
-        }, scaledTimeout);
-
-        proc.stdout.on('data', retainTail);
-        proc.stderr.on('data', retainTail);
-
-        const exitCode = await new Promise(resolve => {
-          const finish = code => {
-            if (settled) return;
-            settled = true;
-            resolve(code);
-          };
-          proc.on('close', code => {
-            if (!signalProcessTree('SIGTERM')) {
-              finish(code);
-              return;
-            }
-            forceTimer = setTimeout(() => {
-              signalProcessTree('SIGKILL');
-              forceTimer = setTimeout(() => finish(code), 100);
-            }, REVIEWER_KILL_GRACE_MS);
-          });
-          proc.on('error', err => { diagnostic = err.message; finish(-1); });
-        });
-
-        clearTimeout(timeoutTimer);
-        if (forceTimer) clearTimeout(forceTimer);
-
-        const postValidation = await validateResumeArtifacts(
-          reviewerDir, reviewer, profile, currentRound, candidateIdentity,
-          resolvedAgent, resolvedModel,
-        );
-
-        const complete = postValidation.valid;
-        if (complete && (exitCode === 0 || timedOut)) {
-          status = 'completed';
-          console.log(`  ${c.green}✓${c.reset} ${reviewer}: completed`);
-        } else {
-          if (!complete && postValidation.reason) {
-            diagnostic = `${diagnostic}\npacket validation failed: ${postValidation.reason}`.slice(-4000);
-          }
-          if (diagnostic) {
-            console.log(`  ${c.red}✗${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-300)}`);
-          } else {
-            console.log(`  ${c.red}✗${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: failed (exit ${exitCode})`);
-          }
-          lastError = diagnostic;
-          if (isPermanentAgentFailure(lastError)) {
-            log.warn(`  ${reviewer}: not retrying permanent Agent failure`);
-            break;
-          }
-        }
-      }
-
-      results.push({ name: reviewer, status, diagnostic: lastError });
-      if (onReviewComplete) onReviewComplete(reviewer, reviewerDir, evidence);
+      const result = await runReviewer(reviewer, i > 0 ? startDelay : 0, false);
+      results.push(result);
+      if (onReviewComplete) onReviewComplete(reviewer, join(roundDir, reviewer), evidence);
     }
-
-    // Check for failures in sequential mode
-    const failedResults = results.filter(r => r.status !== 'completed' && r.status !== 'skipped');
+    const failedResults = results.filter(result => result.status !== 'completed');
     if (failedResults.length > 0) {
-      const error = new Error(`Sequential review failed for: ${failedResults.map(r => r.name).join(', ')}`);
+      const error = new Error(`Sequential review failed for: ${failedResults.map(result => result.name).join(', ')}`);
       error.exitCode = 5;
       reviewFailure = error;
     }

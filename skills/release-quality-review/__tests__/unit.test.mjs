@@ -548,6 +548,13 @@ redlines: []
       assertEqual(validateResultYamlContract(`${canonical}${field}: unsupported\n`).valid, false);
     }
   });
+  test('requires status to match score and veto findings', () => {
+    assertEqual(validateResultYamlContract(canonical.replace('score: 95', 'score: 89')).valid, false);
+    assertEqual(validateResultYamlContract(canonical.replace('status: pass', 'status: fail')).valid, false);
+    assertEqual(validateResultYamlContract(canonical
+      .replace('status: pass', 'status: fail')
+      .replace('blockers: []', 'blockers:\n  - P1-TEST')).valid, true);
+  });
 });
 
 test.describe('Radar reviewer model selection', () => {
@@ -1200,6 +1207,19 @@ test.describe('no-blocker parsing', () => {
     for (const heading of [
       '## P0 (Must Fix)', '## P1 (Must Fix Before Release)', '## P0 / Red Lines',
     ]) assertEqual(parseBlockers(`${heading}\nNone.\n`).length, 0, heading);
+    const chineseEmptyP0 = `## P0 (Red Lines)
+
+无。本轮未发现红线。
+
+## P1 (Must Fix Before Release)
+
+### P1 - Real blocker
+
+Evidence: reproducible
+`;
+    const parsed = parseBlockers(chineseEmptyP0);
+    assertEqual(parsed.length, 1, `Empty localized P0 section must not become a blocker: ${JSON.stringify(parsed)}`);
+    assertTrue(parsed[0].includes('Real blocker'), JSON.stringify(parsed));
   });
 
   test('accepts case-insensitive no-blocker sentences', () => {
@@ -1519,6 +1539,10 @@ test.describe('CLI fail-closed integration', () => {
     assertTrue(runner.includes('不得添加 summary、dimensions、evidence'));
     assertTrue(runner.includes('不要运行 review-runner、review-gate、npm test、npm run build'));
     assertTrue(runner.includes('evidence/automated-checks.json'));
+    assertTrue(runner.includes('Command: npm test'));
+    assertTrue(runner.includes('Exit code: 0'));
+    assertTrue(runner.includes('Output: # tests <N>; # pass <N>; # fail 0'));
+    assertTrue(runner.includes('不得只写“测试通过”'));
     assertEqual(runner.includes('writeReviewerFilesFromOutput'), false,
       'Runner must fail closed instead of synthesizing reviewer packet files');
     assertEqual(runner.includes('Review output parsing incomplete'), false,
@@ -2015,7 +2039,7 @@ process.exit(1);
     });
   }
 
-  test('parallel runner retries a transient Agent failure', () => {
+  test('parallel runner ignores permanent-error text from untrusted Agent stdout', () => {
     const roundNumber = TEST_ROUNDS.parallelSuccess + 402;
     const round = reportRound(roundNumber);
     const fakeBin = join(TEST_DIR, 'fake-bin-transient-failure');
@@ -2031,7 +2055,7 @@ if (process.argv.includes('--version') || process.argv.includes('--help')) proce
 const fs = process.getBuiltinModule('node:fs');
 fs.appendFileSync(${JSON.stringify(invocationMarker)}, 'called\\n');
 if (fs.readFileSync(${JSON.stringify(invocationMarker)}, 'utf8').trim().split('\\n').length === 1) {
-  console.error('429 Too Many Requests');
+  console.log('Candidate documentation says: 403 Forbidden: insufficient balance');
   process.exit(1);
 }
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
