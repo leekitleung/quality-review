@@ -237,6 +237,10 @@ Troubleshooting:
   evidence require a fix and a fresh round.
 - Missing packet files: every reviewer directory needs `result.yaml`,
   `score.md`, `blockers.md`, and `improvement-list.md`.
+- Dirty-worktree drift: persisted evidence is candidate-bound; Runner and final Gate
+  reject any non-empty `git status --short` after evidence collection.
+- Verification timeout: a silent command failure records `timed_out`, timeout duration,
+  signal, and an actionable diagnostic instead of an empty output record.
 - Invalid packet status: `status: pass` is valid only for scores of at least 90
   with empty blocker/redline arrays; all other packets must declare `fail`.
 - Evidence-source failure: quote at least one persisted shared check in

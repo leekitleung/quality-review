@@ -14,3 +14,4 @@
 - Make the Gate the sole production evidence collector, require command evidence for passing reviewer packets, and bootstrap deep-optimization baselines in clean workspaces.
 - Bind actual Runner launches to the Gate-owned reviewer selection persisted for the same candidate and round.
 - Keep evidence startup, Git identity reads, metadata loading, and final Gate arbitration asynchronous; reject passing reviewer packets without structured command evidence before accepting an attempt; and cover collector-level sandbox startup recovery.
+- Fail closed on persisted-evidence dirty-worktree drift, preserve silent verification timeout diagnostics, split release tests by ownership, and move reviewer lifecycle/retry orchestration into an execution engine.

@@ -368,6 +368,9 @@ round scope 和 Gate-owned reviewer selection，避免启动集合与最终仲�
 必须至少包含一个结构化共享命令证据，静态 file:line 引用不能单独授权通过；Runner 在接收 packet 时
 即执行这项检查，使无证据的 pass 包进入既有重试流程。证据启动、Git 身份读取和最终 Gate 调用均使用
 异步子进程/文件 API，避免 reviewer 编排热路径阻塞事件循环。
+Runner 在 reviewer 启动前及 `--no-collect` Gate 复核时都要求工作树保持 clean；持久化
+evidence 后出现未提交漂移会 fail closed。Reviewer 的进程树、超时、重试和并行/串行调度由
+独立 execution engine 负责，测试按 core、evidence/security、runner/gate/E2E 三组入口执行。
 
 **环境变量配置**:
 ```bash

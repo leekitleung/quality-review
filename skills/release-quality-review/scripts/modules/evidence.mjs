@@ -191,9 +191,10 @@ export function validateEvidenceCompleteness(evidence, projectRoot) {
  * @returns {object} Evidence record
  */
 export function runEvidenceCommand(cmd, cwd, executor = execSync) {
+  const timeoutMs = 30000;
   const started = new Date();
   try {
-    const rawOutput = executor(cmd, { cwd, encoding: 'utf-8', timeout: 30000 });
+    const rawOutput = executor(cmd, { cwd, encoding: 'utf-8', timeout: timeoutMs });
     const finished = new Date();
     const output = redactEvidence(String(rawOutput));
     const outputBytes = Buffer.byteLength(output, 'utf8');
@@ -209,7 +210,9 @@ export function runEvidenceCommand(cmd, cwd, executor = execSync) {
     };
   } catch (e) {
     const finished = new Date();
-    const output = redactEvidence(String(e.stdout || '') + String(e.stderr || ''));
+    const timedOut = e.code === 'ETIMEDOUT' || (e.signal && !Number.isInteger(e.status));
+    const diagnostic = timedOut ? `Command timed out after ${timeoutMs}ms${e.signal ? ` (${e.signal})` : ''}` : String(e.message || '');
+    const output = redactEvidence(`${String(e.stdout || '')}${String(e.stderr || '')}` || diagnostic);
     const outputBytes = Buffer.byteLength(output, 'utf8');
     return {
       command: cmd,
@@ -218,6 +221,9 @@ export function runEvidenceCommand(cmd, cwd, executor = execSync) {
       output,
       output_bytes: outputBytes,
       truncated: e.stdout ? Buffer.byteLength(e.stdout, 'utf8') > 100000 : false,
+      timed_out: timedOut,
+      timeout_ms: timeoutMs,
+      signal: e.signal || null,
       started_at: started.toISOString(),
       finished_at: finished.toISOString(),
     };

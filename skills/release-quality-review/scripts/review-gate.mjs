@@ -289,8 +289,10 @@ async function runGate() {
         const automatedChecks = JSON.parse(readContainedFileSync(roundDir, automatedPath, 'utf8'));
         const fullCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
         const currentTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+        const currentStatus = execFileSync('git', ['status', '--short'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
         const digest = createHash('sha256').update(readContainedFileSync(roundDir, automatedPath, 'utf8')).digest('hex');
-        if (metadata.candidate_commit !== fullCommit || metadata.candidate_tree !== currentTree || metadata.automated_checks_sha256 !== digest) {
+        if (currentStatus !== '' || metadata.candidate_commit !== fullCommit || metadata.candidate_tree !== currentTree ||
+            metadata.automated_checks_sha256 !== digest) {
           throw new Error('persisted evidence does not match the current commit and working-tree status');
         }
         if (profile === 'agentic-release-gate') {
