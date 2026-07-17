@@ -251,34 +251,19 @@ grep -rn "password\|secret\|api_key\|private_key" \
 ```yaml
 # result.yaml
 reviewer: destructive-qa
-score: XX/100
-status: pass|fail
-timestamp: ISO8601
-
-owasp_check:
-  A01_access_control: SAFE|AT_RISK|VULNERABLE
-  A02_crypto: SAFE|AT_RISK|VULNERABLE
-  A03_injection: SAFE|AT_RISK|VULNERABLE
-  A04_insecure_design: SAFE|AT_RISK|VULNERABLE
-  A05_misconfiguration: SAFE|AT_RISK|VULNERABLE
-  A06_components: SAFE|AT_RISK|VULNERABLE
-  A07_auth_failures: SAFE|AT_RISK|VULNERABLE
-  A08_data_integrity: SAFE|AT_RISK|VULNERABLE
-  A09_logging: SAFE|AT_RISK|VULNERABLE
-  A10_ssrf: SAFE|AT_RISK|VULNERABLE
-
-dimensions:
-  security_vulnerabilities: XX/30
-  exception_handling: XX/20
-  permission_access: XX/20
-  data_security: XX/15
-  dos_risk: XX/15
-
+profile: <profile>
+round: <round>
+candidate_commit: <40-char-commit>
+candidate_tree: <40-char-tree>
+score: <0-100 integer>
+status: <pass|fail>
+review_backend: <claude|codex>
+review_model: <model>
+blockers: []
 redlines: []
-blockers:
-  - P0: [vulnerability description with file:line]
-  - P1: [vulnerability description]
 ```
+
+OWASP checks, dimensions, evidence, and recommendations belong in the Markdown packet files.
 
 ```markdown
 # score.md

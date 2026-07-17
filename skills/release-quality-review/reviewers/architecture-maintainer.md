@@ -162,22 +162,19 @@ npx madge --circular apps/local-server/src/**/*.ts 2>/dev/null || echo "No cycle
 ```yaml
 # result.yaml
 reviewer: architecture-maintainer
-score: XX/100
-status: pass|fail
-timestamp: ISO8601
-
-dimensions:
-  module-clarity: XX/25
-  maintainability: XX/25
-  state-management: XX/20
-  error-handling: XX/15
-  testability: XX/15
-
+profile: <profile>
+round: <round>
+candidate_commit: <40-char-commit>
+candidate_tree: <40-char-tree>
+score: <0-100 integer>
+status: <pass|fail>
+review_backend: <claude|codex>
+review_model: <model>
+blockers: []
 redlines: []
-blockers:
-  - P1: [description]
-  - P2: [description]
 ```
+
+Dimensions, evidence, and recommendations belong in the Markdown packet files.
 
 ```markdown
 # score.md

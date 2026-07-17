@@ -20,12 +20,14 @@
 import { readFileSync, existsSync, readdirSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'fs';
 import { join, relative } from 'path';
 import { execFileSync as nodeExecFileSync, spawn } from 'child_process';
+import { createHash } from 'node:crypto';
 import {
   parseYamlProfile as parseYamlProfileShared, parseYamlResult, selectReviewers,
   validateResultYamlContract,
 } from '../lib/review-utils.mjs';
 import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
 import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
+import { fetchRadarReviewerModel, selectRadarReviewerModel } from '../lib/model-selector.mjs';
 import {
   createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
   outerSandboxAttestationFromEnv, readContainedFile, readContainedFileSync, redactSensitiveText,
@@ -96,7 +98,9 @@ function parseCliArgs(args) {
   const options = {
     profile: 'release-gate', roundNumber: null, parallel: false, dryRun: false,
     skipEvidence: false, reviewerOverride: null, targetDir: null,
-    checkGoalMode: false, diffBase: 'HEAD', agentCli: null, model: null,
+    checkGoalMode: false, diffBase: 'HEAD', agentCli: process.env.REVIEW_AGENT || null,
+    model: process.env.REVIEW_MODEL || null,
+    reasoningEffort: process.env.REVIEW_REASONING_EFFORT || null, radarSnapshot: null,
   };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -130,6 +134,8 @@ function parseCliArgs(args) {
     options.agentCli = agent;
   }
   else if (arg === '--model' && args[i + 1]) options.model = args[++i];
+  else if (arg === '--reasoning-effort' && args[i + 1]) options.reasoningEffort = args[++i];
+  else if (arg === '--radar-snapshot' && args[i + 1]) options.radarSnapshot = args[++i];
   else if (arg === '--help' || arg === '-h') {
     printHelp();
     process.exit(0);
@@ -144,7 +150,7 @@ function parseCliArgs(args) {
 
 const {
   profile, roundNumber, parallel, dryRun, skipEvidence, reviewerOverride,
-  targetDir, checkGoalMode, diffBase, agentCli, model,
+  targetDir, checkGoalMode, diffBase, agentCli, model, reasoningEffort, radarSnapshot,
 } = parseCliArgs(process.argv.slice(2));
 
 if (!/^[a-z0-9-]+$/.test(profile) || (reviewerOverride && !/^[a-z0-9-]+$/.test(reviewerOverride))) {
@@ -153,7 +159,7 @@ if (!/^[a-z0-9-]+$/.test(profile) || (reviewerOverride && !/^[a-z0-9-]+$/.test(r
 }
 
 function validateAgentModel(agent, selectedModel) {
-  if (!agent || !selectedModel) return 'actual reviews require explicit --agent and --model';
+  if (!agent || !selectedModel) return 'review backend and model are required';
   if (!/^[A-Za-z0-9._:/-]{1,128}$/.test(selectedModel)) return 'invalid --model value';
   const claudeModel = /^(?:claude-|sonnet$|opus$|haiku$)/i.test(selectedModel);
   if (agent === 'codex' && claudeModel) return `model ${selectedModel} is not valid for codex backend`;
@@ -161,8 +167,29 @@ function validateAgentModel(agent, selectedModel) {
   return null;
 }
 
-if (!dryRun || agentCli || model) {
-  const modelError = validateAgentModel(agentCli, model);
+const explicitModel = model && model !== 'auto' ? model : null;
+if (agentCli && !['claude', 'codex'].includes(agentCli)) {
+  console.error('Invalid review agent: must be "claude" or "codex"');
+  process.exit(4);
+}
+if ((!dryRun || agentCli || model || reasoningEffort) && !agentCli) {
+  console.error('actual reviews require explicit --agent');
+  process.exit(4);
+}
+if (agentCli === 'claude' && !explicitModel) {
+  console.error('claude reviews require explicit --model');
+  process.exit(4);
+}
+if (reasoningEffort && !/^(?:minimal|low|medium|high|xhigh|max)$/.test(reasoningEffort)) {
+  console.error('invalid --reasoning-effort value');
+  process.exit(4);
+}
+if (reasoningEffort && (agentCli !== 'codex' || !explicitModel)) {
+  console.error('--reasoning-effort requires an explicit Codex model');
+  process.exit(4);
+}
+if (explicitModel) {
+  const modelError = validateAgentModel(agentCli, explicitModel);
   if (modelError) {
     console.error(modelError);
     process.exit(4);
@@ -217,7 +244,9 @@ Options:
   --round <N>        Round number (auto-detected if not specified)
   --parallel         Run reviewers in parallel
   --agent <type>     Required backend for actual reviews: claude or codex
-  --model <name>     Required backend-compatible model for actual reviews
+  --model <name>     Explicit model; Codex auto-selects from Radar when omitted
+  --reasoning-effort Explicit Codex effort: minimal, low, medium, high, xhigh, max
+  --radar-snapshot   Repository-relative Codex Radar JSON snapshot
   --reviewer <name>  Run only this reviewer
   --target <path>    Review target directory (for self-review: skills/release-quality-review)
   --skip-evidence    Skip automatic evidence collection
@@ -227,7 +256,9 @@ Options:
   --help, -h         Show this help
 
 Examples:
+  node review-runner.mjs --profile release-gate --agent codex
   node review-runner.mjs --profile release-gate --agent codex --model gpt-5.4
+  node review-runner.mjs --profile quick --agent codex --radar-snapshot evidence/codex-radar.json --dry-run
   node review-runner.mjs --profile default --parallel --agent claude --model claude-sonnet-4-6
   node review-runner.mjs --agent codex --model gpt-5.4
   node review-runner.mjs --reviewer destructive-qa --dry-run
@@ -604,7 +635,9 @@ function getGitInfo() {
 }
 
 // Generate reviewer prompt
-function generateReviewerPrompt(reviewerName, currentRound, candidateIdentity, reviewBackend, reviewModel) {
+function generateReviewerPrompt(
+  reviewerName, currentRound, candidateIdentity, reviewBackend, reviewModel, reviewReasoningEffort,
+) {
   const reviewerContent = loadReviewer(reviewerName);
   if (!reviewerContent) return null;
   const { commit: candidateCommit, tree: candidateTree } = candidateIdentity;
@@ -642,6 +675,7 @@ function generateReviewerPrompt(reviewerName, currentRound, candidateIdentity, r
 - ✅ 提供具体的错误信息、堆栈跟踪或命令输出
 
 ## 输出要求
+本轮 reviewer 执行身份为 ${reviewBackend}/${reviewModel}，reasoning effort 为 ${reviewReasoningEffort || 'backend default'}。
 在 ${REPORT_DIR}/round-{N}/${reviewerName}/ 目录下创建:
 - result.yaml - 机器可读结果
 - score.md - 评分详情
@@ -716,7 +750,7 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-function getAgentInvocation(agent, selectedModel, prompt) {
+function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
   if (agent === 'claude') {
     return {
       command: 'claude',
@@ -724,56 +758,130 @@ function getAgentInvocation(agent, selectedModel, prompt) {
     };
   }
   if (agent === 'codex') {
+    const effortArgs = selectedEffort
+      ? ['--config', `model_reasoning_effort=${JSON.stringify(selectedEffort)}`]
+      : [];
     return {
       command: 'codex',
-      args: ['exec', '--model', selectedModel, '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt],
+      args: ['exec', '--model', selectedModel, ...effortArgs, '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt],
     };
   }
   return { command: agent, args: ['-p', prompt] };
 }
 
-function bindRoundBackend(roundDir, backend, selectedModel) {
+function loadRoundBackendLock(roundDir) {
   const lockPath = resolveWithinRoot(roundDir, 'review-backend.json', 'review backend lock');
-  const record = { backend, model: selectedModel };
+  if (!existsSync(lockPath)) return null;
+  try {
+    return JSON.parse(readContainedFileSync(roundDir, lockPath, 'utf8'));
+  } catch (error) {
+    const failure = new Error(`invalid review backend lock: ${error.message}`);
+    failure.exitCode = 4;
+    throw failure;
+  }
+}
+
+async function resolveReviewIdentity(roundDir) {
+  if (!agentCli) return null;
+  const existing = loadRoundBackendLock(roundDir);
+  if (!explicitModel && existing) {
+    if (existing.backend !== agentCli || typeof existing.model !== 'string' || !existing.model) {
+      const failure = new Error(`round backend is locked to ${existing.backend || 'invalid'}, cannot use ${agentCli}`);
+      failure.exitCode = 4;
+      throw failure;
+    }
+    return {
+      backend: existing.backend,
+      model: existing.model,
+      reasoningEffort: existing.reasoning_effort ?? null,
+      selection: existing.selection || { mode: 'legacy-round-lock', selected_by: 'round-lock' },
+    };
+  }
+  if (explicitModel) {
+    return {
+      backend: agentCli,
+      model: explicitModel,
+      reasoningEffort: reasoningEffort || null,
+      selection: {
+        mode: 'explicit',
+        selected_by: process.argv.slice(2).includes('--model') ? 'user' : 'environment',
+      },
+    };
+  }
+  try {
+    let selected;
+    const preferLightweight = ['quick', 'default'].includes(profile);
+    if (radarSnapshot) {
+      const snapshotPath = resolveWithinRoot(PROJECT_ROOT, radarSnapshot, 'Radar snapshot');
+      const body = readContainedFileSync(PROJECT_ROOT, snapshotPath, 'utf8');
+      selected = selectRadarReviewerModel(JSON.parse(body), { preferLightweight });
+      selected.selection.source = relative(PROJECT_ROOT, snapshotPath);
+      selected.selection.snapshot_sha256 = createHash('sha256').update(body).digest('hex');
+    } else {
+      selected = await fetchRadarReviewerModel({ preferLightweight });
+    }
+    return { backend: 'codex', ...selected };
+  } catch (error) {
+    const failure = new Error(
+      `Codex Radar could not select a reviewer model: ${error.message}. ` +
+      'The main agent must choose a model and rerun with --model.',
+    );
+    failure.exitCode = 4;
+    throw failure;
+  }
+}
+
+function bindRoundBackend(roundDir, identity) {
+  const lockPath = resolveWithinRoot(roundDir, 'review-backend.json', 'review backend lock');
+  const record = {
+    backend: identity.backend,
+    model: identity.model,
+    reasoning_effort: identity.reasoningEffort,
+    selection: identity.selection,
+  };
   try {
     writeFileSync(lockPath, `${JSON.stringify(record, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
     return record;
   } catch (error) {
     if (error.code !== 'EEXIST') throw error;
   }
-  let existing;
-  try {
-    existing = JSON.parse(readContainedFileSync(roundDir, lockPath, 'utf8'));
-  } catch (error) {
-    const failure = new Error(`invalid review backend lock: ${error.message}`);
+  const existing = loadRoundBackendLock(roundDir);
+  if (!['claude', 'codex'].includes(existing.backend) || existing.backend !== identity.backend) {
+    const failure = new Error(`round backend is locked to ${existing.backend || 'invalid'}, cannot use ${identity.backend}`);
     failure.exitCode = 4;
     throw failure;
   }
-  if (!['claude', 'codex'].includes(existing.backend) || existing.backend !== backend) {
-    const failure = new Error(`round backend is locked to ${existing.backend || 'invalid'}, cannot use ${backend}`);
+  if (typeof existing.model !== 'string' || existing.model !== identity.model) {
+    const failure = new Error(`round model is locked to ${existing.model || 'invalid'}, cannot use ${identity.model}`);
     failure.exitCode = 4;
     throw failure;
   }
-  if (typeof existing.model !== 'string' || existing.model !== selectedModel) {
-    const failure = new Error(`round model is locked to ${existing.model || 'invalid'}, cannot use ${selectedModel}`);
+  if ((existing.reasoning_effort ?? null) !== identity.reasoningEffort) {
+    const failure = new Error(`round reasoning effort is locked to ${existing.reasoning_effort ?? 'default'}, cannot use ${identity.reasoningEffort ?? 'default'}`);
     failure.exitCode = 4;
     throw failure;
   }
   return existing;
 }
 
-async function bindRoundMetadata(roundDir, backend, selectedModel) {
+async function bindRoundMetadata(roundDir, identity) {
   const metadataPath = join(roundDir, 'metadata.json');
   if (!existsSync(metadataPath)) return;
   const metadata = JSON.parse(readContainedFileSync(roundDir, metadataPath, 'utf8'));
-  if (metadata.review_backend && metadata.review_backend !== backend) {
-    throw new Error(`round metadata backend is locked to ${metadata.review_backend}, cannot use ${backend}`);
+  const identityEffort = identity.reasoningEffort ?? identity.reasoning_effort ?? null;
+  if (metadata.review_backend && metadata.review_backend !== identity.backend) {
+    throw new Error(`round metadata backend is locked to ${metadata.review_backend}, cannot use ${identity.backend}`);
   }
-  if (metadata.review_model && metadata.review_model !== selectedModel) {
-    throw new Error(`round metadata model is locked to ${metadata.review_model}, cannot use ${selectedModel}`);
+  if (metadata.review_model && metadata.review_model !== identity.model) {
+    throw new Error(`round metadata model is locked to ${metadata.review_model}, cannot use ${identity.model}`);
   }
-  metadata.review_backend = backend;
-  metadata.review_model = selectedModel;
+  if ('review_reasoning_effort' in metadata && metadata.review_reasoning_effort !== identityEffort) {
+    throw new Error(`round metadata reasoning effort is locked to ${metadata.review_reasoning_effort ?? 'default'}, cannot use ${identityEffort ?? 'default'}`);
+  }
+  metadata.review_backend = identity.backend;
+  metadata.review_model = identity.model;
+  metadata.review_reasoning_effort = identityEffort;
+  metadata.model_selection = identity.selection;
   await writeContainedFile(roundDir, metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
 }
 
@@ -883,7 +991,7 @@ function checkFailedReviewers(roundDir, minScore) {
 }
 
 // Run single review iteration
-async function runSingleReviewIteration(profileConfig, currentRound, onReviewComplete) {
+async function runSingleReviewIteration(profileConfig, currentRound, onReviewComplete, requestedIdentity) {
   const roundDir = join(REPORT_DIR, `round-${String(currentRound).padStart(3, '0')}`);
 
   console.log(`\n${c.blue}ℹ${c.reset} Round: ${currentRound}`);
@@ -980,15 +1088,16 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   const scale = evidence.scale?.scale || 'medium';
   const scaledTimeout = getScaledTimeout(scale);
 
-  const resolvedAgent = agentCli;
-  const resolvedModel = model;
-  bindRoundBackend(roundDir, resolvedAgent, resolvedModel);
-  await bindRoundMetadata(roundDir, resolvedAgent, resolvedModel);
-  log.info(`Using agent: ${resolvedAgent}, model: ${resolvedModel}`);
+  const lockedIdentity = bindRoundBackend(roundDir, requestedIdentity);
+  await bindRoundMetadata(roundDir, lockedIdentity);
+  const resolvedAgent = lockedIdentity.backend;
+  const resolvedModel = lockedIdentity.model;
+  const resolvedEffort = lockedIdentity.reasoning_effort ?? null;
+  log.info(`Using agent: ${resolvedAgent}, model: ${resolvedModel}, reasoning effort: ${resolvedEffort || 'backend default'}`);
   const candidateIdentity = getGitInfo();
   const reviewerPrompts = new Map(allReviewers.map(reviewer => [
     reviewer, generateReviewerPrompt(
-      reviewer, currentRound, candidateIdentity, resolvedAgent, resolvedModel,
+      reviewer, currentRound, candidateIdentity, resolvedAgent, resolvedModel, resolvedEffort,
     ),
   ]));
 
@@ -1056,7 +1165,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         }
 
         const result = await new Promise(innerResolve => {
-          const invocation = getAgentInvocation(resolvedAgent, resolvedModel, prompt);
+          const invocation = getAgentInvocation(resolvedAgent, resolvedModel, resolvedEffort, prompt);
           const reviewerReportDir = relative(
             PROJECT_ROOT,
             join(REPORT_DIR, '.reviewer-sandboxes', `round-${String(currentRound).padStart(3, '0')}`, reviewer),
@@ -1222,7 +1331,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           await sleep(delay);
         }
 
-        const invocation = getAgentInvocation(resolvedAgent, resolvedModel, prompt);
+        const invocation = getAgentInvocation(resolvedAgent, resolvedModel, resolvedEffort, prompt);
         const reviewerReportDir = relative(
           PROJECT_ROOT,
           join(REPORT_DIR, '.reviewer-sandboxes', `round-${String(currentRound).padStart(3, '0')}`, reviewer),
@@ -1328,6 +1437,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     round: currentRound,
     reviewBackend: resolvedAgent,
     reviewModel: resolvedModel,
+    reviewReasoningEffort: resolvedEffort,
+    modelSelection: lockedIdentity.selection || null,
     reviewers: allReviewers,
     triggeredConditional,
     timestamp: new Date().toISOString(),
@@ -1392,7 +1503,14 @@ async function main() {
   }
   console.log(`${c.blue}ℹ${c.reset} Running round: ${effectiveRound}`);
 
-  await runSingleReviewIteration(profileConfig, effectiveRound, () => {});
+  const prospectiveRoundDir = join(REPORT_DIR, `round-${String(effectiveRound).padStart(3, '0')}`);
+  const reviewIdentity = await resolveReviewIdentity(prospectiveRoundDir);
+  if (reviewIdentity) {
+    console.log(`${c.blue}ℹ${c.reset} Model selection: ${reviewIdentity.selection.mode} -> ${reviewIdentity.model}` +
+      `${reviewIdentity.reasoningEffort ? ` (${reviewIdentity.reasoningEffort})` : ''}`);
+  }
+
+  await runSingleReviewIteration(profileConfig, effectiveRound, () => {}, reviewIdentity);
   if (dryRun) return;
 
   // Determine round directory for gate check (same as iteration)

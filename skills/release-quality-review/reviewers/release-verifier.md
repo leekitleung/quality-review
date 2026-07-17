@@ -195,27 +195,19 @@ pnpm test && pnpm typecheck && echo "GATE: PASS" || echo "GATE: FAIL"
 ```yaml
 # result.yaml
 reviewer: release-verifier
-score: XX/100
-status: pass|fail
-timestamp: ISO8601
-
-evidence:
-  test_run: "passed: X, failed: Y, skipped: Z"
-  typecheck: "passed|failed"
-  build: "passed|failed|not_configured"
-
-dimensions:
-  test_coverage: XX/30
-  build_reproducibility: XX/25
-  release_validation: XX/20
-  regression_testing: XX/15
-  security_release: XX/10
-
+profile: <profile>
+round: <round>
+candidate_commit: <40-char-commit>
+candidate_tree: <40-char-tree>
+score: <0-100 integer>
+status: <pass|fail>
+review_backend: <claude|codex>
+review_model: <model>
+blockers: []
 redlines: []
-blockers:
-  - P1: [description]
-  - P2: [description]
 ```
+
+Test evidence, dimensions, and recommendations belong in the Markdown packet files.
 
 ```markdown
 # score.md

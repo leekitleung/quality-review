@@ -341,9 +341,14 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 | **断点续传** | 已完成的 Reviewer 结果会被保留，避免重复工作 |
 | **并行执行元数据** | 记录执行时间和状态，便于诊断问题 |
 
-实际评审必须显式传入 `--agent` 和 `--model`。同一 round 首次启动时会把两者
-写入 `review-backend.json`；后续恢复必须完全一致。Codex round 不得使用 Claude
-backend/model，Claude round 不得使用 Codex backend/model，模型漂移同样失败。`--parallel`
+实际评审必须显式传入 `--agent`。Claude 必须同时显式传入兼容的 `--model`；Codex
+省略 `--model` 时使用 Codex Radar 自动选择：quick/default 优先 IQ > 100 的
+low/medium 组合，其次其他 IQ > 100 组合；release/full/agentic 直接选择全局最高 IQ
+组合；全部不达标时选择最高分。Radar 不可参考时退出 4，由主 Agent
+判断并用 `--model` 重试。同一 round 首次启动时会把 backend、model、reasoning effort
+和选择证据写入 `review-backend.json`；省略模型恢复时直接复用该锁，不重新查询 Radar。
+Codex round 不得使用 Claude backend/model，Claude round 不得使用 Codex backend/model，
+模型或 effort 漂移同样失败。`--parallel`
 默认不限制并发量且不延迟启动；只有显式设置
 `RELEASE_QUALITY_REVIEWER_START_DELAY_MS` 才会错峰启动。
 
@@ -386,7 +391,7 @@ graph TD
 # 读取 AGENTS.md 中的评审规则
 # 然后运行评审
 node skills/release-quality-review/scripts/review-runner.mjs --profile release-gate \
-  --agent codex --model "$REVIEW_MODEL"
+  --agent codex
 ```
 
 ### Codex Subagent 并行评审

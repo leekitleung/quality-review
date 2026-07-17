@@ -252,43 +252,19 @@ grep -rn "profile" quality-reports/round-*/metadata.json | head -5
 ### result.yaml
 ```yaml
 reviewer: principles-compliance
-score: XX/100
-status: pass|fail
-
-dimensions:
-  p1_goal_mode: XX/20
-  p2_execution_gate: XX/25
-  p3_adversarial: XX/25
-  p4_persistence: XX/15
-  p5_right_size: XX/15
-
-total_principles_score: XX/100
-
-reviewers_checked:
-  - name: "product-flow"
-    p1: XX
-    p2: XX
-    p3: XX
-    p4: XX
-    p5: XX
-  - name: "destructive-qa"
-    p1: XX
-    p2: XX
-    p3: XX
-    p4: XX
-    p5: XX
-
-violations:
-  - reviewer: "xxx"
-    principle: "P3"
-    severity: "P0"
-    description: "把 Reviewer 自写产物当作独立证据"
-    location: "score.md:45"
-
+profile: <profile>
+round: <round>
+candidate_commit: <40-char-commit>
+candidate_tree: <40-char-tree>
+score: <0-100 integer>
+status: <pass|fail>
+review_backend: <claude|codex>
+review_model: <model>
+blockers: []
 redlines: []
-blockers:
-  - P0: [reviewer] - [violation]
 ```
+
+Principle dimensions, checked reviewers, violations, and recommendations belong in the Markdown packet files.
 
 ### score.md
 ```markdown

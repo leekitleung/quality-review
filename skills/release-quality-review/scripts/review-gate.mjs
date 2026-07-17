@@ -375,9 +375,14 @@ async function runGate() {
   let reviewIdentityValid = false;
   try {
     const metadata = JSON.parse(readContainedFileSync(roundDir, join(roundDir, 'metadata.json'), 'utf8'));
+    const extendedIdentityValid = !('reasoning_effort' in backendLock) ||
+      (metadata.review_reasoning_effort ?? null) === (backendLock.reasoning_effort ?? null);
+    const selectionIdentityValid = !backendLock.selection ||
+      JSON.stringify(metadata.model_selection) === JSON.stringify(backendLock.selection);
     reviewIdentityValid = ['claude', 'codex'].includes(backendLock.backend) &&
       typeof backendLock.model === 'string' && backendLock.model.length > 0 &&
-      metadata.review_backend === backendLock.backend && metadata.review_model === backendLock.model;
+      metadata.review_backend === backendLock.backend && metadata.review_model === backendLock.model &&
+      extendedIdentityValid && selectionIdentityValid;
   } catch {
     reviewIdentityValid = false;
   }

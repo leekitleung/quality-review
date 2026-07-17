@@ -14,7 +14,7 @@
  */
 
 import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync, cpSync } from 'fs';
-import { join } from 'path';
+import { join, relative } from 'path';
 import { tmpdir, userInfo } from 'node:os';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'node:child_process';
@@ -63,6 +63,7 @@ import { detectChangeScale as detectGateChangeScale, printScaleDetection } from 
 import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
 import { collectEvidence, prepareTrustedAuditWorkspace, runAutomatedChecks, runEvidenceCommand } from '../scripts/modules/evidence.mjs';
 import { createCandidateRuntime, validateCandidateCheckoutIdentity } from '../lib/candidate-runtime.mjs';
+import { extractRadarCandidates, selectRadarReviewerModel } from '../lib/model-selector.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -82,6 +83,10 @@ const TEST_ROUNDS = {
   evidenceForgery: ROUND_BASE + 7,
 };
 const reportRound = round => join(resolveReportDirectory(PROJECT_ROOT), `round-${String(round).padStart(3, '0')}`);
+
+function radarSnapshot(comparisons, updatedAt = '2026-07-17T10:00:00+08:00') {
+  return { schema_version: '2.0', model_iq: { updated_at: updatedAt, comparisons } };
+}
 
 // Create test directory at module load time
 mkdirSync(TEST_DIR, { recursive: true });
@@ -406,13 +411,14 @@ test.describe('gate CLI and filesystem helpers', () => {
 // ============================================================================
 
 test.describe('parseYamlResult (production)', () => {
-  test('parses the canonical nested result template without throwing', () => {
+  test('parses the canonical exact result template without throwing', () => {
     const content = readFileSync(join(SKILL_DIR, 'templates', 'result.yaml'), 'utf-8');
     const result = parseYamlResult(content);
     assertTrue(Array.isArray(result.blockers), 'blockers should be an array');
     assertTrue(Array.isArray(result.redlines), 'redlines should be an array');
     assertEqual(result.status, 'pass|fail');
-    assertTrue(result.redlines.length > 0, 'canonical redline should be retained');
+    assertEqual(result.blockers.length, 0);
+    assertEqual(result.redlines.length, 0);
   });
   test('parses inline blocker format', () => {
     const content = `reviewer: destructive-qa
@@ -516,6 +522,92 @@ redlines: []
     for (const field of ['summary', 'dimensions', 'evidence', 'notes', 'verdict']) {
       assertEqual(validateResultYamlContract(`${canonical}${field}: unsupported\n`).valid, false);
     }
+  });
+});
+
+test.describe('Radar reviewer model selection', () => {
+  const now = new Date('2026-07-17T12:00:00+08:00');
+  const entry = (model, effort, score, cost = 10, wall = 1000, recent = [score]) => ({
+    model,
+    label: `${model} ${effort}`,
+    latest: {
+      model, reasoning_effort: effort, score, valid_tasks: 10,
+      cost_usd: cost, wall_seconds: wall,
+    },
+    recent_days: recent.map(value => ({ score: value })),
+  });
+
+  test('prefers an IQ-qualified lightweight Codex model', () => {
+    const snapshot = radarSnapshot({
+      heavy: entry('gpt-heavy', 'max', 150),
+      light: entry('gpt-light', 'low', 120),
+      medium: entry('gpt-medium', 'medium', 110),
+      claude: entry('claude-opus', 'high', 200),
+    });
+    assertEqual(extractRadarCandidates(snapshot).length, 3);
+    const selected = selectRadarReviewerModel(snapshot, { now });
+    assertEqual(selected.model, 'gpt-light');
+    assertEqual(selected.reasoningEffort, 'low');
+    assertEqual(selected.selection.mode, 'radar-lightweight-qualified');
+    assertEqual(selected.selection.target_met, true);
+  });
+
+  test('uses a qualified non-lightweight model when no lightweight model qualifies', () => {
+    const selected = selectRadarReviewerModel(radarSnapshot({
+      light: entry('gpt-light', 'low', 95),
+      high: entry('gpt-high', 'high', 120),
+    }), { now });
+    assertEqual(selected.model, 'gpt-high');
+    assertEqual(selected.selection.mode, 'radar-qualified-highest');
+  });
+
+  test('uses the highest IQ model for high-assurance profiles', () => {
+    const selected = selectRadarReviewerModel(radarSnapshot({
+      light: entry('gpt-light', 'low', 120),
+      heavy: entry('gpt-heavy', 'max', 150),
+    }), { now, preferLightweight: false });
+    assertEqual(selected.model, 'gpt-heavy');
+    assertEqual(selected.selection.mode, 'radar-high-assurance-highest');
+    assertEqual(selected.selection.review_tier, 'high-assurance');
+  });
+
+  test('uses the highest score when every candidate is at or below IQ 100', () => {
+    const selected = selectRadarReviewerModel(radarSnapshot({
+      low: entry('gpt-low', 'low', 90),
+      high: entry('gpt-high', 'high', 100),
+      medium: entry('gpt-medium', 'medium', 95),
+    }), { now });
+    assertEqual(selected.model, 'gpt-high');
+    assertEqual(selected.selection.mode, 'radar-highest-score-fallback');
+    assertEqual(selected.selection.target_met, false);
+  });
+
+  test('breaks equal-score ties by recent stability, effort, cost, and model id', () => {
+    const selected = selectRadarReviewerModel(radarSnapshot({
+      unstable: entry('gpt-unstable', 'low', 110, 1, 100, [40, 80, 110]),
+      stable: entry('gpt-stable', 'low', 110, 20, 2000, [110, 110, 110]),
+    }), { now });
+    assertEqual(selected.model, 'gpt-stable');
+  });
+
+  test('rejects stale snapshots and candidates without ten valid tasks', () => {
+    let staleError = '';
+    try {
+      selectRadarReviewerModel(radarSnapshot({}, '2026-07-01T00:00:00Z'), { now });
+    } catch (error) {
+      staleError = error.message;
+    }
+    assertTrue(staleError.includes('stale'));
+    const invalid = radarSnapshot({ bad: {
+      model: 'gpt-bad', latest: { model: 'gpt-bad', reasoning_effort: 'low', score: 150, valid_tasks: 9 },
+    } });
+    let candidateError = '';
+    try {
+      selectRadarReviewerModel(invalid, { now });
+    } catch (error) {
+      candidateError = error.message;
+    }
+    assertTrue(candidateError.includes('no usable Codex model'));
   });
 });
 
@@ -1305,8 +1397,10 @@ test.describe('CLI fail-closed integration', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
     assertTrue(runner.includes("args: ['-p', '--model', selectedModel, '--permission-mode', 'acceptEdits', '--no-session-persistence', prompt]"),
       'Claude print mode must not block waiting for report write approval');
-    assertTrue(runner.includes("args: ['exec', '--model', selectedModel"),
+    assertTrue(runner.includes("args: ['exec', '--model', selectedModel, ...effortArgs"),
       'Codex reviewer invocation must pin the selected model');
+    assertTrue(runner.includes('model_reasoning_effort=${JSON.stringify(selectedEffort)}'),
+      'Codex reviewer invocation must pin Radar-selected reasoning effort');
     assertEqual(runner.includes('--dangerously-skip-permissions'), false,
       'Claude reviewer must not bypass all permission checks');
   });
@@ -1332,10 +1426,11 @@ test.describe('CLI fail-closed integration', () => {
       'Evidence quality must count references with the canonical extractor');
   });
 
-  test('actual reviews require an explicit compatible backend and model', () => {
+  test('actual reviews require a backend and reject incompatible explicit models', () => {
     const runner = join(SKILL_DIR, 'scripts', 'review-runner.mjs');
     for (const [args, expected] of [
-      [['--profile', 'quick'], 'require explicit --agent and --model'],
+      [['--profile', 'quick'], 'require explicit --agent'],
+      [['--profile', 'quick', '--agent', 'claude'], 'claude reviews require explicit --model'],
       [['--profile', 'quick', '--agent', 'codex', '--model', 'claude-sonnet-4-6'], 'not valid for codex'],
       [['--profile', 'quick', '--agent', 'claude', '--model', 'gpt-5.4'], 'not valid for claude'],
     ]) {
@@ -1345,17 +1440,52 @@ test.describe('CLI fail-closed integration', () => {
     }
   });
 
-  test('dry-run validates backend and model whenever either is supplied', () => {
+  test('dry-run supports Codex Radar auto-selection and validates explicit identity', t => {
     const runner = join(SKILL_DIR, 'scripts', 'review-runner.mjs');
+    const snapshotPath = join(resolveReportDirectory(PROJECT_ROOT), `.radar-snapshot-${process.pid}.json`);
+    const escapedSnapshotPath = join(resolveReportDirectory(PROJECT_ROOT), `.radar-snapshot-link-${process.pid}.json`);
+    const outsideSnapshotPath = join(tmpdir(), `.radar-snapshot-outside-${process.pid}.json`);
+    t.after(() => {
+      rmSync(snapshotPath, { force: true });
+      rmSync(escapedSnapshotPath, { force: true });
+      rmSync(outsideSnapshotPath, { force: true });
+    });
+    mkdirSync(resolveReportDirectory(PROJECT_ROOT), { recursive: true });
+    const snapshotBody = JSON.stringify(radarSnapshot({
+      light: {
+        model: TEST_CODEX_MODEL,
+        latest: {
+          model: TEST_CODEX_MODEL, reasoning_effort: 'low', score: 120, valid_tasks: 10,
+          cost_usd: 1, wall_seconds: 10,
+        },
+      },
+    }, new Date().toISOString()));
+    writeFileSync(snapshotPath, snapshotBody);
+    writeFileSync(outsideSnapshotPath, snapshotBody);
+    symlinkSync(outsideSnapshotPath, escapedSnapshotPath);
     const allowed = spawnSync('node', [runner, '--profile', 'quick', '--dry-run'], {
       cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
     });
     assertEqual(allowed.status, 0, `${allowed.stdout}${allowed.stderr}`);
+    const auto = spawnSync('node', [
+      runner, '--profile', 'quick', '--dry-run', '--agent', 'codex',
+      '--radar-snapshot', relative(PROJECT_ROOT, snapshotPath),
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000 });
+    assertEqual(auto.status, 0, `${auto.stdout}${auto.stderr}`);
+    assertTrue(auto.stdout.includes(`radar-lightweight-qualified -> ${TEST_CODEX_MODEL} (low)`));
+    const escapedSnapshot = spawnSync('node', [
+      runner, '--profile', 'quick', '--dry-run', '--agent', 'codex',
+      '--radar-snapshot', relative(PROJECT_ROOT, escapedSnapshotPath),
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000 });
+    assertEqual(escapedSnapshot.status, 4, `${escapedSnapshot.stdout}${escapedSnapshot.stderr}`);
+    assertTrue(escapedSnapshot.stderr.includes('main agent must choose a model'));
     for (const [args, expected] of [
-      [['--agent', 'codex'], 'require explicit --agent and --model'],
-      [['--model', TEST_CODEX_MODEL], 'require explicit --agent and --model'],
+      [['--model', TEST_CODEX_MODEL], 'require explicit --agent'],
+      [['--agent', 'claude'], 'claude reviews require explicit --model'],
       [['--agent', 'codex', '--model', 'claude-sonnet-4-6'], 'not valid for codex'],
       [['--agent', 'claude', '--model', 'gpt-5.4'], 'not valid for claude'],
+      [['--agent', 'codex', '--model', TEST_CODEX_MODEL, '--reasoning-effort', 'extreme'], 'invalid --reasoning-effort'],
+      [['--agent', 'codex', '--radar-snapshot', 'missing-radar.json'], 'main agent must choose a model'],
     ]) {
       const result = spawnSync('node', [runner, '--profile', 'quick', '--dry-run', ...args], {
         cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000,
@@ -1581,8 +1711,9 @@ test.describe('CLI fail-closed integration', () => {
     assertTrue(readme.includes('not signatures'), 'README must distinguish drift hashes from signatures');
     assertTrue(readme.includes('codex login status'), 'Quickstart must document Codex authentication preflight');
     assertTrue(readme.includes('claude auth status'), 'Quickstart must document Claude authentication preflight');
-    assertTrue(readme.includes('--agent codex --model "$REVIEW_MODEL"'),
-      'First review must select a documented backend and model explicitly');
+    assertTrue(readme.includes('--agent codex'),
+      'First review must select a documented backend and allow Radar model selection');
+    assertTrue(readme.includes('Codex Radar'), 'README must document automatic Codex model selection');
     assertTrue(readme.includes('automatically launches reviewer processes'),
       'Quickstart must disclose that review launches external Agent processes');
     const destructiveReviewer = readFileSync(join(SKILL_DIR, 'reviewers', 'destructive-qa.md'), 'utf8');
@@ -2094,14 +2225,26 @@ console.log('review completed');
       assertEqual(isolatedReportDir.includes(`round-${String(roundNumber).padStart(3, '0')}/`), true);
       assertEqual(
         JSON.stringify(JSON.parse(readFileSync(join(round, 'review-backend.json'), 'utf8'))),
-        JSON.stringify({ backend: 'codex', model: TEST_CODEX_MODEL }),
+        JSON.stringify({
+          backend: 'codex', model: TEST_CODEX_MODEL, reasoning_effort: null,
+          selection: { mode: 'explicit', selected_by: 'user' },
+        }),
       );
       const runnerMetadata = JSON.parse(readFileSync(join(round, 'runner-metadata.json'), 'utf8'));
       assertEqual(runnerMetadata.reviewBackend, 'codex');
       assertEqual(runnerMetadata.reviewModel, TEST_CODEX_MODEL);
+      assertEqual(runnerMetadata.reviewReasoningEffort, null);
+      assertEqual(runnerMetadata.modelSelection.mode, 'explicit');
       const prompt = readFileSync(join(round, 'product-flow', 'prompt.md'), 'utf8');
       assertTrue(prompt.includes('review_backend: codex'));
       assertTrue(prompt.includes(`review_model: ${TEST_CODEX_MODEL}`));
+      const lockedResume = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--dry-run',
+        '--agent', 'codex', '--round', String(roundNumber), '--skip-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000 });
+      assertEqual(lockedResume.status, 0, `${lockedResume.stdout}${lockedResume.stderr}`);
+      assertTrue(lockedResume.stdout.includes(`explicit -> ${TEST_CODEX_MODEL}`),
+        'Omitted model must reuse the existing round lock without Radar');
       writeFileSync(join(round, 'review-backend.json'), JSON.stringify({ backend: 'codex' }));
       const legacyLock = spawnSync('node', [
         join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick',
@@ -2339,6 +2482,22 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
       ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
       assertEqual(metadataModelMismatch.status, 1);
       assertTrue(metadataModelMismatch.stdout.includes('Review backend/model identity'));
+      writeFileSync(identityMetadataPath, JSON.stringify(identityMetadata));
+
+      const selection = { mode: 'radar-lightweight-qualified', observed_iq: 120 };
+      writeFileSync(join(round, 'review-backend.json'), JSON.stringify({
+        backend: 'codex', model: TEST_CODEX_MODEL, reasoning_effort: 'low', selection,
+      }));
+      writeFileSync(identityMetadataPath, JSON.stringify({
+        ...identityMetadata, review_reasoning_effort: 'high', model_selection: selection,
+      }));
+      const effortMismatch = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-gate.mjs'), '--profile', 'quick', '--round', String(roundNumber),
+        '--no-collect', '--no-validate-evidence',
+      ], { cwd: PROJECT_ROOT, encoding: 'utf8' });
+      assertEqual(effortMismatch.status, 1);
+      assertTrue(effortMismatch.stdout.includes('Review backend/model identity'));
+      writeFileSync(join(round, 'review-backend.json'), JSON.stringify({ backend: 'codex', model: TEST_CODEX_MODEL }));
       writeFileSync(identityMetadataPath, JSON.stringify(identityMetadata));
 
       rmSync(finalReport, { force: true });

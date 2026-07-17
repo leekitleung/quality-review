@@ -280,31 +280,19 @@ node scripts/evidence-validator.mjs --round round-001 || exit 1
 ### result.yaml
 ```yaml
 reviewer: adversarial-completion
-score: XX/100
-status: pass|fail
-timestamp: ISO8601
-
-dimensions:
-  evidence_source_compliance: XX/30  # 核心
-  evidence_completeness: XX/25
-  boundary_coverage: XX/15
-  self_verification_detection: XX/15
-  handoff_integrity: XX/15
-
-self_verification_patterns:
-  self_reference: N  # "我们添加"等
-  self_authored_artifact: N  # Reviewer 自写产物
-  missing_output: N  # 声称通过但无输出
-  vague_claims: N  # 主观描述
-
-redlines:
-  - R-AC-01: [description with file:line]
-  - R-AC-02: [description]
-
-blockers:
-  - P0: [self-verification violation]
-  - P1: [incomplete evidence]
+profile: <profile>
+round: <round>
+candidate_commit: <40-char-commit>
+candidate_tree: <40-char-tree>
+score: <0-100 integer>
+status: <pass|fail>
+review_backend: <claude|codex>
+review_model: <model>
+blockers: []
+redlines: []
 ```
+
+Dimensions, evidence patterns, findings, and recommendations belong in the Markdown packet files.
 
 ### score.md
 ```markdown
