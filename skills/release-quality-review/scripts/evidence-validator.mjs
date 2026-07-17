@@ -16,8 +16,10 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { isAbsolute, join } from 'path';
 import { execFileSync } from 'child_process';
 import { parseYamlResult, validateResultYamlContract } from '../lib/review-utils.mjs';
+import { validateReviewModelIdentity } from '../lib/model-selector.mjs';
 import {
-  checkMissingEvidenceOutput, extractCommandEvidence, extractFileLineReferences, extractTestOutputs,
+  checkFindingEvidenceBindings, checkMissingEvidenceOutput, extractCommandEvidence,
+  extractFileLineReferences, extractTestOutputs,
   resolveFileReference,
 } from '../lib/evidence-utils.mjs';
 import { resolveReportDirectory } from '../lib/security-utils.mjs';
@@ -139,6 +141,7 @@ function verifyFileLineReferences(content, roundDir) {
     // Normalize the file path relative to project root
     const projectRoot = PROJECT_ROOT;
     const possiblePaths = isAbsolute(ref.file) ? [directPath] : [
+      join(roundDir, ref.file),
       directPath,
       uniqueTrackedBasename(ref.file),
       join(projectRoot, 'apps', ref.file),
@@ -335,6 +338,7 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
   const reviewerDir = join(roundDir, reviewer);
   const scorePath = join(reviewerDir, 'score.md');
   const resultPath = join(reviewerDir, 'result.yaml');
+  const blockersPath = join(reviewerDir, 'blockers.md');
 
   if (!existsSync(scorePath)) {
     return {
@@ -347,9 +351,12 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
     };
   }
 
-  const content = readFileSync(scorePath, 'utf-8');
+  const scoreContent = readFileSync(scorePath, 'utf-8');
+  const blockersContent = existsSync(blockersPath) ? readFileSync(blockersPath, 'utf8') : '';
+  const content = `${scoreContent}\n${blockersContent}`;
   const allViolations = [];
   const allWarnings = [];
+  let packet = null;
 
   if (!existsSync(resultPath)) {
     allViolations.push({ type: 'missing_result_packet', desc: '缺少必需的 result.yaml，无法绑定候选身份' });
@@ -359,7 +366,7 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
     if (!contract.valid) {
       allViolations.push({ type: 'invalid_result_schema', desc: contract.error });
     }
-    const packet = parseYamlResult(yamlContent);
+    packet = parseYamlResult(yamlContent);
     if (!candidateIdentity.valid || packet.candidateCommit !== candidateIdentity.commit || packet.candidateTree !== candidateIdentity.tree) {
       allViolations.push({
         type: 'candidate_identity_mismatch',
@@ -381,6 +388,11 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
   // Independent reviewers may cite candidate diff code for static claims. Runtime
   // claims still require command/test evidence, and self-authored language is rejected.
   allViolations.push(...checkMissingEvidenceOutput(content));
+  if (packet) {
+    allViolations.push(...checkFindingEvidenceBindings(
+      [...packet.blockers, ...packet.redlines], blockersContent,
+    ));
+  }
 
   // === NEW: Cross-file reference verification ===
   const fileRefCheck = verifyFileLineReferences(content, roundDir);
@@ -575,9 +587,14 @@ function main({ targetRound, targetReviewer, diffBase }) {
       valid: /^[0-9a-f]{40}$/i.test(commit || '') && /^[0-9a-f]{40}$/i.test(tree || ''),
       backend: backendLock.backend,
       model: backendLock.model,
-      reviewIdentityValid: ['claude', 'codex'].includes(backendLock.backend) &&
-        typeof backendLock.model === 'string' && backendLock.model.length > 0 &&
-        metadata.review_backend === backendLock.backend && metadata.review_model === backendLock.model,
+      reviewIdentityValid: validateReviewModelIdentity({
+        backend: backendLock.backend,
+        model: backendLock.model,
+        reasoningEffort: backendLock.reasoning_effort ?? null,
+      }).valid &&
+        metadata.review_backend === backendLock.backend && metadata.review_model === backendLock.model &&
+        (!('reasoning_effort' in backendLock) ||
+          (metadata.review_reasoning_effort ?? null) === (backendLock.reasoning_effort ?? null)),
     };
   } catch {
     log.fail('Missing or invalid metadata/backend identity');

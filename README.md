@@ -96,6 +96,10 @@ reuses that lock without consulting Radar again; explicit backend, model, or
 effort drift fails closed. Parallel mode has no project-level
 concurrency cap or start delay
 unless `RELEASE_QUALITY_REVIEWER_START_DELAY_MS` is explicitly set.
+Reviewer timeout is derived from both the canonical change scale and the locked
+reasoning effort; a large `max` review receives 45 minutes with the default
+15-minute base. If an Agent only hangs during shutdown, a complete packet is
+accepted only after its schema, candidate identity, backend, and model validate.
 
 Trust boundary: the host/orchestrator, pinned Gate code, independent reviewers,
 and report root are trusted; candidate subprocesses and their output are
@@ -150,6 +154,9 @@ authorized or manually captured source, pass a repository-relative
 attribution, `数据来自 Codex 雷达 codexradar.com`, in the round lock. The runner
 does not grant data-usage rights; operators must obtain any authorization that
 Codex Radar requires for derivative integrations before enabling online use.
+The online request times out after 5 seconds and rejects data older than 48
+hours. Radar model, effort, score, and task-count fields are validated before
+anything is logged or locked.
 The runner collects evidence, automatically launches one
 independent process per reviewer, validates their four-file packets, and
 arbitrates the round. Exit `0` is the only approval; exit `1` means the completed
@@ -207,7 +214,9 @@ Troubleshooting:
 
 - Drift failure: run `npm run skill:sync`, inspect the diff, then rerun
   `npm run skill:check-drift`.
-- Exit `4`: correct invalid CLI/profile/path input.
+- Exit `4`: correct invalid CLI/profile/path input. For unavailable, stale, or
+  malformed Radar data, choose an accessible model explicitly and retry, for
+  example `npm run review -- --profile quick --round "$REVIEW_ROUND" --agent codex --model gpt-5.4`.
 - Exit `5`: reviewer launch failed or timed out; verify the local Codex/Claude
   CLI, then rerun the same round. Valid packets resume; malformed or incomplete
   packets are invalidated and relaunched automatically.

@@ -205,7 +205,7 @@ async function collectBaseline() {
 
   // Save baseline
   const baselineFile = join(outputDir, 'baseline.yaml');
-  const baselineYaml = toYaml(baseline);
+  const baselineYaml = JSON.stringify(baseline, null, 2);
   writeFileSync(baselineFile, baselineYaml);
 
   console.log('');
@@ -506,31 +506,6 @@ async function measureScopeAccuracy() {
   } catch {
     return { value: 0, unit: 'unknown' };
   }
-}
-
-/**
- * Convert object to YAML string (simplified)
- */
-function toYaml(obj, indent = 0) {
-  const spaces = '  '.repeat(indent);
-  let result = '';
-
-  for (const [key, value] of Object.entries(obj)) {
-    if (value === null || value === undefined) {
-      result += `${spaces}${key}: null\n`;
-    } else if (typeof value === 'object' && !Array.isArray(value)) {
-      result += `${spaces}${key}:\n${toYaml(value, indent + 1)}`;
-    } else if (Array.isArray(value)) {
-      result += `${spaces}${key}:\n`;
-      for (const item of value) {
-        result += `${spaces}  - ${item}\n`;
-      }
-    } else {
-      result += `${spaces}${key}: ${JSON.stringify(value)}\n`;
-    }
-  }
-
-  return result;
 }
 
 // Run

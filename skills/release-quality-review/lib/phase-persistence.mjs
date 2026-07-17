@@ -1,5 +1,23 @@
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { ensureContainedDirectorySync, writeContainedFileSync } from './security-utils.mjs';
+import { parseYamlResult, validateResultYamlContract } from './review-utils.mjs';
+import { ensureContainedDirectorySync, readContainedFileSync, writeContainedFileSync } from './security-utils.mjs';
+
+export function extractResultScoresFromRound(roundDir) {
+  const scores = [];
+  for (const reviewer of readdirSync(roundDir)) {
+    const reviewerDir = join(roundDir, reviewer);
+    if (!statSync(reviewerDir).isDirectory()) continue;
+    const resultPath = join(reviewerDir, 'result.yaml');
+    if (!existsSync(resultPath)) continue;
+    const content = readContainedFileSync(roundDir, resultPath, 'utf8');
+    const contract = validateResultYamlContract(content);
+    if (!contract.valid) throw new Error(`${reviewer}/result.yaml: ${contract.error}`);
+    const result = parseYamlResult(content);
+    scores.push({ reviewer, score: result.score });
+  }
+  return scores;
+}
 
 export function getReviewerFocus(reviewerName) {
   const focuses = {

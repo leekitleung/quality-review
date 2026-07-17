@@ -44,6 +44,7 @@ import {
   updateMetadataWithScale,
 } from './modules/reports.mjs';
 import { getReviewerFocus, persistPhasePlan } from '../lib/phase-persistence.mjs';
+import { validateReviewModelIdentity } from '../lib/model-selector.mjs';
 
 // Import from utils (already shared)
 import {
@@ -379,8 +380,12 @@ async function runGate() {
       (metadata.review_reasoning_effort ?? null) === (backendLock.reasoning_effort ?? null);
     const selectionIdentityValid = !backendLock.selection ||
       JSON.stringify(metadata.model_selection) === JSON.stringify(backendLock.selection);
-    reviewIdentityValid = ['claude', 'codex'].includes(backendLock.backend) &&
-      typeof backendLock.model === 'string' && backendLock.model.length > 0 &&
+    const lockIdentityValid = validateReviewModelIdentity({
+      backend: backendLock.backend,
+      model: backendLock.model,
+      reasoningEffort: backendLock.reasoning_effort ?? null,
+    }).valid;
+    reviewIdentityValid = lockIdentityValid &&
       metadata.review_backend === backendLock.backend && metadata.review_model === backendLock.model &&
       extendedIdentityValid && selectionIdentityValid;
   } catch {
@@ -538,7 +543,7 @@ async function runGate() {
       }
     }
     if (hasRedlines) log.error('Redlines detected - blocking release');
-    if (!evidenceValidationPassed) log.error('Evidence source validation failed - self-verification detected');
+    if (!evidenceValidationPassed) log.error('Evidence source validation failed');
     if (checkGoalMode && goalModeViolations.length > 0) log.error('Goal mode constraint violated - describing implementation steps instead of final state');
     if (goalRequired && goalInstructionResult && !goalInstructionResult.passed) log.error(`Goal instruction invalid (${goalInstructionResult.score}/100) - contains plan language`);
     if (!artifactCompletenessPassed) log.error('Required agentic Goal, evidence, risk, and handoff artifacts are incomplete');

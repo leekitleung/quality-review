@@ -268,7 +268,7 @@ export function parseBlockers(blockerContent) {
 
     if (/^none(?:\.|\b)/i.test(trimmed) ||
         /^(?:no|none|无).*?(?:p0|p1|blockers?)/i.test(trimmed) ||
-        /^#+\s*(?:P0|P1)\s*$/i.test(trimmed) ||
+        /^#+\s*(?:P0|P1)(?:\s*\/\s*red\s*lines?|\s*\((?:must\s*fix|must\s*fix\s*before\s*release)\))?\s*$/i.test(trimmed) ||
         trimmed.match(/^#\s+.*Blockers$/i)) {
       continue;
     }
@@ -599,6 +599,22 @@ export function detectChangeScale(changedFiles = [], addedLines = 0, deletedLine
     suggestedProfile: profileMap[scale],
     reason,
     requiresAgentic: scale === 'xlarge',
+  };
+}
+
+export function calculateReviewerTimeout(baseTimeoutMs, scale, reasoningEffort = null) {
+  const scaleMultipliers = {
+    none: 0.5, micro: 0.5, small: 0.75, medium: 1, large: 1.5, xlarge: 2,
+  };
+  const effortMultipliers = {
+    minimal: 0.75, low: 1, medium: 1, high: 1.25, xhigh: 1.5, max: 2,
+  };
+  const scaleMultiplier = scaleMultipliers[scale] ?? 1;
+  const effortMultiplier = effortMultipliers[reasoningEffort] ?? 1;
+  return {
+    timeoutMs: Math.round(baseTimeoutMs * scaleMultiplier * effortMultiplier),
+    scaleMultiplier,
+    effortMultiplier,
   };
 }
 

@@ -22,12 +22,18 @@ import { join, relative } from 'path';
 import { execFileSync as nodeExecFileSync, spawn } from 'child_process';
 import { createHash } from 'node:crypto';
 import {
+  calculateReviewerTimeout,
+  detectChangeScale as detectCanonicalChangeScale,
   parseYamlProfile as parseYamlProfileShared, parseYamlResult, selectReviewers,
   validateResultYamlContract,
 } from '../lib/review-utils.mjs';
-import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
+import {
+  extractResultScoresFromRound, persistPhasePlan, persistPhaseResult,
+} from '../lib/phase-persistence.mjs';
 import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
-import { fetchRadarReviewerModel, selectRadarReviewerModel } from '../lib/model-selector.mjs';
+import {
+  fetchRadarReviewerModel, selectRadarReviewerModel, validateReviewModelIdentity,
+} from '../lib/model-selector.mjs';
 import {
   createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
   outerSandboxAttestationFromEnv, readContainedFile, readContainedFileSync, redactSensitiveText,
@@ -55,15 +61,6 @@ const REVIEWER_RETRY_MAX = parseInt(process.env.RELEASE_QUALITY_REVIEWER_RETRY_M
 const RETRY_BASE_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_BASE_DELAY_MS || '1000', 10);
 const RETRY_MAX_JITTER_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_MAX_JITTER_MS || '300', 10);
 const REVIEWER_START_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_REVIEWER_START_DELAY_MS || '0', 10);
-
-// Scale-based timeout multipliers (apply to base REVIEWER_TIMEOUT_MS)
-const SCALE_TIMEOUT_MULTIPLIERS = {
-  micro: 0.5,   // 7.5 minutes
-  small: 0.75,   // ~11 minutes
-  medium: 1.0,   // 15 minutes (default)
-  large: 1.5,    // 22.5 minutes
-  xlarge: 2.0,   // 30 minutes
-};
 
 function parsePositiveDuration(value, fallback) {
   if (value === undefined) return fallback;
@@ -158,15 +155,6 @@ if (!/^[a-z0-9-]+$/.test(profile) || (reviewerOverride && !/^[a-z0-9-]+$/.test(r
   process.exit(4);
 }
 
-function validateAgentModel(agent, selectedModel) {
-  if (!agent || !selectedModel) return 'review backend and model are required';
-  if (!/^[A-Za-z0-9._:/-]{1,128}$/.test(selectedModel)) return 'invalid --model value';
-  const claudeModel = /^(?:claude-|sonnet$|opus$|haiku$)/i.test(selectedModel);
-  if (agent === 'codex' && claudeModel) return `model ${selectedModel} is not valid for codex backend`;
-  if (agent === 'claude' && !claudeModel) return `model ${selectedModel} is not valid for claude backend`;
-  return null;
-}
-
 const explicitModel = model && model !== 'auto' ? model : null;
 if (agentCli && !['claude', 'codex'].includes(agentCli)) {
   console.error('Invalid review agent: must be "claude" or "codex"');
@@ -189,9 +177,11 @@ if (reasoningEffort && (agentCli !== 'codex' || !explicitModel)) {
   process.exit(4);
 }
 if (explicitModel) {
-  const modelError = validateAgentModel(agentCli, explicitModel);
-  if (modelError) {
-    console.error(modelError);
+  const identity = validateReviewModelIdentity({
+    backend: agentCli, model: explicitModel, reasoningEffort: reasoningEffort || null,
+  });
+  if (!identity.valid) {
+    console.error(identity.error === 'invalid review model' ? 'invalid --model value' : identity.error);
     process.exit(4);
   }
 }
@@ -453,119 +443,16 @@ function listFiles(root) {
   return files;
 }
 
-// Detect change scale and suggest appropriate profile
-// Right-size throttle: small changes = minimal ceremony, large changes = full process
-function detectChangeScale(evidence) {
-  const fileCount = evidence.git.changedFiles?.length || 0;
-  const diffLines = evidence.git.diff?.split('\n').length || 0;
+function detectEvidenceChangeScale(evidence) {
+  const changedFiles = evidence.git.changedFiles || [];
   const addedLines = (evidence.git.diff?.match(/^\+[^+]/gm) || []).length;
   const deletedLines = (evidence.git.diff?.match(/^-[^-]/gm) || []).length;
-  const totalLines = addedLines + deletedLines;
-
-  // Check for specific high-impact patterns
-  const changedFiles = evidence.git.changedFiles || [];
-  const hasSecurity = changedFiles.some(f =>
-    f.includes('/auth/') || f.includes('/security/') || f.includes('token')
-  );
-  const hasSchema = changedFiles.some(f =>
-    f.includes('schema') || f.includes('migration') || f.includes('.prisma')
-  );
-  const hasApi = changedFiles.some(f =>
-    f.includes('/api/') || f.includes('route') || f.includes('handler')
-  );
-
-  let scale = 'none';
-  let suggestedProfile = 'quick';
-  let reason = '';
-
-  if (fileCount === 0) {
-    scale = 'none';
-    suggestedProfile = 'quick';
-    reason = 'No changes detected';
-  } else if (fileCount <= 2 && totalLines < 100 && !hasSecurity && !hasSchema) {
-    scale = 'micro';
-    suggestedProfile = 'quick';
-    reason = `${fileCount} files, ${totalLines} lines - micro change`;
-  } else if (fileCount <= 5 && totalLines < 500) {
-    scale = 'small';
-    suggestedProfile = 'quick';
-    reason = `${fileCount} files, ${totalLines} lines - small change`;
-  } else if (fileCount <= 20 && totalLines < 2000) {
-    scale = 'medium';
-    suggestedProfile = 'default';
-    reason = `${fileCount} files, ${totalLines} lines - medium change`;
-  } else if (fileCount <= 50 && totalLines < 5000) {
-    scale = 'large';
-    suggestedProfile = 'release-gate';
-    reason = `${fileCount} files, ${totalLines} lines - large change`;
-  } else {
-    scale = 'xlarge';
-    suggestedProfile = 'full';
-    reason = `${fileCount} files, ${totalLines} lines - xlarge change`;
-  }
-
-  // Security changes always require security review
-  if (hasSecurity && suggestedProfile === 'quick') {
-    suggestedProfile = 'default';
-    reason += ' (security-sensitive files detected, upgraded to default)';
-  }
-
-  // Schema changes always require full review
-  if (hasSchema && suggestedProfile !== 'full') {
-    suggestedProfile = 'release-gate';
-    reason += ' (schema changes detected, upgraded to release-gate)';
-  }
-
-  // API changes with large scale
-  if (hasApi && scale === 'large') {
-    suggestedProfile = 'release-gate';
-    reason += ' (API + large scale, upgraded to release-gate)';
-  }
-
+  const canonical = detectCanonicalChangeScale(changedFiles, addedLines, deletedLines);
   return {
-    scale,
-    suggestedProfile,
-    reason,
-    fileCount,
-    totalLines,
-    hasSecurity,
-    hasSchema,
-    hasApi,
+    ...canonical,
+    fileCount: canonical.files,
+    totalLines: canonical.total,
   };
-}
-
-// Suggest profile based on change scale
-function suggestProfileFromScale(scaleResult) {
-  const { scale, suggestedProfile, reason } = scaleResult;
-
-  const profileMessages = {
-    none: {
-      profile: 'quick',
-      message: 'No changes to review. Consider skipping the review or doing a quick sanity check.',
-    },
-    micro: {
-      profile: 'quick',
-      message: `Micro change detected (${reason}). Quick review sufficient.`,
-    },
-    small: {
-      profile: 'quick',
-      message: `Small change detected (${reason}). Quick review sufficient.`,
-    },
-    medium: {
-      profile: 'default',
-      message: `Medium change detected (${reason}). Standard review recommended.`,
-    },
-    large: {
-      profile: 'release-gate',
-      message: `Large change detected (${reason}). Full release gate required.`,
-    },
-    xlarge: {
-      profile: 'full',
-      message: `XLarge change detected (${reason}). Full review with all reviewers required.`,
-    },
-  };
-
-  return profileMessages[scale] || profileMessages.medium;
 }
 
 // Load config
@@ -790,12 +677,19 @@ async function resolveReviewIdentity(roundDir) {
       failure.exitCode = 4;
       throw failure;
     }
-    return {
+    const identity = {
       backend: existing.backend,
       model: existing.model,
       reasoningEffort: existing.reasoning_effort ?? null,
       selection: existing.selection || { mode: 'legacy-round-lock', selected_by: 'round-lock' },
     };
+    const validation = validateReviewModelIdentity(identity);
+    if (!validation.valid) {
+      const failure = new Error(`invalid review backend lock: ${validation.error}`);
+      failure.exitCode = 4;
+      throw failure;
+    }
+    return identity;
   }
   if (explicitModel) {
     return {
@@ -820,7 +714,10 @@ async function resolveReviewIdentity(roundDir) {
     } else {
       selected = await fetchRadarReviewerModel({ preferLightweight });
     }
-    return { backend: 'codex', ...selected };
+    const identity = { backend: 'codex', ...selected };
+    const validation = validateReviewModelIdentity(identity, { requireReasoningEffort: true });
+    if (!validation.valid) throw new Error(validation.error);
+    return identity;
   } catch (error) {
     const failure = new Error(
       `Codex Radar could not select a reviewer model: ${error.message}. ` +
@@ -832,6 +729,12 @@ async function resolveReviewIdentity(roundDir) {
 }
 
 function bindRoundBackend(roundDir, identity) {
+  const requestedValidation = validateReviewModelIdentity(identity);
+  if (!requestedValidation.valid) {
+    const failure = new Error(`invalid review identity: ${requestedValidation.error}`);
+    failure.exitCode = 4;
+    throw failure;
+  }
   const lockPath = resolveWithinRoot(roundDir, 'review-backend.json', 'review backend lock');
   const record = {
     backend: identity.backend,
@@ -846,6 +749,16 @@ function bindRoundBackend(roundDir, identity) {
     if (error.code !== 'EEXIST') throw error;
   }
   const existing = loadRoundBackendLock(roundDir);
+  const existingValidation = validateReviewModelIdentity({
+    backend: existing.backend,
+    model: existing.model,
+    reasoningEffort: existing.reasoning_effort ?? null,
+  });
+  if (!existingValidation.valid) {
+    const failure = new Error(`invalid review backend lock: ${existingValidation.error}`);
+    failure.exitCode = 4;
+    throw failure;
+  }
   if (!['claude', 'codex'].includes(existing.backend) || existing.backend !== identity.backend) {
     const failure = new Error(`round backend is locked to ${existing.backend || 'invalid'}, cannot use ${identity.backend}`);
     failure.exitCode = 4;
@@ -883,12 +796,6 @@ async function bindRoundMetadata(roundDir, identity) {
   metadata.review_reasoning_effort = identityEffort;
   metadata.model_selection = identity.selection;
   await writeContainedFile(roundDir, metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
-}
-
-// Scale-based timeout calculation
-function getScaledTimeout(scale, baseTimeout = REVIEWER_TIMEOUT_MS) {
-  const multiplier = SCALE_TIMEOUT_MULTIPLIERS[scale] || 1.0;
-  return Math.round(baseTimeout * multiplier);
 }
 
 // Run gate check and return detailed result
@@ -962,34 +869,6 @@ function loadPersistedRoundScope(roundDir) {
   };
 }
 
-// Extract scores from review results
-function extractScoresFromRound(roundDir) {
-  const scores = [];
-  const dirs = readdirSync(roundDir);
-
-  for (const reviewer of dirs) {
-    const reviewerDir = join(roundDir, reviewer);
-    if (!statSync(reviewerDir).isDirectory()) continue;
-
-    const scorePath = join(reviewerDir, 'score.md');
-    if (existsSync(scorePath)) {
-      const content = readFileSync(scorePath, 'utf-8');
-      const match = content.match(/Overall\s+Score[:\s]+(\d+)/);
-      if (match) {
-        scores.push({ reviewer, score: parseInt(match[1], 10) });
-      }
-    }
-  }
-
-  return scores;
-}
-
-// Check if any reviewer failed
-function checkFailedReviewers(roundDir, minScore) {
-  const scores = extractScoresFromRound(roundDir);
-  return scores.filter(s => s.score < minScore);
-}
-
 // Run single review iteration
 async function runSingleReviewIteration(profileConfig, currentRound, onReviewComplete, requestedIdentity) {
   const roundDir = join(REPORT_DIR, `round-${String(currentRound).padStart(3, '0')}`);
@@ -1028,7 +907,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         fileCount: evidence.scale.fileCount ?? evidence.scale.files ?? evidence.git.changedFiles?.length ?? 0,
         totalLines: evidence.scale.totalLines ?? evidence.scale.total ?? 0,
       }
-    : detectChangeScale(evidence);
+    : detectEvidenceChangeScale(evidence);
   evidence.scale = scaleInfo; // Attach scale info to evidence
 
   // Log scale detection result
@@ -1086,13 +965,14 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   const results = [];
   let reviewFailure = null;
   const scale = evidence.scale?.scale || 'medium';
-  const scaledTimeout = getScaledTimeout(scale);
 
   const lockedIdentity = bindRoundBackend(roundDir, requestedIdentity);
   await bindRoundMetadata(roundDir, lockedIdentity);
   const resolvedAgent = lockedIdentity.backend;
   const resolvedModel = lockedIdentity.model;
   const resolvedEffort = lockedIdentity.reasoning_effort ?? null;
+  const timeoutPolicy = calculateReviewerTimeout(REVIEWER_TIMEOUT_MS, scale, resolvedEffort);
+  const scaledTimeout = timeoutPolicy.timeoutMs;
   log.info(`Using agent: ${resolvedAgent}, model: ${resolvedModel}, reasoning effort: ${resolvedEffort || 'backend default'}`);
   const candidateIdentity = getGitInfo();
   const reviewerPrompts = new Map(allReviewers.map(reviewer => [
@@ -1107,7 +987,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     : REVIEWER_START_DELAY_MS;
 
   if (parallel) {
-    log.info(`Execution: parallel, Scale: ${scale}, Timeout: ${scaledTimeout}ms (base: ${REVIEWER_TIMEOUT_MS}ms), Start delay: ${startDelay}ms`);
+    log.info(`Execution: parallel, Scale: ${scale}, Effort: ${resolvedEffort || 'default'}, Timeout: ${scaledTimeout}ms ` +
+      `(base: ${REVIEWER_TIMEOUT_MS}ms, scale x${timeoutPolicy.scaleMultiplier}, effort x${timeoutPolicy.effortMultiplier}), Start delay: ${startDelay}ms`);
     try {
       nodeExecFileSync(resolvedAgent, ['--help'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
     } catch {
@@ -1213,8 +1094,13 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             );
 
             const complete = postValidation.valid;
-            const status = eventStatus || (!aborted && code === 0 && complete ? 'completed' : 'failed');
+            const timedOutWithValidPacket = abortedByTimeout && complete;
+            const status = timedOutWithValidPacket ? 'completed' :
+              (eventStatus || (!aborted && code === 0 && complete ? 'completed' : 'failed'));
             console.log(`  ${status === 'completed' ? c.green + '✓' : c.red + '✗'}${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${status}`);
+            if (!complete && postValidation.reason) {
+              diagnostic = `${diagnostic}\npacket validation failed: ${postValidation.reason}`.slice(-4000);
+            }
             if (status === 'failed' && diagnostic) console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
             innerResolve({ name: reviewer, status, attempt, diagnostic, abortedByTimeout });
           };
@@ -1345,6 +1231,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
 
         let diagnostic = '';
         let settled = false;
+        let timedOut = false;
         let forceTimer = null;
         const retainTail = data => { diagnostic = (diagnostic + data.toString()).slice(-4000); };
         const signalProcessTree = signal => {
@@ -1365,6 +1252,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         };
         const timeoutTimer = setTimeout(() => {
           if (!settled) {
+            timedOut = true;
             diagnostic = `${diagnostic}\n${reviewer} timed out after ${scaledTimeout}ms; sending SIGTERM`.slice(-4000);
             signalProcessTree('SIGTERM');
             forceTimer = setTimeout(() => {
@@ -1404,10 +1292,13 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
         );
 
         const complete = postValidation.valid;
-        if (complete && exitCode === 0) {
+        if (complete && (exitCode === 0 || timedOut)) {
           status = 'completed';
           console.log(`  ${c.green}✓${c.reset} ${reviewer}: completed`);
         } else {
+          if (!complete && postValidation.reason) {
+            diagnostic = `${diagnostic}\npacket validation failed: ${postValidation.reason}`.slice(-4000);
+          }
           if (diagnostic) {
             console.log(`  ${c.red}✗${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-300)}`);
           } else {
@@ -1448,7 +1339,8 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       enabled: parallel,
       baseTimeout: REVIEWER_TIMEOUT_MS,
       scaledTimeout: scaledTimeout,
-      scaleMultiplier: SCALE_TIMEOUT_MULTIPLIERS[scale],
+      scaleMultiplier: timeoutPolicy.scaleMultiplier,
+      effortMultiplier: timeoutPolicy.effortMultiplier,
       retryMax: REVIEWER_RETRY_MAX,
     },
     evidence: {
@@ -1521,7 +1413,7 @@ async function main() {
   const gateResult = runGateCheck(roundDir, profile, effectiveRound);
 
   // Persist phase result AFTER gate check
-  const scores = extractScoresFromRound(roundDir);
+  const scores = extractResultScoresFromRound(roundDir);
   const scoresObj = {};
   scores.forEach(s => { scoresObj[s.reviewer] = s.score; });
   const failedReviewers = scores.filter(s => s.score < minScore);

@@ -5,9 +5,32 @@ export const RADAR_ATTRIBUTION = '数据来自 Codex 雷达 codexradar.com';
 export const DEFAULT_RADAR_MAX_AGE_HOURS = 48;
 
 const LIGHTWEIGHT_EFFORTS = new Set(['low', 'medium']);
+export const REVIEW_REASONING_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 const EFFORT_RANK = new Map([
   ['minimal', 0], ['low', 1], ['medium', 2], ['high', 3], ['xhigh', 4], ['max', 5],
 ]);
+
+export function validateReviewModelIdentity({ backend, model, reasoningEffort = null }, {
+  requireReasoningEffort = false,
+} = {}) {
+  if (!['claude', 'codex'].includes(backend)) return { valid: false, error: 'invalid review backend' };
+  if (typeof model !== 'string' || !/^[A-Za-z0-9._:/-]{1,128}$/.test(model)) {
+    return { valid: false, error: 'invalid review model' };
+  }
+  const claudeModel = /^(?:claude-|sonnet$|opus$|haiku$)/i.test(model);
+  if (backend === 'codex' && claudeModel) return { valid: false, error: `model ${model} is not valid for codex backend` };
+  if (backend === 'claude' && !claudeModel) return { valid: false, error: `model ${model} is not valid for claude backend` };
+  if (reasoningEffort !== null && !REVIEW_REASONING_EFFORTS.has(reasoningEffort)) {
+    return { valid: false, error: 'invalid review reasoning effort' };
+  }
+  if (backend === 'claude' && reasoningEffort !== null) {
+    return { valid: false, error: 'Claude review identity cannot set Codex reasoning effort' };
+  }
+  if (backend === 'codex' && requireReasoningEffort && reasoningEffort === null) {
+    return { valid: false, error: 'Codex Radar identity is missing reasoning effort' };
+  }
+  return { valid: true, error: null };
+}
 
 function median(values) {
   const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
@@ -22,8 +45,12 @@ function candidateFromEntry(key, entry) {
   const reasoningEffort = latest?.reasoning_effort || entry?.reasoning_effort;
   const score = Number(latest?.score);
   const validTasks = Number(latest?.valid_tasks ?? (Number(latest?.tasks) - Number(latest?.invalid || 0)));
-  if (typeof model !== 'string' || !/^(?:gpt-|o\d|codex)/i.test(model) ||
-      typeof reasoningEffort !== 'string' || !Number.isFinite(score) || validTasks < 10) return null;
+  const identity = validateReviewModelIdentity(
+    { backend: 'codex', model, reasoningEffort },
+    { requireReasoningEffort: true },
+  );
+  if (!identity.valid || !/^(?:gpt-|o\d|codex)/i.test(model) ||
+      !Number.isFinite(score) || !Number.isInteger(validTasks) || validTasks < 10) return null;
   const recentScores = (entry?.recent_days || []).slice(-3).map(item => Number(item?.score));
   return {
     key,
@@ -126,7 +153,12 @@ export async function fetchRadarReviewerModel({
     throw new Error(`Radar request failed: ${error.message}`);
   }
   if (!response?.ok) throw new Error(`Radar request failed with HTTP ${response?.status ?? 'unknown'}`);
-  const body = await response.text();
+  let body;
+  try {
+    body = await response.text();
+  } catch (error) {
+    throw new Error(`Radar response body failed: ${error.message}`);
+  }
   let snapshot;
   try {
     snapshot = JSON.parse(body);

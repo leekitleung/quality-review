@@ -4,7 +4,7 @@ const COMMAND_PATTERN = /\b(?:pnpm|npm|yarn)\s+(?:run\s+)?[a-zA-Z0-9:._-]+(?:\s+
 const EXIT_ZERO_PATTERN = /\b(?:exit(?:ed|_code)?|return(?:ed)?|status)\s*(?:code)?\s*[:=]?\s*`?0\b/i;
 const OUTPUT_SUMMARY_PATTERN = /#\s*(?:tests|pass|fail|skipped)\s+\d+|\b\d+\s+(?:passed|failed|skipped)\b|found\s+0\s+vulnerabilities|in sync\s*\(\d+\s+adapters\)|operation not permitted/i;
 
-const FILE_LINE_PATTERN = /`?((?:\/|\.\.?\/)?[A-Za-z0-9_.][A-Za-z0-9_./\\-]*\.(?:ts|tsx|js|jsx|mjs)):(\d+)`?/g;
+const FILE_LINE_PATTERN = /`?((?:\/|\.\.?\/)?[A-Za-z0-9_.][A-Za-z0-9_./\\-]*\.(?:ts|tsx|js|jsx|mjs|md|json|ya?ml)):(\d+)`?/g;
 
 export function extractFileLineReferences(content) {
   const refs = [];
@@ -61,5 +61,53 @@ export function checkMissingEvidenceOutput(content) {
     }
   }
 
+  return violations;
+}
+
+function findingKeys(finding) {
+  const text = String(finding || '').replace(/^['"]|['"]$/g, '');
+  const identifiers = text.match(/\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b/g) || [];
+  if (identifiers.length > 0) return [...new Set(identifiers)];
+  const description = text.replace(/^P[01]\s*[:：-]?\s*/i, '').trim();
+  return description.length >= 12 ? [description.slice(0, 48)] : [];
+}
+
+function markdownSections(content) {
+  const sections = [];
+  let current = null;
+  for (const line of String(content || '').split('\n')) {
+    if (/^#{2,6}\s+/.test(line)) {
+      if (current) sections.push(current);
+      current = line;
+    } else if (current) {
+      current += `\n${line}`;
+    }
+  }
+  if (current) sections.push(current);
+  return sections;
+}
+
+export function checkFindingEvidenceBindings(findings, blockersContent) {
+  const violations = [];
+  const sections = markdownSections(blockersContent);
+  for (const finding of findings || []) {
+    const keys = findingKeys(finding);
+    const section = sections.find(candidate => keys.some(key => candidate.includes(key)));
+    if (!section) {
+      violations.push({
+        type: 'missing_finding_section',
+        desc: `未找到与 finding 绑定的 blockers.md 章节: ${String(finding).slice(0, 120)}`,
+      });
+      continue;
+    }
+    const evidenceCount = extractFileLineReferences(section).length +
+      extractCommandEvidence(section).length + extractTestOutputs(section).length;
+    if (evidenceCount === 0) {
+      violations.push({
+        type: 'unbound_finding_evidence',
+        desc: `finding 章节没有 file:line、结构化命令或测试证据: ${String(finding).slice(0, 120)}`,
+      });
+    }
+  }
   return violations;
 }

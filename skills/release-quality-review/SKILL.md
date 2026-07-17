@@ -351,6 +351,10 @@ Codex round 不得使用 Claude backend/model，Claude round 不得使用 Codex 
 模型或 effort 漂移同样失败。`--parallel`
 默认不限制并发量且不延迟启动；只有显式设置
 `RELEASE_QUALITY_REVIEWER_START_DELAY_MS` 才会错峰启动。
+在线 Radar 请求默认 5 秒超时，只接受 48 小时内的数据；model、effort、IQ 和有效任务数
+在写锁前统一校验。Reviewer timeout 同时乘以 canonical change scale 和锁定 effort；默认配置下
+large/max 为 45 分钟。Agent 仅在退出收尾阶段超时时，只有通过 schema、candidate identity 和
+backend/model 校验的完整四文件 packet 才可视为完成。
 
 **环境变量配置**:
 ```bash

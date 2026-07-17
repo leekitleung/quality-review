@@ -24,6 +24,7 @@ import {
   parseScore,
   parseBlockers,
   parseYamlResult,
+  calculateReviewerTimeout,
   detectChangeScale,
   parseYamlProfile,
   matchesTriggerConditions,
@@ -54,16 +55,21 @@ import {
   writeContainedFileSync,
   writeContainedFile,
 } from '../lib/security-utils.mjs';
-import { persistPhasePlan, persistPhaseResult } from '../lib/phase-persistence.mjs';
 import {
-  checkMissingEvidenceOutput, extractCommandEvidence, extractFileLineReferences, extractTestOutputs,
+  extractResultScoresFromRound, persistPhasePlan, persistPhaseResult,
+} from '../lib/phase-persistence.mjs';
+import {
+  checkFindingEvidenceBindings, checkMissingEvidenceOutput, extractCommandEvidence,
+  extractFileLineReferences, extractTestOutputs,
   resolveFileReference,
 } from '../lib/evidence-utils.mjs';
 import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
 import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
 import { collectEvidence, prepareTrustedAuditWorkspace, runAutomatedChecks, runEvidenceCommand } from '../scripts/modules/evidence.mjs';
 import { createCandidateRuntime, validateCandidateCheckoutIdentity } from '../lib/candidate-runtime.mjs';
-import { extractRadarCandidates, selectRadarReviewerModel } from '../lib/model-selector.mjs';
+import {
+  extractRadarCandidates, fetchRadarReviewerModel, selectRadarReviewerModel,
+} from '../lib/model-selector.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const SKILL_DIR = join(__dirname, '..');
@@ -111,6 +117,16 @@ function assertTrue(condition, message) {
   if (!condition) {
     throw new Error(message);
   }
+}
+
+async function assertRejects(promise, expectedMessage) {
+  let message = '';
+  try {
+    await promise;
+  } catch (error) {
+    message = error.message;
+  }
+  assertTrue(message.includes(expectedMessage), `Expected rejection containing ${expectedMessage}, got ${message}`);
 }
 
 // ============================================================================
@@ -382,6 +398,15 @@ test.describe('gate change-scale module', () => {
   });
 });
 
+test('reviewer timeout accounts for canonical scale and locked reasoning effort', () => {
+  const base = 15 * 60 * 1000;
+  assertEqual(calculateReviewerTimeout(base, 'medium', 'low').timeoutMs, base);
+  const highAssurance = calculateReviewerTimeout(base, 'large', 'max');
+  assertEqual(highAssurance.scaleMultiplier, 1.5);
+  assertEqual(highAssurance.effortMultiplier, 2);
+  assertEqual(highAssurance.timeoutMs, 45 * 60 * 1000);
+});
+
 test.describe('gate CLI and filesystem helpers', () => {
   test('distinguishes real directories from files and missing paths', () => {
     const directory = join(TEST_DIR, 'real-directory');
@@ -590,7 +615,7 @@ test.describe('Radar reviewer model selection', () => {
     assertEqual(selected.model, 'gpt-stable');
   });
 
-  test('rejects stale snapshots and candidates without ten valid tasks', () => {
+  test('rejects stale snapshots and malformed candidate identities', () => {
     let staleError = '';
     try {
       selectRadarReviewerModel(radarSnapshot({}, '2026-07-01T00:00:00Z'), { now });
@@ -598,16 +623,44 @@ test.describe('Radar reviewer model selection', () => {
       staleError = error.message;
     }
     assertTrue(staleError.includes('stale'));
-    const invalid = radarSnapshot({ bad: {
-      model: 'gpt-bad', latest: { model: 'gpt-bad', reasoning_effort: 'low', score: 150, valid_tasks: 9 },
-    } });
-    let candidateError = '';
-    try {
-      selectRadarReviewerModel(invalid, { now });
-    } catch (error) {
-      candidateError = error.message;
+    for (const latest of [
+      { model: 'gpt-low-sample', reasoning_effort: 'low', score: 150, valid_tasks: 9 },
+      { model: 'gpt-missing-sample', reasoning_effort: 'low', score: 150 },
+      { model: 'gpt-invalid-effort', reasoning_effort: 'extreme', score: 150, valid_tasks: 10 },
+      { model: 'gpt-control\u001b]0;title\u0007', reasoning_effort: 'low', score: 150, valid_tasks: 10 },
+    ]) {
+      let candidateError = '';
+      try {
+        selectRadarReviewerModel(radarSnapshot({ bad: { model: latest.model, latest } }), { now });
+      } catch (error) {
+        candidateError = error.message;
+      }
+      assertTrue(candidateError.includes('no usable Codex model'), JSON.stringify(latest));
     }
-    assertTrue(candidateError.includes('no usable Codex model'));
+  });
+
+  test('fetches, hashes, and validates the online Radar response', async () => {
+    const body = JSON.stringify(radarSnapshot({
+      valid: entry('gpt-online', 'medium', 120),
+    }, now.toISOString()));
+    const selected = await fetchRadarReviewerModel({
+      now,
+      fetchImpl: async () => ({ ok: true, text: async () => body }),
+    });
+    assertEqual(selected.model, 'gpt-online');
+    assertEqual(selected.selection.snapshot_sha256, createHash('sha256').update(body).digest('hex'));
+
+    for (const [fetchImpl, expected] of [
+      [async () => { throw new Error('offline'); }, 'Radar request failed: offline'],
+      [async () => ({ ok: false, status: 503 }), 'HTTP 503'],
+      [async () => ({ ok: true, text: async () => { throw new Error('body failed'); } }), 'body failed'],
+      [async () => ({ ok: true, text: async () => '{invalid' }), 'not valid JSON'],
+    ]) {
+      await assertRejects(
+        fetchRadarReviewerModel({ now, fetchImpl }),
+        expected,
+      );
+    }
   });
 });
 
@@ -677,6 +730,31 @@ test.describe('persistPhaseResult', () => {
     assertTrue(content.includes('destructive-qa'), 'Should list failed reviewer');
     assertTrue(content.includes('75/100'), 'Should show score');
   });
+});
+
+test('phase score extraction uses the strict result packet, not score.md display text', () => {
+  const roundDir = join(TEST_DIR, 'phase-result-score-source');
+  const reviewerDir = join(roundDir, 'product-flow');
+  mkdirSync(reviewerDir, { recursive: true });
+  writeFileSync(join(reviewerDir, 'result.yaml'), [
+    'reviewer: product-flow',
+    'profile: quick',
+    'round: 1',
+    `candidate_commit: ${'1'.repeat(40)}`,
+    `candidate_tree: ${'2'.repeat(40)}`,
+    'score: 95',
+    'status: pass',
+    'review_backend: codex',
+    `review_model: ${TEST_CODEX_MODEL}`,
+    'blockers: []',
+    'redlines: []',
+    '',
+  ].join('\n'));
+  writeFileSync(join(reviewerDir, 'score.md'), '## 总分: 12/100\n');
+
+  assertEqual(JSON.stringify(extractResultScoresFromRound(roundDir)), JSON.stringify([
+    { reviewer: 'product-flow', score: 95 },
+  ]));
 });
 
 // ============================================================================
@@ -1119,6 +1197,9 @@ test.describe('fail-closed result parsing', () => {
 test.describe('no-blocker parsing', () => {
   test('does not treat canonical empty P0/P1 sections as vetoes', () => {
     assertEqual(parseBlockers('# Blockers\n\n## P0\nNone.\n\n## P1\nNone.\n').length, 0);
+    for (const heading of [
+      '## P0 (Must Fix)', '## P1 (Must Fix Before Release)', '## P0 / Red Lines',
+    ]) assertEqual(parseBlockers(`${heading}\nNone.\n`).length, 0, heading);
   });
 
   test('accepts case-insensitive no-blocker sentences', () => {
@@ -1133,6 +1214,21 @@ test.describe('no-blocker parsing', () => {
     }
     assertEqual(parseBlockers('- [ ] Overall score >= 90\n- [x] No P0/P1 blocker\n').length, 0);
   });
+});
+
+test('binds every machine blocker and redline to evidence in its own Markdown section', () => {
+  const unrelated = [1, 2, 3, 4, 5]
+    .map(line => `skills/release-quality-review/lib/review-utils.mjs:${line}`)
+    .join('\n');
+  const finding = 'P1 DQA-TEST-P1-01: unsafe identity';
+  assertEqual(checkFindingEvidenceBindings(
+    [finding],
+    `## Unrelated evidence\n${unrelated}\n\n## DQA-TEST-P1-01\nUnsafe identity is claimed without evidence.\n`,
+  ).length, 1);
+  assertEqual(checkFindingEvidenceBindings(
+    [finding],
+    '## DQA-TEST-P1-01\nEvidence: skills/release-quality-review/lib/model-selector.mjs:20\n',
+  ).length, 0);
 });
 
 test.describe('conditional reviewer triggers', () => {
@@ -1248,6 +1344,10 @@ test.describe('conditional reviewer triggers', () => {
     assertTrue(runner.includes('selectReviewers('), 'Runner must use shared selection');
     assertTrue(gate.includes('selectReviewers('), 'Gate must use shared selection');
     assertTrue(!runner.includes('function detectConditionalReviewers('), 'Runner must not retain divergent selection');
+    assertTrue(runner.includes('detectChangeScale as detectCanonicalChangeScale'),
+      'Runner must import canonical change-scale detection');
+    assertTrue(!runner.includes('function detectChangeScale(evidence)'),
+      'Runner must not retain divergent change-scale thresholds');
   });
 
   test('runner and gate dry runs select the same reviewers for the current diff', () => {
@@ -1298,6 +1398,8 @@ test.describe('CLI fail-closed integration', () => {
         join(clone, 'skills/release-quality-review/lib/security-utils.mjs'));
       copyFileSync(join(SKILL_DIR, 'lib', 'review-utils.mjs'),
         join(clone, 'skills/release-quality-review/lib/review-utils.mjs'));
+      copyFileSync(join(SKILL_DIR, 'lib', 'model-selector.mjs'),
+        join(clone, 'skills/release-quality-review/lib/model-selector.mjs'));
       mkdirSync(external);
       rmSync(join(clone, 'quality-reports'), { recursive: true, force: true });
       symlinkSync(external, join(clone, 'quality-reports'), 'dir');
@@ -1479,6 +1581,18 @@ test.describe('CLI fail-closed integration', () => {
     ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000 });
     assertEqual(escapedSnapshot.status, 4, `${escapedSnapshot.stdout}${escapedSnapshot.stderr}`);
     assertTrue(escapedSnapshot.stderr.includes('main agent must choose a model'));
+    writeFileSync(snapshotPath, JSON.stringify(radarSnapshot({ malformed: {
+      model: TEST_CODEX_MODEL,
+      latest: {
+        model: TEST_CODEX_MODEL, reasoning_effort: 'extreme', score: 150, valid_tasks: 10,
+      },
+    } }, new Date().toISOString())));
+    const malformedSnapshot = spawnSync('node', [
+      runner, '--profile', 'quick', '--dry-run', '--agent', 'codex',
+      '--radar-snapshot', relative(PROJECT_ROOT, snapshotPath),
+    ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000 });
+    assertEqual(malformedSnapshot.status, 4, `${malformedSnapshot.stdout}${malformedSnapshot.stderr}`);
+    assertTrue(malformedSnapshot.stderr.includes('main agent must choose a model'));
     for (const [args, expected] of [
       [['--model', TEST_CODEX_MODEL], 'require explicit --agent'],
       [['--agent', 'claude'], 'claude reviews require explicit --model'],
@@ -1814,6 +1928,46 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         'Runner must preserve reviewer-authored artifacts');
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
       assertEqual(existsSync(leakMarker), false, 'Successful reviewers must not leave descendants alive');
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
+  });
+
+  test('parallel runner accepts a valid packet when the Agent only hangs during shutdown', () => {
+    const roundNumber = TEST_ROUNDS.parallelSuccess + 300;
+    const round = reportRound(roundNumber);
+    const fakeBin = join(TEST_DIR, 'fake-bin-valid-timeout');
+    try {
+      mkdirSync(fakeBin);
+      const fakeCodex = join(fakeBin, 'codex');
+      const reviewerDir = join(round, 'product-flow');
+      const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+      const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+      writeFileSync(fakeCodex, `#!/usr/bin/env node
+if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
+const fs = process.getBuiltinModule('node:fs');
+fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '## Overall Score: 95/100\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, 'No P0/P1 blockers.\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
+setInterval(() => {}, 1000);
+`);
+      chmodSync(fakeCodex, 0o755);
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL, '--reviewer', 'product-flow',
+        '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
+        env: {
+          ...process.env, PATH: `${fakeBin}:${process.env.PATH}`,
+          RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '100', RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+          RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0', RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
+        },
+      });
+      assertEqual(result.status, 1, `Valid timed-out packet must reach Gate instead of exit 5: ${result.stdout}${result.stderr}`);
+      assertTrue(result.stdout.includes('product-flow: completed'), result.stdout);
     } finally {
       rmSync(round, { recursive: true, force: true });
     }
@@ -2257,7 +2411,7 @@ console.log('review completed');
         env: { ...process.env, PATH: `${fakeBin}:${process.env.PATH}` },
       });
       assertEqual(legacyLock.status, 4, `${legacyLock.stdout}${legacyLock.stderr}`);
-      assertTrue(legacyLock.stderr.includes('round model is locked to invalid'));
+      assertTrue(legacyLock.stderr.includes('invalid review backend lock'));
       writeFileSync(join(round, 'review-backend.json'), JSON.stringify({ backend: 'codex', model: TEST_CODEX_MODEL }));
       const rerun = spawnSync('node', [
         join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick',
@@ -2598,6 +2752,7 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
         'skills/release-quality-review/scripts/evidence-validator.mjs',
         'skills/release-quality-review/lib/review-utils.mjs',
         'skills/release-quality-review/lib/evidence-utils.mjs',
+        'skills/release-quality-review/lib/model-selector.mjs',
         'skills/release-quality-review/lib/candidate-runtime.mjs',
         'skills/release-quality-review/lib/security-utils.mjs',
         'skills/release-quality-review/review-config.yaml',

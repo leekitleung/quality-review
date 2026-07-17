@@ -17,9 +17,9 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, cpSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { execSync } from 'child_process';
-import { load as yamlLoad, dump as yamlDump } from 'js-yaml';
-const toYaml = yamlDump;
+import { execFileSync, execSync } from 'child_process';
+
+const toYaml = value => JSON.stringify(value, null, 2);
 
 // Scripts are designed to run from project root via: node skills/.../script.mjs
 // Use process.cwd() as the reliable project root
@@ -123,6 +123,11 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
+if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(profile)) {
+  console.error('Invalid --profile: use lowercase letters, digits, and hyphens only');
+  process.exit(4);
+}
+
 if (!hypothesis) {
   console.error('Error: --hypothesis <name> is required');
   console.error('Usage: node experiment-runner.mjs --hypothesis improve-cli-help-text [--profile project-quality] [--dry-run]');
@@ -181,15 +186,17 @@ const baselineFile = join(EXPERIMENT_LOGS, 'baseline.yaml');
 if (!existsSync(baselineFile)) {
   console.warn('⚠️  No baseline found. Run baseline-collector.mjs first.');
   console.warn('   Creating baseline now...');
-  execSync(`node skills/deep-optimization-lab/scripts/baseline-collector.mjs --profile ${profile}`, { stdio: 'inherit', cwd: PROJECT_ROOT });
+  execFileSync(process.execPath, [
+    'skills/deep-optimization-lab/scripts/baseline-collector.mjs', '--profile', profile,
+  ], { stdio: 'inherit', cwd: PROJECT_ROOT });
 }
 
 // Load baseline
 let baseline;
 try {
-  baseline = yamlLoad(readFileSync(baselineFile, 'utf-8'));
+  baseline = JSON.parse(readFileSync(baselineFile, 'utf-8'));
 } catch {
-  console.error('Error: Could not load baseline.yaml');
+  console.error('Error: Could not load baseline.yaml; rerun baseline-collector.mjs');
   process.exit(1);
 }
 

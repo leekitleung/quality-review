@@ -161,6 +161,10 @@ node skills/deep-optimization-lab/scripts/experiment-runner.mjs --hypothesis "im
 node skills/deep-optimization-lab/scripts/decision-log.mjs --show
 ```
 
+Profile names accept lowercase letters, digits, and hyphens only. Baseline and
+decision `.yaml` files use JSON syntax, which is valid YAML 1.2 and requires no
+external YAML package.
+
 ### Integration with release-quality-review
 ```bash
 # After release gate passes:
