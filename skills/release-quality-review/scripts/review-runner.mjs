@@ -637,6 +637,23 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function isPermanentAgentFailure(diagnostic) {
+  const message = String(diagnostic || '').toLowerCase();
+  const httpStatus = message.match(/\b(?:http(?:\/\d(?:\.\d)?)?\s*)?([45]\d\d)\b/);
+  if (httpStatus) {
+    const status = Number(httpStatus[1]);
+    if (status >= 400 && status < 500 && ![408, 425, 429].includes(status)) return true;
+  }
+  return [
+    /\binsufficient(?:_|\s)+(?:balance|quota|credits?)\b/,
+    /\b(?:invalid|incorrect|missing|expired|revoked)(?:_|\s)+(?:api(?:_|\s)+)?key\b/,
+    /\b(?:authentication failed|account (?:deactivated|disabled)|billing (?:error|required))\b/,
+    /\b(?:model|deployment)\b.{0,80}\b(?:does not exist|invalid|not found|unsupported|unavailable)\b/,
+    /\b(?:invalid|unknown|unsupported)\b.{0,40}\bmodel\b/,
+    /\b(?:enoent|command not found)\b/,
+  ].some(pattern => pattern.test(message));
+}
+
 function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
   if (agent === 'claude') {
     return {
@@ -1154,6 +1171,12 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
           return;
         }
 
+        if (isPermanentAgentFailure(lastError)) {
+          log.warn(`  ${reviewer}: not retrying permanent Agent failure`);
+          resolve({ ...result, permanentFailure: true });
+          return;
+        }
+
         // If not the last attempt, retry
         if (attempt <= REVIEWER_RETRY_MAX) {
           continue;
@@ -1305,6 +1328,10 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
             console.log(`  ${c.red}✗${c.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: failed (exit ${exitCode})`);
           }
           lastError = diagnostic;
+          if (isPermanentAgentFailure(lastError)) {
+            log.warn(`  ${reviewer}: not retrying permanent Agent failure`);
+            break;
+          }
         }
       }
 

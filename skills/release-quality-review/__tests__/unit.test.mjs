@@ -1973,6 +1973,94 @@ setInterval(() => {}, 1000);
     }
   });
 
+  for (const parallel of [true, false]) {
+    test(`${parallel ? 'parallel' : 'sequential'} runner does not retry permanent Agent failures`, () => {
+      const roundNumber = TEST_ROUNDS.parallelSuccess + (parallel ? 400 : 401);
+      const round = reportRound(roundNumber);
+      const fakeBin = join(TEST_DIR, `fake-bin-permanent-failure-${parallel ? 'parallel' : 'sequential'}`);
+      const invocationMarker = join(TEST_DIR, `permanent-failure-invocations-${parallel ? 'parallel' : 'sequential'}`);
+      try {
+        mkdirSync(fakeBin);
+        const fakeCodex = join(fakeBin, 'codex');
+        writeFileSync(fakeCodex, `#!/usr/bin/env node
+if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
+const fs = process.getBuiltinModule('node:fs');
+fs.appendFileSync(${JSON.stringify(invocationMarker)}, 'called\\n');
+console.error('403 Forbidden: insufficient balance');
+process.exit(1);
+`);
+        chmodSync(fakeCodex, 0o755);
+        const args = [
+          join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick',
+          '--agent', 'codex', '--model', TEST_CODEX_MODEL,
+          '--reviewer', 'product-flow', '--round', String(roundNumber), '--skip-evidence',
+        ];
+        if (parallel) args.push('--parallel');
+        const result = spawnSync('node', args, {
+          cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
+          env: {
+            ...process.env, PATH: `${fakeBin}:${process.env.PATH}`,
+            RELEASE_QUALITY_REVIEWER_RETRY_MAX: '2', RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
+            RELEASE_QUALITY_RETRY_BASE_DELAY_MS: '1', RELEASE_QUALITY_RETRY_MAX_JITTER_MS: '0',
+          },
+        });
+        assertEqual(result.status, 5, `Expected Agent failure, output: ${result.stdout}${result.stderr}`);
+        assertEqual(readFileSync(invocationMarker, 'utf8').trim().split('\\n').length, 1,
+          `Permanent failures must launch the reviewer once: ${result.stdout}${result.stderr}`);
+        assertTrue(result.stdout.includes('not retrying permanent Agent failure'),
+          `Expected explicit retry decision: ${result.stdout}${result.stderr}`);
+      } finally {
+        rmSync(round, { recursive: true, force: true });
+      }
+    });
+  }
+
+  test('parallel runner retries a transient Agent failure', () => {
+    const roundNumber = TEST_ROUNDS.parallelSuccess + 402;
+    const round = reportRound(roundNumber);
+    const fakeBin = join(TEST_DIR, 'fake-bin-transient-failure');
+    const invocationMarker = join(TEST_DIR, 'transient-failure-invocations');
+    try {
+      mkdirSync(fakeBin);
+      const fakeCodex = join(fakeBin, 'codex');
+      const reviewerDir = join(round, 'product-flow');
+      const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+      const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+      writeFileSync(fakeCodex, `#!/usr/bin/env node
+if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
+const fs = process.getBuiltinModule('node:fs');
+fs.appendFileSync(${JSON.stringify(invocationMarker)}, 'called\\n');
+if (fs.readFileSync(${JSON.stringify(invocationMarker)}, 'utf8').trim().split('\\n').length === 1) {
+  console.error('429 Too Many Requests');
+  process.exit(1);
+}
+fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '## Overall Score: 95/100\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, 'No P0/P1 blockers.\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
+`);
+      chmodSync(fakeCodex, 0o755);
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL,
+        '--reviewer', 'product-flow', '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
+        env: {
+          ...process.env, PATH: `${fakeBin}:${process.env.PATH}`,
+          RELEASE_QUALITY_REVIEWER_RETRY_MAX: '2', RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
+          RELEASE_QUALITY_RETRY_BASE_DELAY_MS: '1', RELEASE_QUALITY_RETRY_MAX_JITTER_MS: '0',
+        },
+      });
+      assertEqual(result.status, 1, `Valid packet must reach the failing Gate, output: ${result.stdout}${result.stderr}`);
+      assertTrue(result.stdout.includes('Retry 1/2 for product-flow'), result.stdout);
+      assertTrue(result.stdout.includes('product-flow (attempt 2): completed'), result.stdout);
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
+  });
+
   test('sequential runner terminates hung reviewer descendants', () => {
     const roundNumber = TEST_ROUNDS.parallelSuccess + 100;
     const round = reportRound(roundNumber);

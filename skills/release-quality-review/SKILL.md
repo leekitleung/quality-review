@@ -337,7 +337,7 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 | 特性 | 描述 |
 |------|------|
 | **规模适配超时** | 根据变更规模自动调整超时时间，避免大变更超时 |
-| **重试机制** | 失败时自动重试（最多 2 次），使用指数退避 |
+| **重试机制** | 临时失败自动重试（最多 2 次），使用指数退避；确定性失败立即停止 |
 | **断点续传** | 已完成的 Reviewer 结果会被保留，避免重复工作 |
 | **并行执行元数据** | 记录执行时间和状态，便于诊断问题 |
 
@@ -354,12 +354,13 @@ Codex round 不得使用 Claude backend/model，Claude round 不得使用 Codex 
 在线 Radar 请求默认 5 秒超时，只接受 48 小时内的数据；model、effort、IQ 和有效任务数
 在写锁前统一校验。Reviewer timeout 同时乘以 canonical change scale 和锁定 effort；默认配置下
 large/max 为 45 分钟。Agent 仅在退出收尾阶段超时时，只有通过 schema、candidate identity 和
-backend/model 校验的完整四文件 packet 才可视为完成。
+backend/model 校验的完整四文件 packet 才可视为完成。HTTP 4xx（408/425/429 除外）、认证、
+余额/配额、无效模型和 CLI 缺失等确定性错误不会重试；限流和服务端错误仍按配置重试。
 
 **环境变量配置**:
 ```bash
 RELEASE_QUALITY_REVIEWER_TIMEOUT_MS=900000   # 默认 15 分钟
-RELEASE_QUALITY_REVIEWER_RETRY_MAX=2         # 默认重试 2 次
+RELEASE_QUALITY_REVIEWER_RETRY_MAX=2         # 临时失败默认重试 2 次
 ```
 
 **resume 支持**: 当评审中断后恢复时，已完成 Reviewer 的结果会被跳过，直接继续未完成的 Reviewer。

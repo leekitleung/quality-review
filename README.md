@@ -218,8 +218,11 @@ Troubleshooting:
   malformed Radar data, choose an accessible model explicitly and retry, for
   example `npm run review -- --profile quick --round "$REVIEW_ROUND" --agent codex --model gpt-5.4`.
 - Exit `5`: reviewer launch failed or timed out; verify the local Codex/Claude
-  CLI, then rerun the same round. Valid packets resume; malformed or incomplete
-  packets are invalidated and relaunched automatically.
+  CLI, then rerun the same round. Transient failures such as rate limits and
+  server errors use exponential-backoff retries. Authentication, balance/quota,
+  unavailable-model, other permanent HTTP 4xx, and missing-CLI failures stop
+  immediately. Valid packets resume; malformed or incomplete packets are
+  invalidated and relaunched automatically.
 - Exit `1`: inspect `summary.md`; scores below 90, P0/P1 blockers, or failed
   evidence require a fix and a fresh round.
 - Missing packet files: every reviewer directory needs `result.yaml`,
