@@ -13,3 +13,4 @@
 - Remove mutable report-root globals, recognize labeled empty severity headings and TAP label summaries, bind machine findings to Markdown sections, and surface sandbox recovery at the point of failure.
 - Make the Gate the sole production evidence collector, require command evidence for passing reviewer packets, and bootstrap deep-optimization baselines in clean workspaces.
 - Bind actual Runner launches to the Gate-owned reviewer selection persisted for the same candidate and round.
+- Keep evidence startup, Git identity reads, metadata loading, and final Gate arbitration asynchronous; reject passing reviewer packets without structured command evidence before accepting an attempt; and cover collector-level sandbox startup recovery.

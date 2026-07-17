@@ -38,9 +38,10 @@ export function prepareTrustedAuditWorkspace(candidateRoot, isolatedHome) {
  * @param {string} diffBase - Git reference for diff
  * @param {string} resolvedDiffBase - Resolved diff base
  * @param {string} skillDir - Skill directory
+ * @param {Function} gitExecFile - Injectable Git executor for failure-path tests
  * @returns {object} Collected evidence
  */
-export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase, skillDir) {
+export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase, skillDir, gitExecFile = execFileSync) {
   log.info('Collecting evidence...');
 
   const evidence = {
@@ -52,10 +53,10 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
 
   // Git info
   try {
-    const changedFiles = execFileSync('git', ['diff', '--name-only', resolvedDiffBase], {
+    const changedFiles = gitExecFile('git', ['diff', '--name-only', resolvedDiffBase], {
       encoding: 'utf8', cwd: projectRoot, timeout: 10000,
     }).trim().split('\n').filter(Boolean);
-    const numstat = execFileSync('git', ['diff', '--numstat', resolvedDiffBase], {
+    const numstat = gitExecFile('git', ['diff', '--numstat', resolvedDiffBase], {
       encoding: 'utf8', cwd: projectRoot, timeout: 10000,
     }).trim().split('\n').filter(Boolean);
     const totals = numstat.reduce((sum, line) => {
@@ -66,16 +67,18 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
       };
     }, { added: 0, deleted: 0 });
     evidence.git = {
-      branch: execFileSync('git', ['branch', '--show-current'], {
+      branch: gitExecFile('git', ['branch', '--show-current'], {
         encoding: 'utf8', cwd: projectRoot, timeout: 10000,
       }).trim(),
-      commit: execFileSync('git', ['rev-parse', 'HEAD'], {
+      commit: gitExecFile('git', ['rev-parse', 'HEAD'], {
         encoding: 'utf8', cwd: projectRoot, timeout: 10000,
       }).trim().substring(0, 8),
-      status: execFileSync('git', ['status', '--short'], {
+      status: gitExecFile('git', ['status', '--short'], {
         encoding: 'utf8', cwd: projectRoot, timeout: 10000,
       }).trim(),
-      diff: execFileSync('git', ['diff', '--stat', resolvedDiffBase], { encoding: 'utf-8' }).trim(),
+      diff: gitExecFile('git', ['diff', '--stat', resolvedDiffBase], {
+        encoding: 'utf-8', cwd: projectRoot, timeout: 10000,
+      }).trim(),
       changedFiles,
     };
     evidence.scale = detectChangeScale(changedFiles, totals.added, totals.deleted);

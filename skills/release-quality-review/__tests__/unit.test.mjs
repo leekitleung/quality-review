@@ -893,6 +893,20 @@ test.describe('security boundaries', () => {
     assertTrue(message.includes('Run from a normal macOS host shell or supported CI runner.'));
   });
 
+  test('collector preserves sandbox root cause and recovery action on first Git failure', () => {
+    let message = '';
+    try {
+      collectEvidence({}, PROJECT_ROOT, 'HEAD', 'HEAD', SKILL_DIR, () => {
+        throw new Error('outer sandbox capability check failed closed');
+      });
+    } catch (error) {
+      message = error.message;
+    }
+    assertTrue(message.includes('outer sandbox capability check failed closed'));
+    assertTrue(message.includes('Run from a normal macOS host shell or supported CI runner.'));
+    assertEqual(message.includes('source checkout must be clean'), false);
+  });
+
   test('rejects paths that escape the repository', () => {
     let rejected = false;
     try {
@@ -1856,8 +1870,8 @@ test.describe('CLI fail-closed integration', () => {
 
   test('runner delegates production evidence collection to the Gate', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
-    assertTrue(runner.includes('persistRoundEvidenceBeforeReview(roundDir, profile, currentRound)'));
-    assertTrue(runner.includes('evidence = loadPersistedRoundScope(roundDir)'));
+    assertTrue(runner.includes('await persistRoundEvidenceBeforeReview(roundDir, profile, currentRound)'));
+    assertTrue(runner.includes('evidence = await loadPersistedRoundScope(roundDir)'));
     assertTrue(runner.includes('(gateReviewers || reviewerSelection.reviewers)'),
       'Actual reviews must consume the Gate-owned reviewer selection');
     assertEqual(runner.includes('function collectEvidence('), false,
@@ -1965,7 +1979,7 @@ if (process.argv.includes('--version') || process.argv.includes('--help')) proce
 const fs = process.getBuiltinModule('node:fs');
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${TEST_ROUNDS.parallelSuccess}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
-fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\nCommand: npm test\\nExit code: 0\\nOutput: # tests 1; # pass 1; # fail 0\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, '# Blockers\\n\\nNo P0/P1 blockers.\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
 process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendantCode)}], { stdio: 'ignore', env: process.env }).unref();
@@ -2008,7 +2022,7 @@ if (process.argv.includes('--version') || process.argv.includes('--help')) proce
 const fs = process.getBuiltinModule('node:fs');
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
-fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '## Overall Score: 95/100\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '## Overall Score: 95/100\\nCommand: npm test\\nExit code: 0\\nOutput: # tests 1; # pass 1; # fail 0\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, 'No P0/P1 blockers.\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
 setInterval(() => {}, 1000);
@@ -2097,7 +2111,7 @@ if (fs.readFileSync(${JSON.stringify(invocationMarker)}, 'utf8').trim().split('\
 }
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
-fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '## Overall Score: 95/100\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '## Overall Score: 95/100\\nCommand: npm test\\nExit code: 0\\nOutput: # tests 1; # pass 1; # fail 0\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, 'No P0/P1 blockers.\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
 `);
@@ -2178,7 +2192,7 @@ setInterval(() => {}, 1000);
 const fs = process.getBuiltinModule('node:fs');
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
-fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\nCommand: npm test\\nExit code: 0\\nOutput: # tests 1; # pass 1; # fail 0\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, '# Blockers\\n\\nNo P0/P1 blockers.\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
 process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendantCode)}], { stdio: 'ignore', env: process.env }).unref();
@@ -2647,7 +2661,7 @@ if (process.argv.includes('--help') || process.argv.includes('--version')) proce
 const fs = process.getBuiltinModule('node:fs');
 fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: agentic-release-gate\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
-fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '# Score\\n\\n## Overall Score: 95/100\\nCommand: npm test\\nExit code: 0\\nOutput: # tests 1; # pass 1; # fail 0\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, '# Blockers\\n\\nNo P0/P1 blockers.\\n');
 fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
 `);

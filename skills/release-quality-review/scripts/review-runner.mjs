@@ -19,7 +19,7 @@
 
 import { readFileSync, existsSync, readdirSync, realpathSync, statSync, writeFileSync, mkdirSync } from 'fs';
 import { join, relative } from 'path';
-import { execFileSync as nodeExecFileSync, spawn } from 'child_process';
+import { execFile as nodeExecFile, execFileSync as nodeExecFileSync, spawn } from 'child_process';
 import { createHash } from 'node:crypto';
 import {
   calculateReviewerTimeout,
@@ -34,6 +34,7 @@ import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
 import {
   fetchRadarReviewerModel, selectRadarReviewerModel, validateReviewModelIdentity,
 } from '../lib/model-selector.mjs';
+import { extractCommandEvidence } from '../lib/evidence-utils.mjs';
 import {
   createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
   outerSandboxAttestationFromEnv, readContainedFile, readContainedFileSync, redactSensitiveText,
@@ -372,15 +373,34 @@ function loadConfig() {
 }
 
 // Get current git commit info
-function getGitInfo() {
+function execFileAsync(command, args, options) {
+  return new Promise((resolve, reject) => {
+    nodeExecFile(command, args, options, (error, stdout, stderr) => {
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        error.exitCode = Number.isInteger(error.code) ? error.code : null;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function getGitInfo() {
   try {
+    const [commit, tree] = await Promise.all([
+      execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+      }),
+      execFileAsync('git', ['rev-parse', 'HEAD^{tree}'], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+      }),
+    ]);
     return {
-      commit: nodeExecFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
-      }).trim(),
-      tree: nodeExecFileSync('git', ['rev-parse', 'HEAD^{tree}'], {
-        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
-      }).trim(),
+      commit: commit.stdout.trim(),
+      tree: tree.stdout.trim(),
     };
   } catch (e) {
     return { commit: 'unknown', tree: 'unknown' };
@@ -498,6 +518,9 @@ async function validateResumeArtifacts(
     if (parsed.reviewModel !== expectedModel) mismatches.push(`review_model=${parsed.reviewModel ?? 'missing'}`);
     if (!Number.isInteger(parsed.score) || parsed.score < 0 || parsed.score > 100) mismatches.push('score=invalid');
     if (!['pass', 'fail'].includes(parsed.status)) mismatches.push(`status=${parsed.status ?? 'missing'}`);
+    if (parsed.status === 'pass' && extractCommandEvidence(`${contents[1]}\n${contents[2]}`).length === 0) {
+      mismatches.push('missing structured command evidence for passing packet');
+    }
     const emptyFiles = requiredFiles.filter((_file, index) => contents[index].trim() === '');
     if (emptyFiles.length > 0) mismatches.push(`empty=${emptyFiles.join(',')}`);
     if (mismatches.length > 0) return { valid: false, reason: mismatches.join('; ') };
@@ -706,7 +729,7 @@ async function bindRoundMetadata(roundDir, identity) {
 }
 
 // Run gate check and return detailed result
-function runGateCheck(roundDir, profileName, round) {
+async function runGateCheck(roundDir, profileName, round) {
   log.title('GATE CHECK');
 
   try {
@@ -715,29 +738,34 @@ function runGateCheck(roundDir, profileName, round) {
       const args = [gateScript, '--profile', profileName, '--round', String(round), '--no-collect'];
       if (checkGoalMode) args.push('--check-goal-mode');
       if (diffBase !== 'HEAD') args.push('--base', diffBase);
-      nodeExecFileSync('node', args, {
-        stdio: 'inherit',
+      const result = await execFileAsync('node', args, {
         cwd: PROJECT_ROOT,
         env: TOOL_ENV,
+        encoding: 'utf8',
+        maxBuffer: 20 * 1024 * 1024,
       });
+      if (result.stdout) process.stdout.write(result.stdout);
+      if (result.stderr) process.stderr.write(result.stderr);
       return { passed: true, roundDir };
     }
   } catch (e) {
-    const exit = Number.isInteger(e.status) ? e.status : 'spawn-error';
+    if (e.stdout) process.stdout.write(e.stdout);
+    if (e.stderr) process.stderr.write(e.stderr);
+    const exit = e.exitCode ?? 'spawn-error';
     const signal = e.signal ? `, signal ${e.signal}` : '';
     log.error(`Gate check failed (exit ${exit}${signal})`);
-    return { passed: false, roundDir, exitCode: e.status ?? null, signal: e.signal ?? null };
+    return { passed: false, roundDir, exitCode: e.exitCode, signal: e.signal ?? null };
   }
 
   return { passed: false, roundDir };
 }
 
-function persistRoundEvidenceBeforeReview(roundDir, profileName, round) {
+async function persistRoundEvidenceBeforeReview(roundDir, profileName, round) {
   const gateScript = join(SKILL_DIR, 'scripts', 'review-gate.mjs');
   const args = [gateScript, '--profile', profileName, '--round', String(round)];
   if (diffBase !== 'HEAD') args.push('--base', diffBase);
   try {
-    nodeExecFileSync('node', args, {
+    await execFileAsync('node', args, {
       cwd: PROJECT_ROOT,
       env: TOOL_ENV,
       encoding: 'utf8',
@@ -745,7 +773,7 @@ function persistRoundEvidenceBeforeReview(roundDir, profileName, round) {
       maxBuffer: 20 * 1024 * 1024,
     });
   } catch (error) {
-    if (error.status !== 1) throw error;
+    if (error.exitCode !== 1) throw error;
   }
 
   const required = [
@@ -758,11 +786,11 @@ function persistRoundEvidenceBeforeReview(roundDir, profileName, round) {
   }
 }
 
-function loadPersistedRoundScope(roundDir) {
+async function loadPersistedRoundScope(roundDir) {
   const metadataFile = join(roundDir, 'metadata.json');
   if (!existsSync(metadataFile)) throw new Error('cannot skip evidence without candidate-bound metadata.json');
-  const metadata = JSON.parse(readContainedFileSync(roundDir, metadataFile, 'utf8'));
-  const identity = getGitInfo();
+  const metadata = JSON.parse(await readContainedFile(roundDir, metadataFile, 'utf8'));
+  const identity = await getGitInfo();
   if (metadata.candidate_commit !== identity.commit || metadata.candidate_tree !== identity.tree ||
       metadata.base_commit !== resolvedDiffBase) {
     throw new Error('persisted round scope does not match the current candidate or diff base');
@@ -810,12 +838,12 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     evidence = collectDryRunEvidence();
   } else if (skipEvidence) {
     evidence = profile === 'agentic-release-gate'
-      ? loadPersistedRoundScope(roundDir)
+      ? await loadPersistedRoundScope(roundDir)
       : { timestamp: new Date().toISOString(), git: {}, structure: {} };
   } else {
     log.info('Collecting evidence through the authoritative Gate collector...');
-    persistRoundEvidenceBeforeReview(roundDir, profile, currentRound);
-    evidence = loadPersistedRoundScope(roundDir);
+    await persistRoundEvidenceBeforeReview(roundDir, profile, currentRound);
+    evidence = await loadPersistedRoundScope(roundDir);
     log.success(`Git: ${evidence.git.branch || '?'} @ ${evidence.git.commit || '?'}`);
     log.success(`Changed: ${evidence.git.changedFiles?.length || 0} files`);
   }
@@ -892,7 +920,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   const timeoutPolicy = calculateReviewerTimeout(REVIEWER_TIMEOUT_MS, scale, resolvedEffort);
   const scaledTimeout = timeoutPolicy.timeoutMs;
   log.info(`Using agent: ${resolvedAgent}, model: ${resolvedModel}, reasoning effort: ${resolvedEffort || 'backend default'}`);
-  const candidateIdentity = getGitInfo();
+  const candidateIdentity = await getGitInfo();
   const reviewerPrompts = new Map(allReviewers.map(reviewer => [
     reviewer, generateReviewerPrompt(
       reviewer, currentRound, candidateIdentity, resolvedAgent, resolvedModel, resolvedEffort,
@@ -1065,7 +1093,9 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     log.info(`Execution: parallel, Scale: ${scale}, Effort: ${resolvedEffort || 'default'}, Timeout: ${scaledTimeout}ms ` +
       `(base: ${REVIEWER_TIMEOUT_MS}ms, scale x${timeoutPolicy.scaleMultiplier}, effort x${timeoutPolicy.effortMultiplier}), Start delay: ${startDelay}ms`);
     try {
-      nodeExecFileSync(resolvedAgent, ['--help'], { cwd: PROJECT_ROOT, timeout: 10000, stdio: 'ignore', env: TOOL_ENV });
+      await execFileAsync(resolvedAgent, ['--help'], {
+        cwd: PROJECT_ROOT, timeout: 10000, encoding: 'utf8', env: TOOL_ENV,
+      });
     } catch {
       log.error(`Parallel mode requires ${agentCli} CLI on PATH; no reviewer agents were launched.`);
       process.exit(5);
@@ -1182,7 +1212,7 @@ async function main() {
 
   // Run gate check
   console.log(`\n${c.cyan}═══ Running Gate Check ═══${c.reset}`);
-  const gateResult = runGateCheck(roundDir, profile, effectiveRound);
+  const gateResult = await runGateCheck(roundDir, profile, effectiveRound);
 
   // Persist phase result AFTER gate check
   const scores = extractResultScoresFromRound(roundDir);

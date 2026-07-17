@@ -211,7 +211,10 @@ report is `quality-reports/$REVIEW_ROUND_DIR/final-report.md`; it is never a sha
 cross-round file. The Gate is the only production evidence collector; the Runner
 persists evidence through the Gate and then consumes the candidate-bound round scope,
 including the Gate-owned reviewer selection. This keeps Runner launch and final Gate
-arbitration on the same conditional reviewer set.
+arbitration on the same conditional reviewer set. Evidence startup, candidate Git
+identity reads, and final arbitration use asynchronous process and file APIs. The
+Runner rejects a passing packet without structured command evidence before accepting
+the reviewer attempt, so the normal retry policy can recover malformed output.
 
 Troubleshooting:
 
