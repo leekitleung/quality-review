@@ -30,6 +30,7 @@ import {
   runAutomatedChecks,
   scanCircularDependencies,
 } from './modules/evidence.mjs';
+import { resolveVerificationCommands } from './modules/verification-policy.mjs';
 import {
   validateReviewerIdentity,
   loadExistingScores,
@@ -314,18 +315,16 @@ async function runGate() {
           }
         }
         // Validate command evidence structure for all gates
+        const verification = resolveVerificationCommands(config);
         const expectedCommands = {
-          testGate: config?.verification?.test || 'pnpm test',
-          typecheckGate: config?.verification?.typecheck || 'pnpm typecheck',
-          buildGate: config?.verification?.build || 'pnpm build',
-          lintGate: config?.verification?.lint || 'pnpm lint',
-          auditGate: config?.verification?.audit || 'npm audit --audit-level=high',
+          testGate: verification.test, typecheckGate: verification.typecheck,
+          buildGate: verification.build, lintGate: verification.lint, auditGate: verification.audit,
         };
         if (['release-gate', 'full', 'agentic-release-gate'].includes(profile)) {
-          expectedCommands.e2eGate = config?.verification?.e2e || 'npm run test:e2e';
+          expectedCommands.e2eGate = verification.e2e;
         }
         if (profile === 'agentic-release-gate') {
-          expectedCommands.coverageGate = config?.verification?.coverage || 'npm run coverage';
+          expectedCommands.coverageGate = verification.coverage;
         }
         for (const [name, expectedCommand] of Object.entries(expectedCommands)) {
           if (!validCommandEvidence(automatedChecks[name], expectedCommand) ||
@@ -401,7 +400,7 @@ async function runGate() {
   const existingScores = loadExistingScores(
     roundDir, reviewers, currentCandidateCommit, currentCandidateTree, profile,
     effectiveRoundNumber, backendLock.backend, backendLock.model,
-    (r, p) => validateReviewerIdentity(SKILL_DIR, r),
+    (reviewer, _profile) => validateReviewerIdentity(SKILL_DIR, reviewer),
   );
 
   const minScore = Number((profileConfig.gate?.min_score) ?? 90);

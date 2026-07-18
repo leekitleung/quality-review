@@ -69,6 +69,7 @@ import {
   collectEvidence, formatGitEvidenceFailure, prepareTrustedAuditWorkspace,
   runAutomatedChecks, runEvidenceCommand,
 } from '../scripts/modules/evidence.mjs';
+import { validateVerificationCommands } from '../scripts/modules/verification-policy.mjs';
 import { createCandidateRuntime, validateCandidateCheckoutIdentity } from '../lib/candidate-runtime.mjs';
 import {
   extractRadarCandidates, fetchRadarReviewerModel, selectRadarReviewerModel,
@@ -410,6 +411,20 @@ test.describe('security boundaries', () => {
     assertEqual(checks.auditGate.command, 'npm audit --audit-level=high');
   });
 
+  test('verification policy rejects shell-shaped candidate commands', () => {
+    let message = '';
+    try {
+      validateVerificationCommands({
+        test: 'sh -c "printf fake"', typecheck: 'npm run typecheck', build: 'npm run build',
+        lint: 'npm run lint', audit: 'npm audit --audit-level=high', coverage: 'npm run coverage',
+        e2e: 'npm run test:e2e',
+      });
+    } catch (error) {
+      message = error.message;
+    }
+    assertTrue(message.includes('trivial or missing verification scripts'));
+  });
+
   test('trusted audit workspace excludes candidate npm configuration', () => {
     const candidate = join(TEST_DIR, 'audit-candidate');
     const isolatedHome = join(TEST_DIR, 'audit-home');
@@ -423,6 +438,23 @@ test.describe('security boundaries', () => {
     assertEqual(readFileSync(prepared.userConfig, 'utf8'), '');
     assertEqual(readFileSync(prepared.globalConfig, 'utf8'), '');
     assertEqual(existsSync(join(prepared.auditRoot, 'package-lock.json')), true);
+  });
+
+  test('rejects symlinked package manifests before audit or verification', () => {
+    const candidate = join(TEST_DIR, 'symlink-manifest-candidate');
+    const isolatedHome = join(TEST_DIR, 'symlink-manifest-home');
+    mkdirSync(candidate, { recursive: true });
+    mkdirSync(isolatedHome, { recursive: true });
+    const outside = join(TEST_DIR, 'outside-package.json');
+    writeFileSync(outside, '{"name":"outside"}');
+    symlinkSync(outside, join(candidate, 'package.json'));
+    let message = '';
+    try {
+      prepareTrustedAuditWorkspace(candidate, isolatedHome);
+    } catch (error) {
+      message = error.message;
+    }
+    assertTrue(message.includes('must not be a symbolic link'));
   });
 
   test('rejects a repository output parent symlinked outside the repository', async () => {

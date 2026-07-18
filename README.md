@@ -241,6 +241,8 @@ Troubleshooting:
   reject any non-empty `git status --short` after evidence collection.
 - Verification timeout: a silent command failure records `timed_out`, timeout duration,
   signal, and an actionable diagnostic instead of an empty output record.
+- Verification policy: collection and arbitration derive expected commands from one policy
+  module; shell-shaped candidate overrides and symlinked package manifests are rejected.
 - Invalid packet status: `status: pass` is valid only for scores of at least 90
   with empty blocker/redline arrays; all other packets must declare `fail`.
 - Evidence-source failure: quote at least one persisted shared check in

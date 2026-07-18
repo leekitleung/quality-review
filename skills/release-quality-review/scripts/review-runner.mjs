@@ -765,8 +765,9 @@ async function loadPersistedRoundScope(roundDir) {
   if (identity.status !== '') {
     throw new Error('persisted round scope requires a clean source checkout');
   }
+  const expectedBaseCommit = resolvedDiffBase === 'HEAD' ? identity.commit : resolvedDiffBase;
   if (metadata.candidate_commit !== identity.commit || metadata.candidate_tree !== identity.tree ||
-      metadata.base_commit !== resolvedDiffBase) {
+      metadata.base_commit !== expectedBaseCommit) {
     throw new Error('persisted round scope does not match the current candidate or diff base');
   }
   if (metadata.profile !== profile || !Array.isArray(metadata.reviewers) || metadata.reviewers.length === 0 ||
@@ -811,9 +812,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   if (dryRun) {
     evidence = collectDryRunEvidence();
   } else if (skipEvidence) {
-    evidence = profile === 'agentic-release-gate'
-      ? await loadPersistedRoundScope(roundDir)
-      : { timestamp: new Date().toISOString(), git: {}, structure: {} };
+    evidence = await loadPersistedRoundScope(roundDir);
   } else {
     log.info('Collecting evidence through the authoritative Gate collector...');
     await persistRoundEvidenceBeforeReview(roundDir, profile, currentRound);

@@ -371,6 +371,9 @@ round scope 和 Gate-owned reviewer selection，避免启动集合与最终仲�
 Runner 在 reviewer 启动前及 `--no-collect` Gate 复核时都要求工作树保持 clean；持久化
 evidence 后出现未提交漂移会 fail closed。Reviewer 的进程树、超时、重试和并行/串行调度由
 独立 execution engine 负责，测试按 core、evidence/security、runner/gate/E2E 三组入口执行。
+验证命令由 `scripts/modules/verification-policy.mjs` 单一管理；candidate 配置中的 shell
+表达式、非 package-script 命令和可替换 audit 命令均 fail closed。审计 manifest、source
+manifest 和 package-lock 在复制/读取前必须是 repository-contained regular files，禁止 symlink。
 
 **环境变量配置**:
 ```bash

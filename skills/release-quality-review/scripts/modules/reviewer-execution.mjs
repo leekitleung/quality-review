@@ -123,7 +123,10 @@ export async function executeReviewers(options) {
       if (status === 'failed' && diagnostic) {
         console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
       }
-      const permanentSource = [extractStructuredAgentFailure(resolvedAgent, stdoutTail), processError]
+      const permanentSource = [
+        resolvedAgent === 'codex' ? extractStructuredAgentFailure(resolvedAgent, stdoutTail) : stderrTail,
+        processError,
+      ]
         .filter(Boolean).join('\n');
       resolve({
         name: reviewer, status, attempt, diagnostic, abortedKind,

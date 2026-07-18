@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { dirname, extname, join, resolve } from 'path';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { readFile } from 'fs/promises';
 import { execSync, execFileSync } from 'child_process';
 import { log } from './constants.mjs';
@@ -9,6 +9,7 @@ import {
   detectChangeScale, findTrivialVerificationScripts, validateCleanCandidateEvidence, validateRollbackEvidence,
 } from '../../lib/review-utils.mjs';
 import { createCandidateRuntime } from '../../lib/candidate-runtime.mjs';
+import { resolveVerificationCommands, validateVerificationCommands } from './verification-policy.mjs';
 
 export function formatGitEvidenceFailure(error) {
   const message = redactSensitiveText(error?.message || error);
@@ -22,7 +23,11 @@ export function prepareTrustedAuditWorkspace(candidateRoot, isolatedHome) {
   const auditRoot = join(isolatedHome, 'trusted-audit');
   mkdirSync(auditRoot, { recursive: true });
   for (const file of ['package.json', 'package-lock.json', 'npm-shrinkwrap.json']) {
-    if (existsSync(join(candidateRoot, file))) copyFileSync(join(candidateRoot, file), join(auditRoot, file));
+    const source = join(candidateRoot, file);
+    if (existsSync(source)) {
+      if (lstatSync(source).isSymbolicLink()) throw new Error(`audit manifest must not be a symbolic link: ${file}`);
+      copyFileSync(source, join(auditRoot, file));
+    }
   }
   const userConfig = join(isolatedHome, 'trusted-user.npmrc');
   const globalConfig = join(isolatedHome, 'trusted-global.npmrc');
@@ -94,6 +99,7 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
   try {
     const packageJson = join(projectRoot, 'package.json');
     if (existsSync(packageJson)) {
+      if (lstatSync(packageJson).isSymbolicLink()) throw new Error('source package.json must not be a symbolic link');
       const pkg = JSON.parse(readFileSync(packageJson, 'utf-8'));
       evidence.files.package = {
         name: pkg.name,
@@ -102,17 +108,13 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
       };
     }
   } catch (e) {
-    // Ignore
+    if (/must not be a symbolic link/.test(String(e.message || ''))) throw e;
+    // Ignore malformed optional package metadata.
   }
 
-  const verificationCommands = [
-    config?.verification?.test || 'pnpm test',
-    config?.verification?.typecheck || 'pnpm typecheck',
-    config?.verification?.build || 'pnpm build',
-    config?.verification?.lint || 'pnpm lint',
-    config?.verification?.coverage || 'npm run coverage',
-    config?.verification?.e2e || 'npm run test:e2e',
-  ];
+  const verification = resolveVerificationCommands(config);
+  validateVerificationCommands(verification);
+  const verificationCommands = Object.values(verification).filter(Boolean);
   const sourceManifest = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'));
   const sourceScriptIssues = findTrivialVerificationScripts(sourceManifest.scripts, verificationCommands);
   if (sourceScriptIssues.length > 0) {
@@ -345,14 +347,13 @@ export function runAutomatedChecks(
     candidateCheckout: null,
   };
 
-  const testCmd = config?.verification?.test || 'pnpm test';
-  const typecheckCmd = config?.verification?.typecheck || 'pnpm typecheck';
-  const buildCmd = config?.verification?.build || 'pnpm build';
-  const lintCmd = config?.verification?.lint || 'pnpm lint';
-  const auditCmd = 'npm audit --audit-level=high';
-  const coverageCmd = config?.verification?.coverage || 'npm run coverage';
-  const e2eCmd = config?.verification?.e2e || 'npm run test:e2e';
-  const manifest = JSON.parse(readFileSync(join(candidateRoot, 'package.json'), 'utf8'));
+  const verification = resolveVerificationCommands(config);
+  validateVerificationCommands(verification);
+  const { test: testCmd, typecheck: typecheckCmd, build: buildCmd, lint: lintCmd,
+    audit: auditCmd, coverage: coverageCmd, e2e: e2eCmd } = verification;
+  const manifestPath = join(candidateRoot, 'package.json');
+  if (lstatSync(manifestPath).isSymbolicLink()) throw new Error('candidate package.json must not be a symbolic link');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
   const scriptIssues = findTrivialVerificationScripts(manifest.scripts, [
     testCmd, typecheckCmd, buildCmd, lintCmd, coverageCmd, e2eCmd,
   ]);
