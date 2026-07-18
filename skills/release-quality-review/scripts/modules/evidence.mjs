@@ -114,7 +114,9 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
 
   const verification = resolveVerificationCommands(config);
   validateVerificationCommands(verification);
-  const verificationCommands = Object.values(verification).filter(Boolean);
+  const verificationCommands = Object.entries(verification)
+    .filter(([name, command]) => name !== 'audit' && Boolean(command))
+    .map(([, command]) => command);
   const sourceManifest = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8'));
   const sourceScriptIssues = findTrivialVerificationScripts(sourceManifest.scripts, verificationCommands);
   if (sourceScriptIssues.length > 0) {
