@@ -3,6 +3,15 @@ import path from 'node:path';
 const COMMAND_PATTERN = /\b(?:pnpm|npm|yarn)\s+(?:run\s+)?[a-zA-Z0-9:._-]+(?:\s+--[^\s`),;]+)*/g;
 const EXIT_ZERO_PATTERN = /\b(?:exit(?:ed|_code)?|return(?:ed)?|status)\s*(?:code)?\s*[:=]?\s*`?0\b/i;
 const OUTPUT_SUMMARY_PATTERN = /(?:#\s*|\b)(?:tests|pass|fail|skipped)\s+\d+|\b\d+\s+(?:passed|failed|skipped)\b|found\s+0\s+vulnerabilities|in sync\s*\(\d+\s+adapters\)|node\s+--check\b|alias of typecheck\b|operation not permitted/i;
+const SHARED_VERIFICATION_COMMANDS = new Set([
+  'npm test',
+  'npm run typecheck',
+  'npm run build',
+  'npm run lint',
+  'npm run coverage',
+  'npm run test:e2e',
+  'npm audit --audit-level=high',
+]);
 
 const FILE_LINE_PATTERN = /`?((?:\/|\.\.?\/)?[A-Za-z0-9_.][A-Za-z0-9_./\\-]*\.(?:ts|tsx|js|jsx|mjs|md|json|ya?ml)):(\d+)`?/g;
 
@@ -31,8 +40,9 @@ export function extractCommandEvidence(content) {
     }
   }
   for (const match of String(content || '').matchAll(/\bcommand:\s*["']?([^"'\n]+?)["']?\s*[\r\n]+[\s\S]{0,240}?exit_code:\s*0\s*[\r\n]+[\s\S]{0,240}?(?:output_summary|output):\s*["']?([^"'\n]+)["']?/gi)) {
-    if (OUTPUT_SUMMARY_PATTERN.test(match[2])) {
-      records.push({ command: match[1].trim(), context: match[0] });
+    const command = match[1].trim();
+    if (SHARED_VERIFICATION_COMMANDS.has(command) && OUTPUT_SUMMARY_PATTERN.test(match[2])) {
+      records.push({ command, context: match[0] });
     }
   }
   return [...new Map(records.map(record => [record.command, record])).values()];
