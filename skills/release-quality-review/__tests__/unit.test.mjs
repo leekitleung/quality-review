@@ -871,6 +871,11 @@ test.describe('adversarial review detection', () => {
     assertEqual(checkMissingEvidenceOutput(`${content}\ntypecheck passed`).length, 0);
   });
 
+  test('accepts strict YAML command evidence packets', () => {
+    const content = 'command: "npm test"\nexit_code: 0\noutput_summary: "# tests 25; # pass 25; # fail 0"';
+    assertEqual(extractCommandEvidence(content).length, 1);
+  });
+
   test('rejects a bare command token and static references as runtime evidence', () => {
     const content = '功能正常。运行证据：npm test。\na.mjs:1\nb.mjs:1\nc.mjs:1\nd.mjs:1\ne.mjs:1';
     assertEqual(extractCommandEvidence(content).length, 0);

@@ -30,7 +30,12 @@ export function extractCommandEvidence(content) {
       records.push({ command: match[0], context });
     }
   }
-  return records;
+  for (const match of String(content || '').matchAll(/\bcommand:\s*["']?([^"'\n]+?)["']?\s*[\r\n]+[\s\S]{0,240}?exit_code:\s*0\s*[\r\n]+[\s\S]{0,240}?(?:output_summary|output):\s*["']?([^"'\n]+)["']?/gi)) {
+    if (OUTPUT_SUMMARY_PATTERN.test(match[2])) {
+      records.push({ command: match[1].trim(), context: match[0] });
+    }
+  }
+  return [...new Map(records.map(record => [record.command, record])).values()];
 }
 
 export function extractTestOutputs(content) {
