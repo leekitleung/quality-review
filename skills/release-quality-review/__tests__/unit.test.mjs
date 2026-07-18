@@ -871,6 +871,11 @@ test.describe('adversarial review detection', () => {
     assertEqual(checkMissingEvidenceOutput(content).length, 0);
   });
 
+  test('rejects failed TAP output even when it includes ok counts', () => {
+    const content = 'Command: npm test\nExit code: 0\nOutput: 174 ok; # fail 1; not ok 175';
+    assertEqual(extractCommandEvidence(content).length, 0);
+  });
+
   test('accepts node syntax-check output as concrete command evidence', () => {
     const content = 'Command: npm run typecheck\nExit code: 0\nOutput: node --check scripts/review-gate.mjs';
     assertEqual(extractCommandEvidence(content).length, 1);
