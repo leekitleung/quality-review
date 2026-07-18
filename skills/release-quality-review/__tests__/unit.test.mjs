@@ -865,6 +865,12 @@ test.describe('adversarial review detection', () => {
     assertEqual(checkMissingEvidenceOutput(content).length, 0);
   });
 
+  test('accepts node syntax-check output as concrete command evidence', () => {
+    const content = 'Command: npm run typecheck\nExit code: 0\nOutput: node --check scripts/review-gate.mjs';
+    assertEqual(extractCommandEvidence(content).length, 1);
+    assertEqual(checkMissingEvidenceOutput(`${content}\ntypecheck passed`).length, 0);
+  });
+
   test('rejects a bare command token and static references as runtime evidence', () => {
     const content = '功能正常。运行证据：npm test。\na.mjs:1\nb.mjs:1\nc.mjs:1\nd.mjs:1\ne.mjs:1';
     assertEqual(extractCommandEvidence(content).length, 0);
