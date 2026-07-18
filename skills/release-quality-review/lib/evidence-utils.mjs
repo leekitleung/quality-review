@@ -2,7 +2,7 @@ import path from 'node:path';
 
 const COMMAND_PATTERN = /\b(?:pnpm|npm|yarn)\s+(?:run\s+)?[a-zA-Z0-9:._-]+(?:\s+--[^\s`),;]+)*/g;
 const EXIT_ZERO_PATTERN = /\b(?:exit(?:ed|_code)?|return(?:ed)?|status)\s*(?:code)?\s*[:=]?\s*`?0\b/i;
-const OUTPUT_SUMMARY_PATTERN = /(?:#\s*|\b)(?:tests|pass|fail|skipped)\s+\d+|\b\d+\s+(?:passed|failed|skipped)\b|found\s+0\s+vulnerabilities|in sync\s*\(\d+\s+adapters\)|node\s+--check\b|alias of typecheck\b|operation not permitted/i;
+const OUTPUT_SUMMARY_PATTERN = /(?:#\s*|\b)(?:tests|pass|fail|skipped)\s+\d+|\b\d+\s+(?:passed|failed|skipped|ok)\b|\bok\s+\d+\b|found\s+0\s+vulnerabilities|in sync\s*\(\d+\s+adapters\)|node\s+--check\b|alias of typecheck\b|operation not permitted/i;
 const SHARED_VERIFICATION_COMMANDS = new Set([
   'npm test',
   'npm run typecheck',
