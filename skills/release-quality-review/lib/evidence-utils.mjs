@@ -11,6 +11,15 @@ const SHARED_VERIFICATION_COMMANDS = new Set([
   'npm run coverage',
   'npm run test:e2e',
   'npm audit --audit-level=high',
+  'pnpm test',
+  'pnpm run typecheck',
+  'pnpm typecheck',
+  'pnpm build',
+  'pnpm lint',
+  'pnpm test:integration',
+  'yarn test',
+  'yarn build',
+  'yarn lint',
 ]);
 
 const FILE_LINE_PATTERN = /`?((?:\/|\.\.?\/)?[A-Za-z0-9_.][A-Za-z0-9_./\\-]*\.(?:ts|tsx|js|jsx|mjs|md|json|ya?ml)):(\d+)`?/g;
@@ -35,7 +44,7 @@ export function extractCommandEvidence(content) {
     const start = Math.max(0, match.index - 120);
     const end = Math.min(content.length, match.index + match[0].length + 500);
     const context = content.slice(start, end);
-    if (EXIT_ZERO_PATTERN.test(context) && OUTPUT_SUMMARY_PATTERN.test(context)) {
+    if (SHARED_VERIFICATION_COMMANDS.has(match[0]) && EXIT_ZERO_PATTERN.test(context) && OUTPUT_SUMMARY_PATTERN.test(context)) {
       records.push({ command: match[0], context });
     }
   }

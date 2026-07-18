@@ -881,6 +881,11 @@ test.describe('adversarial review detection', () => {
     assertEqual(extractCommandEvidence(content).length, 0);
   });
 
+  test('rejects prose evidence for commands outside the shared verification set', () => {
+    const content = 'Command: echo green\nExit code: 0\nOutput: # tests 25; # pass 25; # fail 0';
+    assertEqual(extractCommandEvidence(content).length, 0);
+  });
+
   test('rejects a bare command token and static references as runtime evidence', () => {
     const content = '功能正常。运行证据：npm test。\na.mjs:1\nb.mjs:1\nc.mjs:1\nd.mjs:1\ne.mjs:1';
     assertEqual(extractCommandEvidence(content).length, 0);
