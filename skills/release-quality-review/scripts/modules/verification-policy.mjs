@@ -9,9 +9,13 @@ export const DEFAULT_VERIFICATION_COMMANDS = Object.freeze({
 });
 
 export function resolveVerificationCommands(config = {}) {
+  const configured = config.verification || {};
+  const commandNames = Object.keys(DEFAULT_VERIFICATION_COMMANDS);
   return Object.freeze({
     ...DEFAULT_VERIFICATION_COMMANDS,
-    ...(config.verification || {}),
+    ...Object.fromEntries(commandNames
+      .filter(name => typeof configured[name] === 'string')
+      .map(name => [name, configured[name]])),
     audit: DEFAULT_VERIFICATION_COMMANDS.audit,
   });
 }
