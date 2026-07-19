@@ -3,7 +3,8 @@ import { existsSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 
 import {
-  isPathWithin, readContainedFile, redactSensitiveText, wrapCandidateCommand, writeContainedFile,
+  ensureContainedDirectorySync, isPathWithin, readContainedFile, readContainedFileSync,
+  redactSensitiveText, wrapCandidateCommand, writeContainedFile, writeContainedFileSync,
 } from '../../lib/security-utils.mjs';
 
 const PACKET_FILES = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md'];
@@ -14,6 +15,18 @@ function reviewerAuthRoots(agent, toolEnv) {
     ? [toolEnv.CODEX_HOME, home && join(home, '.codex')]
     : [toolEnv.CLAUDE_CONFIG_DIR, home && join(home, '.claude')];
   return [...new Set(candidates.filter(path => path && existsSync(path) && path !== home))];
+}
+
+function prepareCodexHome(toolEnv, reviewerSandboxDir) {
+  const authRoot = reviewerAuthRoots('codex', toolEnv)[0];
+  if (!authRoot || !existsSync(join(authRoot, 'auth.json'))) {
+    throw new Error('Codex auth.json is unavailable for isolated reviewer execution');
+  }
+  const codexHome = join(reviewerSandboxDir, '.codex');
+  ensureContainedDirectorySync(reviewerSandboxDir, codexHome);
+  const auth = readContainedFileSync(authRoot, join(authRoot, 'auth.json'), 'utf8');
+  writeContainedFileSync(codexHome, join(codexHome, 'auth.json'), auth);
+  return codexHome;
 }
 
 function invocationReadRoot(command, searchPath) {
@@ -81,8 +94,13 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
       throw new Error('reviewer sandbox escapes the report root');
     }
     const executableRoot = invocationReadRoot(invocation.command, toolEnv.PATH);
+    const codexHome = resolvedAgent === 'codex' ? prepareCodexHome(toolEnv, reviewerSandboxDir) : null;
     const wrapped = wrapCandidateCommand(invocation.command, invocation.args, {
-      readOnlyRoots: [projectRoot, ...reviewerAuthRoots(resolvedAgent, toolEnv), executableRoot].filter(Boolean),
+      readOnlyRoots: [
+        projectRoot,
+        ...(resolvedAgent === 'claude' ? reviewerAuthRoots(resolvedAgent, toolEnv) : []),
+        executableRoot,
+      ].filter(Boolean),
       writeRoots: [reviewerSandboxDir],
       allowNetwork: true,
       outerSandboxAttestation: options.outerSandboxAttestation,
@@ -98,8 +116,7 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
       RELEASE_QUALITY_REPORT_DIR: reviewerReportDir,
     };
     if (resolvedAgent === 'codex') {
-      const authRoot = reviewerAuthRoots(resolvedAgent, toolEnv)[0];
-      if (authRoot) reviewerEnv.CODEX_HOME = authRoot;
+      reviewerEnv.CODEX_HOME = codexHome;
     } else if (resolvedAgent === 'claude') {
       const authRoot = reviewerAuthRoots(resolvedAgent, toolEnv)[0];
       if (authRoot) reviewerEnv.CLAUDE_CONFIG_DIR = authRoot;

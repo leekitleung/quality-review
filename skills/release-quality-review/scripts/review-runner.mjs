@@ -421,7 +421,7 @@ function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
       : [];
     return {
       command: 'codex',
-      args: ['exec', '--json', '--model', selectedModel, ...effortArgs, '--ephemeral', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt],
+      args: ['exec', '--json', '--model', selectedModel, ...effortArgs, '--ephemeral', '--ignore-user-config', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt],
     };
   }
   return { command: agent, args: ['-p', prompt] };
