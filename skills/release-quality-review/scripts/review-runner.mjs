@@ -436,7 +436,7 @@ function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
       args: [
         'exec', '--json', '--model', selectedModel, ...effortArgs, ...httpProviderArgs,
         ...minimalRuntimeArgs, '--ephemeral', '--ignore-user-config', '--ignore-rules',
-        '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt,
+        '--dangerously-bypass-approvals-and-sandbox', '--cd', PROJECT_ROOT, prompt,
       ],
     };
   }

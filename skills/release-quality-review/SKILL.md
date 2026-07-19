@@ -32,6 +32,7 @@ description: Run an evidence-backed multi-reviewer release quality gate with ind
 
 - 可信：宿主/orchestrator、固定 commit 上的 Gate 代码、真实 report root。
 - 不可信：候选子进程、reviewer 子进程及其输出。每个 reviewer 只能读取源码和认证输入，并只能写自己的临时 sandbox；宿主验证四文件 packet 后发布到真实 round 目录并删除 sandbox。reviewer 不得写源码、元数据或其他 reviewer 的 packet。
+- Codex reviewer 仅在外层 exact-write sandbox 已成功建立后绕过重复的 CLI 内层 sandbox；若外层无法提供 reviewer 专属写隔离则 fail closed。
 - 自动门禁只接受与用途匹配的受支持 runner（test、coverage 或 code-check）；候选自带的任意 Node 程序及其摘要输出不能充当验证证据。
 - 验证脚本只允许用 `&&` 组合命令；所有 test 摘要必须一致且不得出现任何非零 failure。
 - SHA-256 用于检测收集到仲裁之间的漂移，不是签名或远端证明。

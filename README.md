@@ -112,6 +112,8 @@ trusted. Candidate and reviewer subprocesses are untrusted. Each reviewer receiv
 read-only source and authentication inputs plus a private writable sandbox; the host
 validates its four-file packet, publishes it into the trusted round directory, and
 removes the sandbox. A reviewer cannot write source, metadata, or a peer packet.
+Codex reviewers therefore bypass the CLI's duplicate inner sandbox only after the
+outer exact-write sandbox has been established; nested-sandbox fallback fails closed.
 Stored SHA-256 values detect drift between collection and
 arbitration, but are not signatures. A party that can rewrite Gate code,
 evidence, and adjacent metadata has crossed the local trust boundary; protect

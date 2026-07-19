@@ -363,12 +363,17 @@ test.describe('CLI fail-closed integration', () => {
 
   test('Codex reviewer invocation uses the authenticated HTTP transport', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
+    const reviewerProcess = readFileSync(join(SKILL_DIR, 'scripts', 'modules', 'reviewer-process.mjs'), 'utf8');
     assertTrue(runner.includes('model_providers.chatgpt-http.supports_websockets=false'),
       'Reviewer invocation must avoid unreliable WebSocket startup retries');
     assertTrue(runner.includes('model_providers.chatgpt-http.requires_openai_auth=true'),
       'HTTP reviewer provider must retain ChatGPT authentication');
     assertTrue(runner.includes("'--disable', 'plugin_sharing', '--disable', 'remote_plugin'"),
       'Reviewer invocation must not start unrelated remote plugin services');
+    assertTrue(runner.includes("'--dangerously-bypass-approvals-and-sandbox', '--cd', PROJECT_ROOT"),
+      'Externally sandboxed reviewers must not start an unsupported nested sandbox');
+    assertTrue(reviewerProcess.includes('requireExactWriteIsolation: true'),
+      'Codex sandbox bypass requires exact outer write isolation');
   });
 
   test('dry-run supports Codex Radar auto-selection and validates explicit identity', t => {
