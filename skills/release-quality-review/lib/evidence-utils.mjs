@@ -1,38 +1,10 @@
 import path from 'node:path';
 
-const TEST_OUTPUT_PATTERN = /(?:#\s*|\b)(?:tests|pass|skipped)\s+\d+|\b\d+\s+(?:passed|skipped|ok)\b|(?<!not )\bok\s+\d+\b/i;
-const CODE_CHECK_OUTPUT_PATTERN = /node\s+--check\b|alias of typecheck\b/i;
-const COVERAGE_OUTPUT_PATTERN = /\ball files\s*\||(?:#\s*|\b)(?:tests|pass)\s+\d+/i;
-const AUDIT_OUTPUT_PATTERN = /found\s+0\s+vulnerabilities/i;
-const SHARED_VERIFICATION_COMMANDS = new Set([
-  'npm test',
-  'npm run typecheck',
-  'npm run build',
-  'npm run lint',
-  'npm run coverage',
-  'npm run test:e2e',
-  'npm audit --audit-level=high',
-  'pnpm test',
-  'pnpm run typecheck',
-  'pnpm typecheck',
-  'pnpm build',
-  'pnpm lint',
-  'pnpm test:integration',
-  'yarn test',
-  'yarn build',
-  'yarn lint',
-]);
+import {
+  hasPassingCommandOutput, parseReviewerEvidenceBlocks, SHARED_VERIFICATION_COMMANDS,
+} from './reviewer-evidence-contract.mjs';
 
-export function hasPassingCommandOutput(command, summary) {
-  let outputPattern = CODE_CHECK_OUTPUT_PATTERN;
-  if (/\b(?:test|test:e2e|test:integration)\b/.test(command)) outputPattern = TEST_OUTPUT_PATTERN;
-  else if (/\bcoverage\b/.test(command)) outputPattern = COVERAGE_OUTPUT_PATTERN;
-  else if (/\baudit\b/.test(command)) outputPattern = AUDIT_OUTPUT_PATTERN;
-
-  return outputPattern.test(summary) &&
-    !/\bnot\s+ok\b/i.test(summary) &&
-    !/(?:#\s*fail|\bfailed?)\s*[:=]?\s*[1-9]\d*\b|\b[1-9]\d*\s+failed\b/i.test(summary);
-}
+export { hasPassingCommandOutput } from './reviewer-evidence-contract.mjs';
 
 const FILE_LINE_PATTERN = /`?((?:\/|\.\.?\/)?[A-Za-z0-9_.][A-Za-z0-9_./\\-]*\.(?:ts|tsx|js|jsx|mjs|md|json|ya?ml)):(\d+)`?/g;
 
@@ -51,13 +23,10 @@ export function resolveFileReference(projectRoot, file) {
 }
 
 export function extractCommandEvidence(content) {
-  const records = [];
-  for (const match of String(content || '').matchAll(/^Command:\s*([^\r\n]+)\r?\nExit code:\s*0\r?\nOutput:\s*([^\r\n]+)$/gmi)) {
-    const command = match[1].trim();
-    if (SHARED_VERIFICATION_COMMANDS.has(command) && hasPassingCommandOutput(command, match[2])) {
-      records.push({ command, context: match[0] });
-    }
-  }
+  const records = parseReviewerEvidenceBlocks(content).filter(record =>
+    record.exitCode === 0 && SHARED_VERIFICATION_COMMANDS.has(record.command) &&
+    hasPassingCommandOutput(record.command, record.output)
+  );
   return [...new Map(records.map(record => [record.command, record])).values()];
 }
 

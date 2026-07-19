@@ -103,6 +103,11 @@ const runnerRound = round => {
     git: { branch: 'test', commit: commit.slice(0, 8), status: '', changedFiles: [] },
     files: {}, scale: { scale: 'none', files: 0, total: 0 },
   }));
+  mkdirSync(join(dir, 'evidence'), { recursive: true });
+  writeFileSync(join(dir, 'evidence', 'automated-checks.json'), JSON.stringify({
+    testGate: { command: 'npm test', status: 'pass', exit_code: 0, output: '# tests 1\n# pass 1\n# fail 0' },
+    typecheckGate: { command: 'npm run typecheck', status: 'pass', exit_code: 0, output: 'node --check scripts/review-gate.mjs' },
+  }));
   return dir;
 };
 
@@ -315,6 +320,10 @@ process.exit(3);
         files: {}, scale: { scale: 'small', files: 2, additions: 1, deletions: 1, total: 2 },
         candidate_commit: candidateCommit, candidate_tree: candidateTree,
         base_commit: candidateCommit, base_tree: candidateTree,
+      }));
+      mkdirSync(join(round, 'evidence'), { recursive: true });
+      writeFileSync(join(round, 'evidence', 'automated-checks.json'), JSON.stringify({
+        testGate: { command: 'npm test', status: 'pass', exit_code: 0, output: '# tests 1\n# pass 1\n# fail 0' },
       }));
       for (const file of ['generated-goal.md', 'changes.md', 'diff-summary.md', 'risk.md', 'handoff.md']) {
         writeFileSync(join(round, file), `# ${file}\n`);

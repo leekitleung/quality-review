@@ -103,6 +103,11 @@ const runnerRound = round => {
     git: { branch: 'test', commit: commit.slice(0, 8), status: '', changedFiles: [] },
     files: {}, scale: { scale: 'none', files: 0, total: 0 },
   }));
+  mkdirSync(join(dir, 'evidence'), { recursive: true });
+  writeFileSync(join(dir, 'evidence', 'automated-checks.json'), JSON.stringify({
+    testGate: { command: 'npm test', status: 'pass', exit_code: 0, output: '# tests 1\n# pass 1\n# fail 0' },
+    typecheckGate: { command: 'npm run typecheck', status: 'pass', exit_code: 0, output: 'node --check scripts/review-gate.mjs' },
+  }));
   return dir;
 };
 
@@ -292,23 +297,22 @@ test.describe('CLI fail-closed integration', () => {
 
   test('reviewer prompt requires scalar score and exact machine verdict', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
-    assertTrue(runner.includes('score 必须是整数'), 'Prompt must reject object-shaped scores');
-    assertTrue(runner.includes('status 必须是小写 pass 或 fail'), 'Prompt must require a parseable verdict');
-    assertTrue(runner.includes('status 只表示你自己的 reviewer verdict'),
+    const prompt = readFileSync(join(SKILL_DIR, 'scripts', 'modules', 'reviewer-prompt.mjs'), 'utf8');
+    assertTrue(prompt.includes('score 必须是整数'), 'Prompt must reject object-shaped scores');
+    assertTrue(prompt.includes('status 必须是小写 pass 或 fail'), 'Prompt must require a parseable verdict');
+    assertTrue(prompt.includes('status 只表示你自己的 reviewer verdict'),
       'Prompt must not confuse a reviewer verdict with whole-round arbitration');
-    assertTrue(runner.includes('score: <0-100 integer>'));
-    assertTrue(runner.includes('status: <pass|fail>'));
-    assertTrue(runner.includes('review_backend: ${reviewBackend}'));
-    assertTrue(runner.includes('review_model: ${reviewModel}'));
-    assertTrue(runner.includes('只允许包含下列 11 个顶层字段'));
-    assertTrue(runner.includes('不得添加 summary、dimensions、evidence'));
-    assertTrue(runner.includes('不要运行 review-runner、review-gate、npm test、npm run build'));
-    assertTrue(runner.includes('evidence/automated-checks.json'));
-    assertTrue(runner.includes('Command: npm test'));
-    assertTrue(runner.includes('Exit code: 0'));
-    assertTrue(runner.includes('Output: # tests <N>; # pass <N>; # fail 0'));
-    assertTrue(runner.includes('不得只写“测试通过”'));
-    assertTrue(runner.includes('每个 blockers/redlines 条目必须在 blockers.md 中有独立标题'));
+    assertTrue(prompt.includes('score: <0-100 integer>'));
+    assertTrue(prompt.includes('status: <pass|fail>'));
+    assertTrue(prompt.includes('review_backend: ${reviewBackend}'));
+    assertTrue(prompt.includes('review_model: ${reviewModel}'));
+    assertTrue(prompt.includes('只允许包含下列 11 个顶层字段'));
+    assertTrue(prompt.includes('不得添加 summary、dimensions、evidence'));
+    assertTrue(prompt.includes('不要运行 review-runner、review-gate、npm test、npm run build'));
+    assertTrue(prompt.includes('automated-checks.json'));
+    assertTrue(prompt.includes('${evidenceBlocks}'));
+    assertTrue(prompt.includes('修改命令、exit code、数字或 Output 文本会使 packet fail closed'));
+    assertTrue(prompt.includes('每个 blockers/redlines 条目必须在 blockers.md 中有独立标题'));
     assertEqual(runner.includes('writeReviewerFilesFromOutput'), false,
       'Runner must fail closed instead of synthesizing reviewer packet files');
     assertEqual(runner.includes('Review output parsing incomplete'), false,
@@ -770,6 +774,50 @@ setInterval(() => {}, 1000);
       });
       assertEqual(result.status, 1, `Valid timed-out packet must reach Gate instead of exit 5: ${result.stdout}${result.stderr}`);
       assertTrue(result.stdout.includes('product-flow: completed'), result.stdout);
+    } finally {
+      rmSync(round, { recursive: true, force: true });
+    }
+  });
+
+  test('runner rejects reviewer counts that do not match round-owned evidence', () => {
+    const roundNumber = TEST_ROUNDS.parallelSuccess + 301;
+    const round = runnerRound(roundNumber);
+    const fakeBin = join(TEST_DIR, 'fake-bin-forged-round-evidence');
+    try {
+      const automatedPath = join(round, 'evidence', 'automated-checks.json');
+      const automated = JSON.parse(readFileSync(automatedPath, 'utf8'));
+      automated.testGate.output = '# tests 159\n# pass 159\n# fail 0';
+      writeFileSync(automatedPath, JSON.stringify(automated));
+
+      mkdirSync(fakeBin);
+      const fakeCodex = join(fakeBin, 'codex');
+      const reviewerDir = join(round, 'product-flow');
+      const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+      const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+      writeFileSync(fakeCodex, `#!/usr/bin/env node
+if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
+const fs = process.getBuiltinModule('node:fs');
+fs.mkdirSync(${JSON.stringify(reviewerDir)}, { recursive: true });
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'result.yaml'))}, 'reviewer: product-flow\\nprofile: quick\\nround: ${roundNumber}\\ncandidate_commit: ${candidateCommit}\\ncandidate_tree: ${candidateTree}\\nscore: 95\\nstatus: pass\\nreview_backend: codex\\nreview_model: ${TEST_CODEX_MODEL}\\nblockers: []\\nredlines: []\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'score.md'))}, '## Overall Score: 95/100\\nCommand: npm test\\nExit code: 0\\nOutput: # tests 1; # pass 1; # fail 0\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'blockers.md'))}, 'No P0/P1 blockers.\\n');
+fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '# Improvements\\n');
+`);
+      chmodSync(fakeCodex, 0o755);
+      const result = spawnSync('node', [
+        join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--profile', 'quick', '--parallel',
+        '--agent', 'codex', '--model', TEST_CODEX_MODEL, '--reviewer', 'product-flow',
+        '--round', String(roundNumber), '--skip-evidence',
+      ], {
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
+        env: {
+          ...process.env, PATH: `${fakeBin}:${process.env.PATH}`,
+          RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '1000', RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+          RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0', RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
+        },
+      });
+      assertEqual(result.status, 5, `Forged round evidence must fail before Gate: ${result.stdout}${result.stderr}`);
+      assertTrue(result.stdout.includes('command evidence does not match round: npm test'), result.stdout);
     } finally {
       rmSync(round, { recursive: true, force: true });
     }

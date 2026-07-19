@@ -22,6 +22,7 @@ import {
   extractFileLineReferences, extractTestOutputs,
   resolveFileReference,
 } from '../lib/evidence-utils.mjs';
+import { validateReviewerEvidenceBlocks } from '../lib/reviewer-evidence-contract.mjs';
 import { resolveReportDirectory } from '../lib/security-utils.mjs';
 
 const PROJECT_ROOT = process.cwd();
@@ -343,7 +344,7 @@ function checkEvidenceQuality(content, requireCommandEvidence = false) {
 }
 
 // Main validation
-function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
+function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity, automatedChecks) {
   const reviewerDir = join(roundDir, reviewer);
   const scorePath = join(reviewerDir, 'score.md');
   const resultPath = join(reviewerDir, 'result.yaml');
@@ -397,6 +398,12 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity) {
   // Independent reviewers may cite candidate diff code for static claims. Runtime
   // claims still require command/test evidence, and self-authored language is rejected.
   allViolations.push(...checkMissingEvidenceOutput(content));
+  if (packet?.status === 'pass') {
+    const evidenceBinding = validateReviewerEvidenceBlocks(content, automatedChecks);
+    if (!evidenceBinding.valid) {
+      allViolations.push({ type: 'round_evidence_mismatch', desc: evidenceBinding.reason });
+    }
+  }
   if (packet) {
     allViolations.push(...checkFindingEvidenceBindings(
       [...packet.blockers, ...packet.redlines], blockersContent,
@@ -585,9 +592,11 @@ function main({ targetRound, targetReviewer, diffBase }) {
     commit: null, tree: null, valid: false,
     backend: null, model: null, reviewIdentityValid: false,
   };
+  let automatedChecks = null;
   try {
     const metadata = JSON.parse(readFileSync(join(roundDir, 'metadata.json'), 'utf8'));
     const backendLock = JSON.parse(readFileSync(join(roundDir, 'review-backend.json'), 'utf8'));
+    automatedChecks = JSON.parse(readFileSync(join(roundDir, 'evidence', 'automated-checks.json'), 'utf8'));
     const commit = metadata.candidate_commit;
     const tree = metadata.candidate_tree;
     candidateIdentity = {
@@ -609,7 +618,9 @@ function main({ targetRound, targetReviewer, diffBase }) {
     log.fail('Missing or invalid metadata/backend identity');
   }
 
-  const results = reviewers.map(r => validateReviewer(roundDir, r, diffFiles, candidateIdentity));
+  const results = reviewers.map(r => validateReviewer(
+    roundDir, r, diffFiles, candidateIdentity, automatedChecks,
+  ));
 
   // SECURITY: Require minimum reviewer count for gate integrity
   // A delivery packet with 0 reviewers is an incomplete review

@@ -365,8 +365,9 @@ backend/model 校验的完整四文件 packet 才可视为完成。HTTP 4xx（40
 报告目录在三个 CLI 入口均以不可变值初始化；sandbox capability 失败必须直接输出 host-shell/CI 恢复动作。
 Gate 是唯一 production evidence collector；Runner 通过 Gate 持久化证据后只消费 candidate-bound
 round scope 和 Gate-owned reviewer selection，避免启动集合与最终仲裁集合分叉。`status: pass` 的 packet
-必须至少包含一个结构化共享命令证据，静态 file:line 引用不能单独授权通过；Runner 在接收 packet 时
-即执行这项检查，使无证据的 pass 包进入既有重试流程。证据启动、Git 身份读取和最终 Gate 调用均使用
+必须至少逐字包含一个由本轮 Gate 自动化证据派生的规范化共享命令块；命令、退出码或摘要与本轮证据
+不一致时 fail closed。静态 file:line 引用不能单独授权通过；Runner 在接收 packet 时即执行这项检查，
+使缺失或伪造证据的 pass 包进入既有重试流程。证据启动、Git 身份读取和最终 Gate 调用均使用
 异步子进程/文件 API，避免 reviewer 编排热路径阻塞事件循环。
 Runner 在 reviewer 启动前及 `--no-collect` Gate 复核时都要求工作树保持 clean；持久化
 evidence 后出现未提交漂移会 fail closed。Reviewer 的进程树、超时、重试和并行/串行调度由

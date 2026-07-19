@@ -24,8 +24,7 @@ import { createHash } from 'node:crypto';
 import {
   calculateReviewerTimeout,
   detectChangeScale as detectCanonicalChangeScale,
-  parseYamlProfile as parseYamlProfileShared, parseYamlResult, selectReviewers,
-  validateResultYamlContract,
+  parseYamlProfile as parseYamlProfileShared, selectReviewers,
 } from '../lib/review-utils.mjs';
 import {
   extractResultScoresFromRound, persistPhasePlan, persistPhaseResult,
@@ -34,13 +33,14 @@ import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
 import {
   fetchRadarReviewerModel, selectRadarReviewerModel, validateReviewModelIdentity,
 } from '../lib/model-selector.mjs';
-import { checkMissingEvidenceOutput, extractCommandEvidence } from '../lib/evidence-utils.mjs';
 import {
   createSubprocessEnv, ensureContainedDirectorySync, isPathWithin,
   outerSandboxAttestationFromEnv, readContainedFile, readContainedFileSync,
   resolveReportDirectory, resolveWithinRoot, writeContainedFile,
 } from '../lib/security-utils.mjs';
 import { executeReviewers } from './modules/reviewer-execution.mjs';
+import { validateReviewerPacket } from './modules/reviewer-packet.mjs';
+import { generateReviewerPrompt } from './modules/reviewer-prompt.mjs';
 
 const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
@@ -412,132 +412,6 @@ async function getGitInfo() {
   }
 }
 
-// Generate reviewer prompt
-function generateReviewerPrompt(
-  reviewerName, currentRound, candidateIdentity, reviewBackend, reviewModel, reviewReasoningEffort,
-) {
-  const reviewerContent = loadReviewer(reviewerName);
-  if (!reviewerContent) return null;
-  const { commit: candidateCommit, tree: candidateTree } = candidateIdentity;
-
-  // Extract key sections for the prompt
-  const prompt = `
-# ${reviewerName} Review
-
-请执行 ${reviewerName} 的评审。
-
-## 评审维度
-请读取完整定义: ${SKILL_DIR}/reviewers/${reviewerName}.md
-
-## 你的任务
-1. 读取相关代码文件
-2. 检查每个评审维度
-3. 给出具体评分 (0-100)
-4. 列出发现的 blocker (P0/P1 必须修复, P2/P3 建议改进)
-5. 列出改进建议
-
-## ⚠️ 对抗性审查规则（必须遵守）
-
-**禁止行为：**
-- ❌ 不要引用你自己刚刚修改的代码作为"证据"
-- ❌ 不要在没有实际运行的情况下声称"功能正常"
-- ❌ 不要使用模糊描述如"代码看起来正确"
-- ❌ 不要运行 review-runner、review-gate、npm test、npm run build 或其他共享测试/门禁命令
-- ❌ 不要修改源码、本轮共享 metadata/evidence，或其他 Reviewer 的目录
-
-**必须行为：**
-- ✅ 引用**现有文件**中的代码行号（不是你刚写的）
-- ✅ 引用**已有测试**的输出结果
-- ✅ 使用本轮已持久化的 evidence/automated-checks.json 引用共享测试结果，并摘录命令、exit code 和测试摘要
-- ✅ score.md 必须至少包含一个 validator 可解析的共享证据块；从 JSON 原样填写实际数字，例如：
-  Command: npm test
-  Exit code: 0
-  Output: # tests <N>; # pass <N>; # fail 0
-- ✅ 其他命令也必须使用同样的 Command/Exit code/Output 三行格式，Output 包含原始摘要
-- ❌ 不得只写“测试通过”“共享证据为 pass”而省略命令、exit code 或输出摘要
-- ✅ 每个 blockers/redlines 条目必须在 blockers.md 中有独立标题，标题原样包含该条目的完整文本或唯一标识符
-- ✅ file:line 引用必须使用文件的实际物理行号，不得把 JSON 内嵌输出的行偏移当作文件行号
-- ✅ 引用**历史报告**或**其他 Reviewer 的发现**
-- ✅ 提供具体的错误信息、堆栈跟踪或命令输出
-
-## 输出要求
-本轮 reviewer 执行身份为 ${reviewBackend}/${reviewModel}，reasoning effort 为 ${reviewReasoningEffort || 'backend default'}。
-在 ${REPORT_DIR}/round-{N}/${reviewerName}/ 目录下创建:
-- result.yaml - 机器可读结果
-- score.md - 评分详情
-- blockers.md - P0/P1 必须修复的问题
-- improvement-list.md - P2/P3 改进建议
-
-你只允许写入上面列出的四个 packet 文件。result.yaml 只允许包含下列 11 个顶层字段，顺序和名称必须完全一致；不得添加 summary、dimensions、evidence 或任何其他顶层字段。score 必须是整数，status 必须是小写 pass 或 fail。status 只表示你自己的 reviewer verdict，不表示整轮 Gate 或其他 reviewer 的结果。仅当 score >= 90 且 blockers/redlines 都为空时 status 才能是 pass；其他情况必须是 fail：
-\`\`\`yaml
-reviewer: ${reviewerName}
-profile: ${profile}
-round: ${currentRound}
-candidate_commit: ${candidateCommit}
-candidate_tree: ${candidateTree}
-score: <0-100 integer>
-status: <pass|fail>
-review_backend: ${reviewBackend}
-review_model: ${reviewModel}
-blockers: []
-redlines: []
-\`\`\`
-实际输出目录必须是 ${REPORT_DIR}/round-${String(currentRound).padStart(3, '0')}/${reviewerName}/。
-
-## 评分标准
-- >= 90: 优秀，可以发布
-- 80-89: 良好，建议改进
-- 70-79: 及格，必须改进
-- < 70: 不及格，需要重构
-
-## 红线规则
-如果发现任何红线，必须在 blockers.md 中明确标注为 P0。
-`;
-
-  return prompt;
-}
-
-// Validate resume artifacts for credibility
-async function validateResumeArtifacts(
-  reviewerDir, reviewer, expectedProfile, expectedRound, currentIdentity,
-  expectedBackend, expectedModel,
-) {
-  const requiredFiles = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md'];
-  try {
-    const contents = await Promise.all(requiredFiles.map(file =>
-      readContainedFile(reviewerDir, join(reviewerDir, file), 'utf8').catch(error => ({ error, file }))
-    ));
-    const missingFiles = contents.filter(value => typeof value !== 'string').map(value => value.file);
-    if (missingFiles.length > 0) return { valid: false, reason: `missing: ${missingFiles.join(', ')}` };
-    const yamlContent = contents[0];
-    const contract = validateResultYamlContract(yamlContent);
-    if (!contract.valid) return { valid: false, reason: contract.error };
-    const parsed = parseYamlResult(yamlContent);
-    const mismatches = [];
-    if (parsed.reviewer !== reviewer) mismatches.push(`reviewer=${parsed.reviewer ?? 'missing'}`);
-    if (parsed.profile !== expectedProfile) mismatches.push(`profile=${parsed.profile ?? 'missing'}`);
-    if (parsed.round !== expectedRound) mismatches.push(`round=${parsed.round ?? 'missing'}`);
-    if (parsed.candidateCommit !== currentIdentity.commit) mismatches.push(`candidate_commit=${parsed.candidateCommit ?? 'missing'}`);
-    if (parsed.candidateTree !== currentIdentity.tree) mismatches.push(`candidate_tree=${parsed.candidateTree ?? 'missing'}`);
-    if (parsed.reviewBackend !== expectedBackend) mismatches.push(`review_backend=${parsed.reviewBackend ?? 'missing'}`);
-    if (parsed.reviewModel !== expectedModel) mismatches.push(`review_model=${parsed.reviewModel ?? 'missing'}`);
-    if (!Number.isInteger(parsed.score) || parsed.score < 0 || parsed.score > 100) mismatches.push('score=invalid');
-    if (!['pass', 'fail'].includes(parsed.status)) mismatches.push(`status=${parsed.status ?? 'missing'}`);
-    if (parsed.status === 'pass' && extractCommandEvidence(`${contents[1]}\n${contents[2]}`).length === 0) {
-      mismatches.push('missing structured command evidence for passing packet');
-    }
-    if (parsed.status === 'pass' && checkMissingEvidenceOutput(`${contents[1]}\n${contents[2]}`).length > 0) {
-      mismatches.push('unsupported success claim in passing packet');
-    }
-    const emptyFiles = requiredFiles.filter((_file, index) => contents[index].trim() === '');
-    if (emptyFiles.length > 0) mismatches.push(`empty=${emptyFiles.join(',')}`);
-    if (mismatches.length > 0) return { valid: false, reason: mismatches.join('; ') };
-    return { valid: true, score: parsed.score, status: parsed.status };
-  } catch (e) {
-    return { valid: false, reason: `parse error: ${e.message}` };
-  }
-}
-
 function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
   if (agent === 'claude') {
     return {
@@ -759,8 +633,11 @@ async function persistRoundEvidenceBeforeReview(roundDir, profileName, round) {
 
 async function loadPersistedRoundScope(roundDir) {
   const metadataFile = join(roundDir, 'metadata.json');
+  const automatedFile = join(roundDir, 'evidence', 'automated-checks.json');
   if (!existsSync(metadataFile)) throw new Error('cannot skip evidence without candidate-bound metadata.json');
+  if (!existsSync(automatedFile)) throw new Error('cannot skip evidence without automated-checks.json');
   const metadata = JSON.parse(await readContainedFile(roundDir, metadataFile, 'utf8'));
+  const automatedChecks = JSON.parse(await readContainedFile(roundDir, automatedFile, 'utf8'));
   const identity = await getGitInfo();
   if (identity.status !== '') {
     throw new Error('persisted round scope requires a clean source checkout');
@@ -782,6 +659,7 @@ async function loadPersistedRoundScope(roundDir) {
     scale: metadata.scale || {},
     structure: {},
     reviewers: metadata.reviewers,
+    automatedChecks,
   };
 }
 
@@ -893,10 +771,27 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   log.info(`Using agent: ${resolvedAgent}, model: ${resolvedModel}, reasoning effort: ${resolvedEffort || 'backend default'}`);
   const candidateIdentity = await getGitInfo();
   const reviewerPrompts = new Map(allReviewers.map(reviewer => [
-    reviewer, generateReviewerPrompt(
-      reviewer, currentRound, candidateIdentity, resolvedAgent, resolvedModel, resolvedEffort,
-    ),
+    reviewer, generateReviewerPrompt({
+      reviewerName: reviewer,
+      reviewerContent: loadReviewer(reviewer),
+      currentRound,
+      candidateIdentity,
+      reviewBackend: resolvedAgent,
+      reviewModel: resolvedModel,
+      reviewReasoningEffort: resolvedEffort,
+      profile,
+      skillDir: SKILL_DIR,
+      reportDir: REPORT_DIR,
+      automatedChecks: evidence.automatedChecks,
+    }),
   ]));
+  const validatePacket = (
+    reviewerDir, reviewer, expectedProfile, expectedRound, currentIdentity,
+    expectedBackend, expectedModel,
+  ) => validateReviewerPacket({
+    reviewerDir, reviewer, expectedProfile, expectedRound, currentIdentity,
+    expectedBackend, expectedModel, automatedChecks: evidence.automatedChecks,
+  });
 
   // Use config for delays
   const startDelay = config.execution?.start_delay_ms
@@ -910,7 +805,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     baseTimeout: REVIEWER_TIMEOUT_MS, retryMax: REVIEWER_RETRY_MAX,
     retryBaseDelayMs: RETRY_BASE_DELAY_MS, retryMaxJitterMs: RETRY_MAX_JITTER_MS,
     killGraceMs: REVIEWER_KILL_GRACE_MS, toolEnv: TOOL_ENV, candidateEnv: CANDIDATE_ENV,
-    getAgentInvocation, validatePacket: validateResumeArtifacts, log, colors: c,
+    getAgentInvocation, validatePacket, log, colors: c,
     onReviewComplete, evidence,
     preflightAgent: agent => execFileAsync(agent, ['--help'], {
       cwd: PROJECT_ROOT, timeout: 10000, encoding: 'utf8', env: TOOL_ENV,

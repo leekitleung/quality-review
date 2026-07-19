@@ -8,6 +8,7 @@ first release candidate rather than a version bump from an earlier published bui
 - Reject reviewer test evidence containing non-zero failure counts, including multi-digit counts.
 - Bind test, coverage, audit, build, typecheck, and lint evidence to command-specific output summaries.
 - Keep reviewer packet command evidence fail-closed across Markdown and YAML-shaped inputs.
+- Bind passing reviewer packet summaries to canonical evidence derived from the same persisted Gate round.
 
 ## Required approval
 
