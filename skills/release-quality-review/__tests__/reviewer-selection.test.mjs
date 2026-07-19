@@ -275,8 +275,10 @@ test.describe('conditional reviewer triggers', () => {
   test('uses the shared reviewer selector in both runner and gate', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
     const gate = readFileSync(join(SKILL_DIR, 'scripts', 'review-gate.mjs'), 'utf8');
+    const gateSelection = readFileSync(join(SKILL_DIR, 'scripts', 'modules', 'gate-reviewer-selection.mjs'), 'utf8');
     assertTrue(runner.includes('selectReviewers('), 'Runner must use shared selection');
-    assertTrue(gate.includes('selectReviewers('), 'Gate must use shared selection');
+    assertTrue(gate.includes('selectGateReviewers('), 'Gate must delegate reviewer selection');
+    assertTrue(gateSelection.includes('selectReviewers('), 'Gate selection must use shared selection');
     assertTrue(!runner.includes('function detectConditionalReviewers('), 'Runner must not retain divergent selection');
     assertTrue(runner.includes('detectChangeScale as detectCanonicalChangeScale'),
       'Runner must import canonical change-scale detection');

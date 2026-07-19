@@ -8,7 +8,6 @@ import { readFileSync, existsSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync, execFileSync } from 'child_process';
-import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = process.cwd();
@@ -18,19 +17,15 @@ const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 // Import from modules
 import { colors, log } from './modules/constants.mjs';
 import { parseCliArgs } from './modules/cli.mjs';
-import { PROFILES, loadConfig, loadYamlProfile, loadReviewer } from './modules/config.mjs';
+import { loadConfig, loadReviewer } from './modules/config.mjs';
 import { detectChangeScale, printScaleDetection } from './modules/scale.mjs';
 import {
-  validCommandEvidence,
-  validCandidateCheckoutEvidence,
   collectEvidence,
   persistEvidence,
   persistFinalArbitration,
-  runEvidenceCommand,
-  runAutomatedChecks,
-  scanCircularDependencies,
 } from './modules/evidence.mjs';
-import { resolveVerificationCommands } from './modules/verification-policy.mjs';
+import { loadPersistedGateEvidence } from './modules/persisted-gate-evidence.mjs';
+import { selectGateReviewers } from './modules/gate-reviewer-selection.mjs';
 import {
   validateReviewerIdentity,
   loadExistingScores,
@@ -41,30 +36,19 @@ import {
   generateSummary,
   generateFinalReport,
   writePhaseBoundary,
-  updateMetadataWithScale,
 } from './modules/reports.mjs';
-import { getReviewerFocus, persistPhasePlan } from '../lib/phase-persistence.mjs';
+import { persistPhasePlan } from '../lib/phase-persistence.mjs';
 import { validateReviewModelIdentity } from '../lib/model-selector.mjs';
 
 // Import from utils (already shared)
 import {
-  parseScore,
-  parseBlockers,
-  parseYamlResult,
-  selectReviewers,
-  findTrivialVerificationScripts,
   hasConcreteVerificationOutput,
-  validateCleanCandidateEvidence,
-  validateRollbackEvidence,
   strictAutomatedChecksPassed,
 } from '../lib/review-utils.mjs';
 import {
-  containsSensitiveText,
-  redactSensitiveText,
   ensureContainedDirectorySync,
   readContainedFileSync,
   resolveReportDirectory,
-  writeContainedFileSync,
 } from '../lib/security-utils.mjs';
 
 function resolveReportDirectoryOrExit() {
@@ -150,64 +134,21 @@ async function runGate() {
   }
 
   const config = loadConfig(join(SKILL_DIR, 'review-config.yaml'));
-  const strictProfileRequested = ['release-gate', 'full', 'agentic-release-gate'].includes(profile);
-  if (strictProfileRequested && excludeReviewers.length > 0) {
-    log.error('Strict profiles do not allow --exclude-reviewer');
-    return false;
-  }
-
-  // Determine reviewers to run
-  let reviewers = [];
-  let profileConfig = PROFILES[profile] || PROFILES['release-gate'];
-
-  const yamlProfile = loadYamlProfile(SKILL_DIR, profile);
-  if (yamlProfile) {
-    log.info(`Loaded YAML profile: ${yamlProfile.name}`);
-    log.info(` Resident reviewers: ${JSON.stringify(yamlProfile.resident_reviewers)}`);
-    log.info(` Conditional reviewers: ${JSON.stringify(yamlProfile.conditional_reviewers)}`);
-
-    const gitOutput = execFileSync('git', ['diff', '--name-only', resolvedDiffBase], { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000 });
-    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000 });
-    const changedFiles = [...new Set(`${gitOutput}\n${untracked}`.split('\n').filter(f => f.trim()))];
-    const diffContent = execFileSync('git', ['diff', resolvedDiffBase], { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, maxBuffer: 10 * 1024 * 1024 });
-    let selection;
-    try {
-      selection = selectReviewers(yamlProfile, changedFiles, diffContent);
-    } catch (error) {
-      log.error(`Invalid reviewer configuration: ${error.message}`);
-      return false;
-    }
-    reviewers = selection.reviewers;
-    const triggeredConditional = selection.triggeredConditional;
-    if (triggeredConditional.length > 0) {
-      log.info(`Conditional reviewers triggered: ${triggeredConditional.join(', ')}`);
-    }
-
-    if (yamlProfile.gate?.require_adversarial && yamlProfile.adversarial_reviewers?.length > 0) {
-      log.info(`Adversarial reviewers (required): ${JSON.stringify(yamlProfile.adversarial_reviewers)}`);
-    }
-
-    profileConfig = {
-      name: yamlProfile.name,
-      description: yamlProfile.description,
-      reviewers: reviewers,
-      gate: yamlProfile.gate,
-    };
-    reviewers = reviewers.filter(r => !excludeReviewers.includes(r));
-  } else {
-    if (options.userSpecifiedProfile) {
-      log.error(`Profile not found: ${profile}`);
-      return false;
-    }
-    reviewers = profileConfig.reviewers.filter(r => !excludeReviewers.includes(r));
-  }
-
-  if (singleReviewer) {
-    reviewers = [singleReviewer];
-  }
-  reviewers = [...new Set(reviewers)];
-  if (reviewers.length === 0) {
-    log.error('GATE BLOCKED - no reviewers selected');
+  let reviewers;
+  let profileConfig;
+  try {
+    ({ reviewers, profileConfig } = selectGateReviewers({
+      skillDir: SKILL_DIR,
+      projectRoot: PROJECT_ROOT,
+      profile,
+      resolvedDiffBase,
+      excludeReviewers,
+      singleReviewer,
+      userSpecifiedProfile: options.userSpecifiedProfile,
+      log,
+    }));
+  } catch (error) {
+    log.error(error.message);
     return false;
   }
 
@@ -282,80 +223,14 @@ async function runGate() {
       return false;
     }
   } else {
-    const metadataPath = join(roundDir, 'metadata.json');
-    const automatedPath = join(roundDir, 'evidence', 'automated-checks.json');
-    if (existsSync(metadataPath) && existsSync(automatedPath)) {
-      try {
-        const metadata = JSON.parse(readContainedFileSync(roundDir, metadataPath, 'utf8'));
-        const automatedChecks = JSON.parse(readContainedFileSync(roundDir, automatedPath, 'utf8'));
-        const fullCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
-        const currentTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
-        const currentStatus = execFileSync('git', ['status', '--short'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
-        const digest = createHash('sha256').update(readContainedFileSync(roundDir, automatedPath, 'utf8')).digest('hex');
-        if (currentStatus !== '' || metadata.candidate_commit !== fullCommit || metadata.candidate_tree !== currentTree ||
-            metadata.automated_checks_sha256 !== digest) {
-          throw new Error('persisted evidence does not match the current commit and working-tree status');
-        }
-        if (profile === 'agentic-release-gate') {
-          const cleanPath = join(roundDir, 'evidence', 'clean-candidate.json');
-          const rollbackPath = join(roundDir, 'evidence', 'rollback-verification.json');
-          const cleanContent = readContainedFileSync(roundDir, cleanPath, 'utf8');
-          const rollbackContent = readContainedFileSync(roundDir, rollbackPath, 'utf8');
-          const clean = JSON.parse(cleanContent);
-          const rollback = JSON.parse(rollbackContent);
-          if (metadata.clean_candidate_sha256 !== createHash('sha256').update(cleanContent).digest('hex') ||
-              !validateCleanCandidateEvidence(clean, metadata.candidate_commit, metadata.candidate_tree)) {
-            throw new Error('invalid clean-candidate verification evidence');
-          }
-          if (metadata.rollback_verification_sha256 !== createHash('sha256').update(rollbackContent).digest('hex') ||
-              !validateRollbackEvidence(
-                rollback, metadata.candidate_commit, metadata.candidate_tree, metadata.base_commit, metadata.base_tree
-              )) {
-            throw new Error('invalid rollback verification evidence');
-          }
-        }
-        // Validate command evidence structure for all gates
-        const verification = resolveVerificationCommands(config);
-        const expectedCommands = {
-          testGate: verification.test, typecheckGate: verification.typecheck,
-          buildGate: verification.build, lintGate: verification.lint, auditGate: verification.audit,
-        };
-        if (['release-gate', 'full', 'agentic-release-gate'].includes(profile)) {
-          expectedCommands.e2eGate = verification.e2e;
-        }
-        if (profile === 'agentic-release-gate') {
-          expectedCommands.coverageGate = verification.coverage;
-        }
-        for (const [name, expectedCommand] of Object.entries(expectedCommands)) {
-          if (!validCommandEvidence(automatedChecks[name], expectedCommand) ||
-              (name === 'testGate' && !hasConcreteVerificationOutput('test', automatedChecks[name]?.output)) ||
-              (name === 'coverageGate' && !hasConcreteVerificationOutput('coverage', automatedChecks[name]?.output))) {
-            throw new Error(`invalid ${name} command evidence`);
-          }
-        }
-        // Validate candidate checkout evidence
-        if ((profile === 'agentic-release-gate' && !automatedChecks.candidateCheckout) ||
-            (automatedChecks.candidateCheckout && !validCandidateCheckoutEvidence(
-              automatedChecks.candidateCheckout, metadata.candidate_commit, metadata.candidate_tree
-            ))) {
-          throw new Error('invalid automated verification checkout evidence');
-        }
-        evidence = {
-          timestamp: metadata.collected_at,
-          git: metadata.git,
-          files: metadata.files,
-          scale: metadata.scale,
-          automatedChecks,
-        };
+    try {
+      evidence = loadPersistedGateEvidence({ roundDir, projectRoot: PROJECT_ROOT, profile, config });
+      if (evidence) {
         log.info('Loaded persisted automated evidence for the current candidate');
-      } catch (error) {
-        log.error(`Persisted evidence is invalid: ${error.message}`);
-        if (!collectEvidenceOpt) {
-          return false;
-        }
-        log.warn('Re-collecting evidence...');
-        evidence = collectEvidence(config, PROJECT_ROOT, diffBase, resolvedDiffBase, SKILL_DIR);
       }
+    } catch (error) {
+      log.error(`Persisted evidence is invalid: ${error.message}`);
+      return false;
     }
   }
 

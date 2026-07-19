@@ -9,6 +9,7 @@ first release candidate rather than a version bump from an earlier published bui
 - Bind test, coverage, audit, build, typecheck, and lint evidence to command-specific output summaries.
 - Keep reviewer packet command evidence fail-closed across Markdown and YAML-shaped inputs.
 - Bind passing reviewer packet summaries to canonical evidence derived from the same persisted Gate round.
+- Separate reviewer selection, persisted evidence, process lifecycle, and Gate policy test ownership.
 
 ## Required approval
 
