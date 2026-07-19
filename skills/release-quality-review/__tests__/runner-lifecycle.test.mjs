@@ -302,9 +302,9 @@ test.describe('CLI fail-closed integration', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
     assertTrue(runner.includes("args: ['-p', '--model', selectedModel, '--permission-mode', 'acceptEdits', '--no-session-persistence', prompt]"),
       'Claude print mode must not block waiting for report write approval');
-    assertTrue(runner.includes("args: ['exec', '--json', '--model', selectedModel, ...effortArgs"),
+    assertTrue(runner.includes("'exec', '--json', '--model', selectedModel, ...effortArgs"),
       'Codex reviewer invocation must pin the selected model');
-    assertTrue(runner.includes("args: ['exec', '--json', '--model', selectedModel"),
+    assertTrue(runner.includes("'exec', '--json', '--model', selectedModel"),
       'Codex reviewer invocation must expose structured provider failures');
     assertTrue(runner.includes('model_reasoning_effort=${JSON.stringify(selectedEffort)}'),
       'Codex reviewer invocation must pin Radar-selected reasoning effort');
@@ -359,6 +359,14 @@ test.describe('CLI fail-closed integration', () => {
       assertEqual(result.status, 4, `${result.stdout}${result.stderr}`);
       assertTrue(result.stderr.includes(expected), `${result.stdout}${result.stderr}`);
     }
+  });
+
+  test('Codex reviewer invocation uses the authenticated HTTP transport', () => {
+    const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
+    assertTrue(runner.includes('model_providers.chatgpt-http.supports_websockets=false'),
+      'Reviewer invocation must avoid unreliable WebSocket startup retries');
+    assertTrue(runner.includes('model_providers.chatgpt-http.requires_openai_auth=true'),
+      'HTTP reviewer provider must retain ChatGPT authentication');
   });
 
   test('dry-run supports Codex Radar auto-selection and validates explicit identity', t => {

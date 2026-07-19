@@ -21,3 +21,4 @@
 - Split Gate reviewer selection, persisted-evidence loading, reviewer process lifecycle, and policy integration tests into focused modules while preserving fail-closed behavior.
 - Unify strict command-gate policy, bind fail packets and finding-specific citations, verify the packed artifact, expand CI release checks, and add doctor, examples, and retention-policy commands.
 - Isolate each reviewer in a private writable sandbox with host-owned packet publication, use a meaningful `HEAD~1` default base, minimize persisted Git metadata, enforce report retention with an audited deletion mode, and split verification-script policy from the shared utility module.
+- Give isolated Codex reviewers a minimal private authentication home and an authenticated HTTP Responses provider so transient WebSocket handshake failures do not prevent packet generation.

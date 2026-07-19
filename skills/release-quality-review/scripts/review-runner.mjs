@@ -419,9 +419,20 @@ function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
     const effortArgs = selectedEffort
       ? ['--config', `model_reasoning_effort=${JSON.stringify(selectedEffort)}`]
       : [];
+    const httpProviderArgs = [
+      '--config', 'model_provider="chatgpt-http"',
+      '--config', 'model_providers.chatgpt-http.name="ChatGPT HTTP"',
+      '--config', 'model_providers.chatgpt-http.base_url="https://chatgpt.com/backend-api/codex"',
+      '--config', 'model_providers.chatgpt-http.wire_api="responses"',
+      '--config', 'model_providers.chatgpt-http.requires_openai_auth=true',
+      '--config', 'model_providers.chatgpt-http.supports_websockets=false',
+    ];
     return {
       command: 'codex',
-      args: ['exec', '--json', '--model', selectedModel, ...effortArgs, '--ephemeral', '--ignore-user-config', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt],
+      args: [
+        'exec', '--json', '--model', selectedModel, ...effortArgs, ...httpProviderArgs,
+        '--ephemeral', '--ignore-user-config', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt,
+      ],
     };
   }
   return { command: agent, args: ['-p', prompt] };
