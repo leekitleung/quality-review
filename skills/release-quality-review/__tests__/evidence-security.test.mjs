@@ -207,7 +207,7 @@ test.describe('security boundaries', () => {
       'github_pat_abcdefghijklmnopqrstuvwxyz1234567890',
       'glpat-abcdefghijklmnopqrstuvwxyz1234567890',
       'npm_abcdefghijklmnopqrstuvwxyz1234567890',
-      'slack-token-test-placeholder-abcdefghijklmnopqrstuvwxyz',
+      'xoxb-' + '1234567890-abcdefghijklmnopqrstuvwxyz',
       'AIzaabcdefghijklmnopqrstuvwxyz1234567890',
       'sk_live_abcdefghijklmnopqrstuvwxyz1234567890',
       'sk-proj-abcdefghijklmnopqrstuvwxyz1234567890',
