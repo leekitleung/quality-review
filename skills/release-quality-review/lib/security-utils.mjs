@@ -8,6 +8,8 @@ import {
 } from 'node:fs';
 import { lstat, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 
+import { buildCandidateSandboxProfile } from './sandbox-profile.mjs';
+
 export function isPathWithin(root, candidate) {
   const rootPath = path.resolve(root);
   const candPath = path.resolve(candidate);
@@ -132,41 +134,13 @@ export function wrapCandidateCommand(command, args, {
   const readable = [...new Set([...readOnlyRoots, ...writable].map(canonicalize))];
   const roots = [...new Set(writable.map(canonicalize))];
   const runtimeRoot = path.dirname(path.dirname(realpathSync(process.execPath)));
-  const quote = value => JSON.stringify(value);
-  const networkSystemServices = [
-    'com.apple.cfprefsd.agent',
-    'com.apple.cfprefsd.daemon',
-    'com.apple.system.DirectoryService.libinfo_v1',
-    'com.apple.system.opendirectoryd.libinfo',
-    'com.apple.system.opendirectoryd.membership',
-    'com.apple.trustd',
-    'com.apple.trustd.agent',
-    'com.apple.SystemConfiguration.configd',
-    'com.apple.SystemConfiguration.SCNetworkReachability',
-    'com.apple.securityd.xpc',
-    'com.apple.SecurityServer',
-    'com.apple.system.notification_center',
-  ];
   const readRoots = [
     '/', '/usr', '/System', '/Library', '/bin', '/sbin', '/opt/homebrew', '/private/etc',
     '/private/var/db', '/private/var/run', '/private/var/select', '/dev', runtimeRoot, ...readable,
   ];
-  const profile = [
-    '(version 1)',
-    '(deny default)',
-    '(allow process*)',
-    '(allow signal (target same-sandbox))',
-    '(allow sysctl*)',
-    ...(allowNetwork ? [
-      '(allow network*)',
-      `(allow mach-lookup ${networkSystemServices.map(name => `(global-name ${quote(name)})`).join(' ')})`,
-      '(allow ipc-posix-shm-read* (ipc-posix-name-prefix "apple.cfprefs."))',
-    ] : []),
-    '(allow dynamic-code-generation)',
-    '(allow file-read-metadata)',
-    `(allow file-read* (literal "/") ${readRoots.slice(1).map(root => `(subpath ${quote(root)})`).join(' ')})`,
-    `(allow file-write* ${[...roots, '/dev'].map(root => `(subpath ${quote(root)})`).join(' ')})`,
-  ].join(' ');
+  const profile = buildCandidateSandboxProfile({
+    readRoots, writeRoots: [...roots, '/dev'], allowNetwork,
+  });
   if (readable.some(root => root === realpathSync(hostHome))) throw new Error('host home cannot be a candidate sandbox root');
   return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, command, ...args] };
 }

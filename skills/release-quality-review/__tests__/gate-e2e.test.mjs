@@ -610,6 +610,7 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
         'skills/release-quality-review/lib/evidence-utils.mjs',
         'skills/release-quality-review/lib/model-selector.mjs',
         'skills/release-quality-review/lib/candidate-runtime.mjs',
+        'skills/release-quality-review/lib/sandbox-profile.mjs',
         'skills/release-quality-review/lib/security-utils.mjs',
         'skills/release-quality-review/review-config.yaml',
         'skills/release-quality-review/templates/result.yaml',
