@@ -3,7 +3,7 @@ import { userInfo } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
-  closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
+  chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync,
   realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { lstat, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
@@ -54,6 +54,7 @@ const SUBPROCESS_ENV_ALLOWLIST = new Set([
   'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LANGUAGE',
   'LC_ALL', 'LC_CTYPE', 'TERM', 'COLORTERM', 'TERM_PROGRAM', 'TZ', 'CI', 'NO_COLOR',
   'FORCE_COLOR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'SYSTEMROOT', 'WINDIR',
+  'CLAUDE_CONFIG_DIR',
   'COMSPEC', 'PATHEXT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'NODE_TEST_CONTEXT',
   'NODE_V8_COVERAGE',
   'RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED', 'RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY',
@@ -92,7 +93,7 @@ export function outerSandboxAttestationFromEnv(source = process.env) {
 
 export function wrapCandidateCommand(command, args, {
   allowedRoots = [], readOnlyRoots = [], writeRoots = [], hostHome = null, allowNetwork = false,
-  outerSandboxAttestation = null,
+  outerSandboxAttestation = null, requireExactWriteIsolation = false,
 } = {}) {
   if (process.platform !== 'darwin') throw new Error(`candidate filesystem sandbox is unavailable on ${process.platform}`);
   const probe = spawnSync('/usr/bin/sandbox-exec', [
@@ -107,6 +108,9 @@ export function wrapCandidateCommand(command, args, {
       !existsSync(writeCanary) &&
       declaredRoots.every(root => !isPathWithin(root, readCanary) && !isPathWithin(root, writeCanary));
     if (!canariesAreValid) throw new Error('candidate filesystem sandbox unavailable; nested execution fails closed');
+    if (requireExactWriteIsolation) {
+      throw new Error('reviewer filesystem sandbox unavailable; exact write isolation is required');
+    }
     const capability = spawnSync(process.execPath, ['-e', `
       const fs = require('node:fs');
       let denied = 0;
@@ -149,7 +153,7 @@ export function wrapCandidateCommand(command, args, {
   return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, command, ...args] };
 }
 
-export function ensureContainedDirectorySync(root, directory) {
+export function ensureContainedDirectorySync(root, directory, mode = null) {
   const rootPath = path.resolve(root);
   const target = path.resolve(directory);
   if (!isPathWithin(rootPath, target)) throw new Error(`directory escapes repository: ${directory}`);
@@ -166,11 +170,13 @@ export function ensureContainedDirectorySync(root, directory) {
         throw new Error(`output directory component is not a real directory: ${current}`);
       }
     } else {
-      mkdirSync(current);
+      mkdirSync(current, { mode: 0o700 });
+      chmodSync(current, 0o700);
     }
   }
   const targetReal = realpathSync(target);
   if (!isPathWithin(rootReal, targetReal)) throw new Error(`directory resolves outside repository: ${directory}`);
+  if (mode !== null) chmodSync(targetReal, mode);
   return targetReal;
 }
 

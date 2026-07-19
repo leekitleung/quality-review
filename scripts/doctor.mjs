@@ -40,7 +40,7 @@ for (const check of checks) {
   console.log(`${check.passed ? 'PASS' : 'FAIL'} ${check.name}: ${check.detail}`);
 }
 if (checks.every(check => check.passed)) {
-  console.log(`Next: npm run review -- --profile quick --round <unused-positive-round> --agent ${selected}`);
+  console.log(`Next: npm run review -- --profile quick --round <unused-positive-round> --base HEAD~1 --agent ${selected}`);
   process.exit(0);
 }
 process.exit(1);

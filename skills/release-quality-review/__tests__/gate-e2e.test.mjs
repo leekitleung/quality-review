@@ -14,7 +14,7 @@
  */
 
 import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync, cpSync } from 'fs';
-import { join, relative } from 'path';
+import { basename, join, relative } from 'path';
 import { tmpdir, userInfo } from 'node:os';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'node:child_process';
@@ -92,14 +92,19 @@ const TEST_ROUNDS = {
   evidenceForgery: ROUND_BASE + 7,
 };
 const reportRound = round => join(resolveReportDirectory(PROJECT_ROOT), `round-${String(round).padStart(3, '0')}`);
+const reviewerSandboxDir = (round, reviewer) => join(
+  resolveReportDirectory(PROJECT_ROOT), '.reviewer-sandboxes', basename(round), reviewer,
+);
 const runnerRound = round => {
   const dir = reportRound(round);
   const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
   const tree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+  const baseCommit = spawnSync('git', ['rev-parse', 'HEAD~1'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+  const baseTree = spawnSync('git', ['rev-parse', 'HEAD~1^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'metadata.json'), JSON.stringify({
     profile: 'quick', round, collected_at: new Date().toISOString(), reviewers: ['product-flow', 'architecture-maintainer'],
-    candidate_commit: commit, candidate_tree: tree, base_commit: commit, base_tree: tree,
+    candidate_commit: commit, candidate_tree: tree, base_commit: baseCommit, base_tree: baseTree,
     git: { branch: 'test', commit: commit.slice(0, 8), status: '', changedFiles: [] },
     files: {}, scale: { scale: 'none', files: 0, total: 0 },
   }));
@@ -175,7 +180,7 @@ test.describe('CLI fail-closed integration', () => {
     const roundNumber = TEST_ROUNDS.runner;
     const round = runnerRound(roundNumber);
     const fakeBin = join(TEST_DIR, 'fake-bin-runner');
-    const reviewerReportDirMarker = join(TEST_DIR, 'reviewer-report-dir');
+    const reviewerReportDirMarker = join(reviewerSandboxDir(round, 'product-flow'), 'reviewer-report-dir');
     try {
       mkdirSync(fakeBin);
       const fakeCodex = join(fakeBin, 'codex');
@@ -184,7 +189,10 @@ if (process.argv.includes('--help')) process.exit(0);
 if (!process.argv.includes('exec')) process.exit(3);
 const modelIndex = process.argv.indexOf('--model');
 if (modelIndex < 0 || process.argv[modelIndex + 1] !== ${JSON.stringify(TEST_CODEX_MODEL)}) process.exit(4);
-process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(reviewerReportDirMarker)}, process.env.RELEASE_QUALITY_REPORT_DIR || '');
+process.getBuiltinModule('node:fs').writeFileSync(
+  process.getBuiltinModule('node:path').join(process.env.RELEASE_QUALITY_REPORT_DIR, 'reviewer-report-dir'),
+  process.env.RELEASE_QUALITY_REPORT_DIR || '',
+);
 console.log('review completed');
 `);
       chmodSync(fakeCodex, 0o755);
@@ -306,7 +314,7 @@ process.exit(3);
     const roundNumber = TEST_ROUNDS.runner + 200;
     const round = reportRound(roundNumber);
     const fakeBin = join(TEST_DIR, 'fake-bin-agentic-scope');
-    const reviewerDir = join(round, 'product-flow');
+    const reviewerDir = reviewerSandboxDir(round, 'product-flow');
     const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
     const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
     try {
@@ -598,6 +606,7 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
         'skills/release-quality-review/scripts/evidence-validator.mjs',
         'skills/release-quality-review/lib/review-utils.mjs',
         'skills/release-quality-review/lib/automated-gate-policy.mjs',
+        'skills/release-quality-review/lib/verification-script-policy.mjs',
         'skills/release-quality-review/lib/evidence-utils.mjs',
         'skills/release-quality-review/lib/model-selector.mjs',
         'skills/release-quality-review/lib/candidate-runtime.mjs',

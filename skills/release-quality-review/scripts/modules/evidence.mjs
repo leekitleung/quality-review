@@ -494,12 +494,17 @@ export async function persistEvidence(projectRoot, roundDir, evidence, profileNa
     }
   }
 
+  const metadataGit = {
+    commit: evidence.git.commit,
+    status: evidence.git.status,
+    changedFileCount: evidence.git.changedFiles?.length || 0,
+  };
   const metadata = {
     profile: profileName,
     round: roundNumber,
     reviewers,
     collected_at: evidence.timestamp,
-    git: evidence.git,
+    git: metadataGit,
     files: evidence.files,
     scale: evidence.scale,
     candidate_commit: candidateCommit,

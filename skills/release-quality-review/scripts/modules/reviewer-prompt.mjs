@@ -3,7 +3,7 @@ import { renderReviewerEvidenceBlocks } from '../../lib/reviewer-evidence-contra
 export function generateReviewerPrompt({
   reviewerName, reviewerContent, currentRound, candidateIdentity,
   reviewBackend, reviewModel, reviewReasoningEffort, profile,
-  skillDir, reportDir, automatedChecks,
+  skillDir, reviewerOutputDir, automatedChecks,
 }) {
   if (!reviewerContent) return null;
   const { commit: candidateCommit, tree: candidateTree } = candidateIdentity;
@@ -52,7 +52,7 @@ ${evidenceBlocks}
 
 ## 输出要求
 本轮 reviewer 执行身份为 ${reviewBackend}/${reviewModel}，reasoning effort 为 ${reviewReasoningEffort || 'backend default'}。
-在 ${reportDir}/round-{N}/${reviewerName}/ 目录下创建:
+在 ${reviewerOutputDir} 目录下创建:
 - result.yaml - 机器可读结果
 - score.md - 评分详情
 - blockers.md - P0/P1 必须修复的问题
@@ -72,7 +72,7 @@ review_model: ${reviewModel}
 blockers: []
 redlines: []
 \`\`\`
-实际输出目录必须是 ${reportDir}/round-${String(currentRound).padStart(3, '0')}/${reviewerName}/。
+实际输出目录必须是 ${reviewerOutputDir}。
 
 ## 评分标准
 - >= 90: 优秀，可以发布

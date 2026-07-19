@@ -1,7 +1,35 @@
 import { spawn } from 'node:child_process';
-import { join, relative } from 'node:path';
+import { existsSync, rmSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 
-import { redactSensitiveText } from '../../lib/security-utils.mjs';
+import {
+  isPathWithin, readContainedFile, redactSensitiveText, wrapCandidateCommand, writeContainedFile,
+} from '../../lib/security-utils.mjs';
+
+const PACKET_FILES = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md'];
+
+function reviewerAuthRoots(agent, toolEnv) {
+  const home = toolEnv.HOME;
+  const candidates = agent === 'codex'
+    ? [toolEnv.CODEX_HOME, home && join(home, '.codex')]
+    : [toolEnv.CLAUDE_CONFIG_DIR, home && join(home, '.claude')];
+  return [...new Set(candidates.filter(path => path && existsSync(path) && path !== home))];
+}
+
+function invocationReadRoot(command, searchPath) {
+  if (isAbsolute(command) && existsSync(command)) return dirname(command);
+  for (const directory of String(searchPath || '').split(':').filter(Boolean)) {
+    if (existsSync(join(directory, command))) return directory;
+  }
+  return null;
+}
+
+async function publishPacket(sandboxDir, reviewerDir) {
+  for (const file of PACKET_FILES) {
+    const content = await readContainedFile(sandboxDir, join(sandboxDir, file), 'utf8');
+    await writeContainedFile(reviewerDir, join(reviewerDir, file), content);
+  }
+}
 
 function isPermanentAgentFailure(diagnostic) {
   const message = String(diagnostic || '').toLowerCase();
@@ -43,17 +71,44 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
     candidateEnv, getAgentInvocation, validatePacket, colors,
   } = options;
 
-  return (reviewer, reviewerDir, prompt, attempt, abortPeers) => new Promise(resolve => {
+  return (reviewer, reviewerDir, reviewerSandboxDir, prompt, attempt, abortPeers) => new Promise(resolve => {
     const invocation = getAgentInvocation(resolvedAgent, resolvedModel, resolvedEffort, prompt);
     const reviewerReportDir = relative(
       projectRoot,
       join(reportDir, '.reviewer-sandboxes', `round-${String(currentRound).padStart(3, '0')}`, reviewer),
     );
-    const proc = spawn(invocation.command, invocation.args, {
+    if (!isPathWithin(reportDir, reviewerSandboxDir)) {
+      throw new Error('reviewer sandbox escapes the report root');
+    }
+    const executableRoot = invocationReadRoot(invocation.command, toolEnv.PATH);
+    const wrapped = wrapCandidateCommand(invocation.command, invocation.args, {
+      readOnlyRoots: [projectRoot, ...reviewerAuthRoots(resolvedAgent, toolEnv), executableRoot].filter(Boolean),
+      writeRoots: [reviewerSandboxDir],
+      allowNetwork: true,
+      outerSandboxAttestation: options.outerSandboxAttestation,
+      requireExactWriteIsolation: true,
+    });
+    const reviewerEnv = {
+      ...candidateEnv,
+      PATH: toolEnv.PATH,
+      HOME: reviewerSandboxDir,
+      TMPDIR: reviewerSandboxDir,
+      TMP: reviewerSandboxDir,
+      TEMP: reviewerSandboxDir,
+      RELEASE_QUALITY_REPORT_DIR: reviewerReportDir,
+    };
+    if (resolvedAgent === 'codex') {
+      const authRoot = reviewerAuthRoots(resolvedAgent, toolEnv)[0];
+      if (authRoot) reviewerEnv.CODEX_HOME = authRoot;
+    } else if (resolvedAgent === 'claude') {
+      const authRoot = reviewerAuthRoots(resolvedAgent, toolEnv)[0];
+      if (authRoot) reviewerEnv.CLAUDE_CONFIG_DIR = authRoot;
+    }
+    const proc = spawn(wrapped.command, wrapped.args, {
       cwd: projectRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
-      env: { ...toolEnv, RELEASE_QUALITY_REPORT_DIR: reviewerReportDir },
+      env: reviewerEnv,
     });
     let stdoutTail = '';
     let stderrTail = '';
@@ -91,9 +146,20 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (forceTimer) clearTimeout(forceTimer);
       activeReviewers.delete(key);
-      const postValidation = await validatePacket(
-        reviewerDir, reviewer, profile, currentRound, candidateIdentity, resolvedAgent, resolvedModel,
+      let postValidation = await validatePacket(
+        reviewerSandboxDir, reviewer, profile, currentRound, candidateIdentity, resolvedAgent, resolvedModel,
       );
+      if (postValidation.valid) {
+        try {
+          await publishPacket(reviewerSandboxDir, reviewerDir);
+          postValidation = await validatePacket(
+            reviewerDir, reviewer, profile, currentRound, candidateIdentity, resolvedAgent, resolvedModel,
+          );
+          if (postValidation.valid) rmSync(reviewerSandboxDir, { recursive: true, force: true });
+        } catch (error) {
+          postValidation = { valid: false, reason: `packet publish failed: ${error.message}` };
+        }
+      }
       const complete = postValidation.valid;
       const timedOutWithValidPacket = abortedKind === 'timeout' && complete;
       const status = timedOutWithValidPacket ? 'completed' :
@@ -101,10 +167,11 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
       if (!complete && postValidation.reason) {
         internalDiagnostic = appendTail(internalDiagnostic, `\npacket validation failed: ${postValidation.reason}`);
       }
-      console.log(`  ${status === 'completed' ? colors.green + '✓' : colors.red + '✗'}${colors.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${status}`);
+      const correlation = `round-${String(currentRound).padStart(3, '0')}/${reviewer}/attempt-${attempt}`;
+      console.log(`  [${correlation}] ${status === 'completed' ? colors.green + '✓' : colors.red + '✗'}${colors.reset} ${reviewer}${attempt > 1 ? ` (attempt ${attempt})` : ''}: ${status}`);
       const diagnostic = combinedDiagnostic();
       if (status === 'failed' && diagnostic) {
-        console.log(`    ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
+        console.error(`    [${correlation}] ${redactSensitiveText(diagnostic).replace(/\s+/g, ' ').slice(-500)}`);
       }
       const permanentSource = [
         resolvedAgent === 'codex' ? extractStructuredAgentFailure(resolvedAgent, stdoutTail) : stderrTail,
@@ -132,7 +199,7 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
     activeReviewers.set(key, abort);
     timeoutTimer = setTimeout(() => {
       const reason = `${reviewer} timed out after ${scaledTimeout}ms (scale: ${scale})`;
-      console.log(`  ${colors.red}✗${colors.reset} ${reason}`);
+      console.error(`  [round-${String(currentRound).padStart(3, '0')}/${reviewer}] ${colors.red}✗${colors.reset} ${reason}`);
       if (abortPeers) abortAll(reason, 'timeout');
       else abort(reason, 'timeout');
     }, scaledTimeout);
@@ -150,7 +217,7 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
     });
     proc.on('error', error => {
       processError = error.message;
-      console.log(`  ${colors.red}✗${colors.reset} ${reviewer}: ${error.message}`);
+      console.error(`  [round-${String(currentRound).padStart(3, '0')}/${reviewer}] ${colors.red}✗${colors.reset} ${reviewer}: ${error.message}`);
       if (abortPeers) abortAll(`${reviewer} process error: ${error.message}`, 'process-error');
       void finish(null, 'error');
     });

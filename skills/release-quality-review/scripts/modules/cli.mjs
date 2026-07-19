@@ -18,7 +18,7 @@ export function parseCliArgs(args) {
     userSpecifiedProfile: false,
     validateEvidence: true,
     checkGoalMode: false,
-    diffBase: 'HEAD',
+    diffBase: 'HEAD~1',
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -97,8 +97,9 @@ Options:
   --detect-scale         Detect change scale and suggest profile
   --validate-evidence   Enable evidence source validation (default: true)
   --no-validate-evidence Skip evidence source validation (对抗性审查)
-  --base <ref>          Git diff base for change detection (default: HEAD, use "origin/main" for branch comparison)
+  --base <ref>          Git diff base for change detection (default: HEAD~1, use "origin/main" for branch comparison)
   --dry-run             Validate configuration without running
+  --version             Print package version
   --help, -h            Show this help
 
 Profiles:

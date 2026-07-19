@@ -21,11 +21,7 @@ import { readFileSync, existsSync, readdirSync, realpathSync, statSync, writeFil
 import { join, relative } from 'path';
 import { execFile as nodeExecFile, execFileSync as nodeExecFileSync } from 'child_process';
 import { createHash } from 'node:crypto';
-import {
-  calculateReviewerTimeout,
-  detectChangeScale as detectCanonicalChangeScale,
-  parseYamlProfile as parseYamlProfileShared, selectReviewers,
-} from '../lib/review-utils.mjs';
+import { calculateReviewerTimeout, parseYamlProfile as parseYamlProfileShared } from '../lib/review-utils.mjs';
 import {
   extractResultScoresFromRound, persistPhasePlan, persistPhaseResult,
 } from '../lib/phase-persistence.mjs';
@@ -41,9 +37,14 @@ import {
 import { executeReviewers } from './modules/reviewer-execution.mjs';
 import { validateReviewerPacket } from './modules/reviewer-packet.mjs';
 import { generateReviewerPrompt } from './modules/reviewer-prompt.mjs';
+import { resolveRunnerReviewPlan } from './modules/runner-review-plan.mjs';
 
 const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
+if (process.argv.slice(2).includes('--version')) {
+  console.log(JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8')).version);
+  process.exit(0);
+}
 function resolveReportDirectoryOrExit() {
   try {
     return resolveReportDirectory(PROJECT_ROOT);
@@ -98,7 +99,7 @@ function parseCliArgs(args) {
   const options = {
     profile: 'release-gate', roundNumber: null, parallel: false, dryRun: false,
     skipEvidence: false, reviewerOverride: null, targetDir: null,
-    checkGoalMode: false, diffBase: 'HEAD', agentCli: process.env.REVIEW_AGENT || null,
+    checkGoalMode: false, diffBase: 'HEAD~1', agentCli: process.env.REVIEW_AGENT || null,
     model: process.env.REVIEW_MODEL || null,
     reasoningEffort: process.env.REVIEW_REASONING_EFFORT || null, radarSnapshot: null,
   };
@@ -191,7 +192,7 @@ if (explicitModel) {
 
 function resolveDiffBase(ref) {
   if (ref === 'HEAD') return 'HEAD';
-  if (!/^[A-Za-z0-9._/@-]+$/.test(ref)) {
+  if (!/^[A-Za-z0-9._/@~-]+$/.test(ref)) {
     console.error(`Invalid --base ref: ${ref}`);
     process.exit(4);
   }
@@ -245,7 +246,8 @@ Options:
   --skip-evidence    Skip automatic evidence collection
   --dry-run          Validate configuration without running
   --check-goal-mode  Enable goal mode constraint check
-  --base <ref>       Git diff base for change detection (default: HEAD)
+  --base <ref>       Git diff base for change detection (default: HEAD~1)
+  --version          Print package version
   --help, -h         Show this help
 
 Examples:
@@ -256,6 +258,12 @@ Examples:
   node review-runner.mjs --agent codex --model gpt-5.4
   node review-runner.mjs --reviewer destructive-qa --dry-run
   node review-runner.mjs --target skills/release-quality-review --profile quick --dry-run
+
+Exit Codes:
+  0 = All selected reviewers and Gate passed
+  1 = Completed review failed its score or Gate
+  4 = Configuration or invalid CLI input
+  5 = Reviewer Agent process failed or timed out
   `);
 }
 
@@ -308,18 +316,6 @@ function collectDryRunEvidence() {
     timestamp: new Date().toISOString(),
     git: { changedFiles: [...new Set([...changedFiles, ...untracked])], diff },
     structure: {},
-  };
-}
-
-function detectEvidenceChangeScale(evidence) {
-  const changedFiles = evidence.git.changedFiles || [];
-  const addedLines = (evidence.git.diff?.match(/^\+[^+]/gm) || []).length;
-  const deletedLines = (evidence.git.diff?.match(/^-[^-]/gm) || []).length;
-  const canonical = detectCanonicalChangeScale(changedFiles, addedLines, deletedLines);
-  return {
-    ...canonical,
-    fileCount: canonical.files,
-    totalLines: canonical.total,
   };
 }
 
@@ -671,7 +667,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   console.log(`${c.blue}ℹ${c.reset} Report: ${roundDir}`);
 
   if (!dryRun) {
-    ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR);
+    ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR, 0o700);
     ensureContainedDirectorySync(REPORT_DIR, roundDir);
   }
 
@@ -695,19 +691,19 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     log.info('Collecting evidence through the authoritative Gate collector...');
     await persistRoundEvidenceBeforeReview(roundDir, profile, currentRound);
     evidence = await loadPersistedRoundScope(roundDir);
-    log.success(`Git: ${evidence.git.branch || '?'} @ ${evidence.git.commit || '?'}`);
-    log.success(`Changed: ${evidence.git.changedFiles?.length || 0} files`);
+    log.success(`Candidate: ${evidence.git.commit || '?'}`);
+    log.success(`Changed: ${evidence.scale?.files ?? evidence.git.changedFileCount ?? 0} files`);
   }
 
   // Detect change scale (right-size throttle)
-  const scaleInfo = evidence.scale?.scale
-    ? {
-        ...evidence.scale,
-        fileCount: evidence.scale.fileCount ?? evidence.scale.files ?? evidence.git.changedFiles?.length ?? 0,
-        totalLines: evidence.scale.totalLines ?? evidence.scale.total ?? 0,
-      }
-    : detectEvidenceChangeScale(evidence);
-  evidence.scale = scaleInfo; // Attach scale info to evidence
+  let reviewPlan;
+  try {
+    reviewPlan = resolveRunnerReviewPlan(profileConfig, evidence, reviewerOverride);
+  } catch (error) {
+    console.error(`Invalid reviewer configuration: ${error.message}`);
+    process.exit(4);
+  }
+  const { scaleInfo, allReviewers, triggeredConditional } = reviewPlan;
 
   // Log scale detection result
   console.log(`\n${c.blue}ℹ Change Scale:${c.reset} ${scaleInfo.scale} (${scaleInfo.fileCount} files, ${scaleInfo.totalLines} lines)`);
@@ -715,22 +711,6 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   if (scaleInfo.reason !== `${scaleInfo.fileCount} files, ${scaleInfo.totalLines} lines - ${scaleInfo.scale} change`) {
     console.log(`${c.blue}ℹ Reason:${c.reset} ${scaleInfo.reason}`);
   }
-
-  let reviewerSelection;
-  try {
-    reviewerSelection = selectReviewers(
-      profileConfig,
-      evidence.git.changedFiles || [],
-      evidence.git.diff || '',
-    );
-  } catch (error) {
-    console.error(`Invalid reviewer configuration: ${error.message}`);
-    process.exit(4);
-  }
-  const gateReviewers = Array.isArray(evidence.reviewers) ? evidence.reviewers : null;
-  const allReviewers = reviewerOverride ? [reviewerOverride] : (gateReviewers || reviewerSelection.reviewers);
-  const conditionalReviewers = new Set(profileConfig.conditional_reviewers || []);
-  const triggeredConditional = allReviewers.filter(name => conditionalReviewers.has(name));
 
   if (dryRun) {
     console.log(`\n${c.yellow}DRY RUN MODE${c.reset}`);
@@ -781,7 +761,10 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
       reviewReasoningEffort: resolvedEffort,
       profile,
       skillDir: SKILL_DIR,
-      reportDir: REPORT_DIR,
+      reviewerOutputDir: join(
+        REPORT_DIR, '.reviewer-sandboxes',
+        `round-${String(currentRound).padStart(3, '0')}`, reviewer,
+      ),
       automatedChecks: evidence.automatedChecks,
     }),
   ]));
@@ -805,6 +788,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     baseTimeout: REVIEWER_TIMEOUT_MS, retryMax: REVIEWER_RETRY_MAX,
     retryBaseDelayMs: RETRY_BASE_DELAY_MS, retryMaxJitterMs: RETRY_MAX_JITTER_MS,
     killGraceMs: REVIEWER_KILL_GRACE_MS, toolEnv: TOOL_ENV, candidateEnv: CANDIDATE_ENV,
+    outerSandboxAttestation: OUTER_SANDBOX_ATTESTATION,
     getAgentInvocation, validatePacket, log, colors: c,
     onReviewComplete, evidence,
     preflightAgent: agent => execFileAsync(agent, ['--help'], {

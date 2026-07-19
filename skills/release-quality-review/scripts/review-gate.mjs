@@ -13,6 +13,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
 const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
+if (process.argv.slice(2).includes('--version')) {
+  console.log(JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8')).version);
+  process.exit(0);
+}
 
 // Import from modules
 import { colors, log } from './modules/constants.mjs';
@@ -88,7 +92,7 @@ function detectNextRoundNumber() {
 const effectiveRoundNumber = roundNumber ?? detectNextRoundNumber();
 
 function resolveDiffBase(ref) {
-  if (!/^[A-Za-z0-9._/@-]+$/.test(ref)) {
+  if (!/^[A-Za-z0-9._/@~-]+$/.test(ref)) {
     log.error('Invalid --base ref');
     process.exit(4);
   }
@@ -172,7 +176,7 @@ async function runGate() {
   log.info(`Reviewers: ${reviewers.join(', ')}`);
   console.log('');
 
-  ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR);
+  ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR, 0o700);
   let roundDir = join(REPORT_DIR, `round-${String(effectiveRoundNumber).padStart(3, '0')}`);
 
   const isNewRound = !existsSync(roundDir);

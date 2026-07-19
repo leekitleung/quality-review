@@ -46,4 +46,7 @@ evidence binding, and arbitration details matter when operating release or agent
 positive round number so evidence and reviewer packets cannot cross candidate identities.
 
 **How do I audit report retention?** Run `npm run reports:retention-check -- --days 30`.
-The command is non-destructive and exits nonzero when old round directories need review.
+The check is non-destructive and exits nonzero when old rounds need review. After approval,
+delete exactly those expired round directories with
+`npm run reports:retention-check -- --days 30 --delete --confirm DELETE-EXPIRED-ROUNDS`;
+the command validates every target and appends a local deletion audit record.

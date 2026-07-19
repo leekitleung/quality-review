@@ -1,5 +1,5 @@
 import {
-  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -82,6 +82,37 @@ installCleanStatusGitWrapper(cleanGitBin);
 process.env.PATH = `${cleanGitBin}:${process.env.PATH}`;
 
 test.describe('Gate policy integration', () => {
+  test('retention enforcement deletes only confirmed expired round directories and audits the action', () => {
+    const repository = join(TEST_DIR, `retention-${randomUUID()}`);
+    const reportRoot = join(repository, 'quality-reports');
+    const expired = join(reportRoot, 'round-001');
+    const current = join(reportRoot, 'round-002');
+    mkdirSync(expired, { recursive: true });
+    mkdirSync(current, { recursive: true });
+    const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    utimesSync(expired, old, old);
+    const script = join(PROJECT_ROOT, 'scripts', 'check-report-retention.mjs');
+
+    const audit = spawnSync(process.execPath, [script, '--days', '30'], { cwd: repository, encoding: 'utf8' });
+    assertEqual(audit.status, 1, `${audit.stdout}${audit.stderr}`);
+    assertEqual(existsSync(expired), true, 'Non-destructive audit removed an expired round');
+
+    const unconfirmed = spawnSync(process.execPath, [script, '--days', '30', '--delete'], {
+      cwd: repository, encoding: 'utf8',
+    });
+    assertEqual(unconfirmed.status, 4, `${unconfirmed.stdout}${unconfirmed.stderr}`);
+    assertEqual(existsSync(expired), true, 'Unconfirmed retention command removed a round');
+
+    const enforced = spawnSync(process.execPath, [
+      script, '--days', '30', '--delete', '--confirm', 'DELETE-EXPIRED-ROUNDS',
+    ], { cwd: repository, encoding: 'utf8' });
+    assertEqual(enforced.status, 0, `${enforced.stdout}${enforced.stderr}`);
+    assertEqual(existsSync(expired), false, 'Confirmed expired round was not deleted');
+    assertEqual(existsSync(current), true, 'Current round must be retained');
+    const auditRecord = JSON.parse(readFileSync(join(reportRoot, 'retention-audit.jsonl'), 'utf8').trim());
+    assertEqual(JSON.stringify(auditRecord.deleted_rounds), JSON.stringify(['round-001']));
+  });
+
   test('rejects synthetic auto review', () => {
     const result = spawnSync('node', [
       join(SKILL_DIR, 'scripts', 'review-runner.mjs'), '--auto', '--dry-run',

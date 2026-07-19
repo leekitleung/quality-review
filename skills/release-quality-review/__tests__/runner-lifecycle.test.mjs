@@ -7,7 +7,7 @@
  */
 
 import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync, cpSync } from 'fs';
-import { join, relative } from 'path';
+import { basename, join, relative } from 'path';
 import { tmpdir, userInfo } from 'node:os';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'node:child_process';
@@ -85,14 +85,19 @@ const TEST_ROUNDS = {
   evidenceForgery: ROUND_BASE + 7,
 };
 const reportRound = round => join(resolveReportDirectory(PROJECT_ROOT), `round-${String(round).padStart(3, '0')}`);
+const reviewerSandboxDir = (round, reviewer) => join(
+  resolveReportDirectory(PROJECT_ROOT), '.reviewer-sandboxes', basename(round), reviewer,
+);
 const runnerRound = round => {
   const dir = reportRound(round);
   const commit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
   const tree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+  const baseCommit = spawnSync('git', ['rev-parse', 'HEAD~1'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
+  const baseTree = spawnSync('git', ['rev-parse', 'HEAD~1^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'metadata.json'), JSON.stringify({
     profile: 'quick', round, collected_at: new Date().toISOString(), reviewers: ['product-flow', 'architecture-maintainer'],
-    candidate_commit: commit, candidate_tree: tree, base_commit: commit, base_tree: tree,
+    candidate_commit: commit, candidate_tree: tree, base_commit: baseCommit, base_tree: baseTree,
     git: { branch: 'test', commit: commit.slice(0, 8), status: '', changedFiles: [] },
     files: {}, scale: { scale: 'none', files: 0, total: 0 },
   }));
@@ -247,6 +252,25 @@ test.describe('CLI fail-closed integration', () => {
     assertEqual(existsSync(runtime.env.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY), false);
     assertEqual(isPathWithin(runtime.isolatedHome, runtime.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY), false);
     assertEqual(isPathWithin(PROJECT_ROOT, runtime.env.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY), false);
+  });
+
+  test('reviewer filesystem sandbox denies writes to a peer packet directory', () => {
+    if (process.platform !== 'darwin') return;
+    const probe = spawnSync('/usr/bin/sandbox-exec', ['-p', '(version 1) (allow default)', '/usr/bin/true'], { encoding: 'utf8' });
+    if (probe.status !== 0) return;
+    const root = join(TEST_DIR, `reviewer-write-boundary-${randomUUID()}`);
+    const own = join(root, 'product-flow');
+    const peer = join(root, 'architecture-maintainer');
+    mkdirSync(own, { recursive: true });
+    mkdirSync(peer, { recursive: true });
+    const wrapped = wrapCandidateCommand(process.execPath, [
+      '-e', `require('node:fs').writeFileSync(${JSON.stringify(join(peer, 'result.yaml'))}, 'forged')`,
+    ], {
+      readOnlyRoots: [PROJECT_ROOT], writeRoots: [own], requireExactWriteIsolation: true,
+    });
+    const result = spawnSync(wrapped.command, wrapped.args, { cwd: PROJECT_ROOT, encoding: 'utf8' });
+    assertTrue(result.status !== 0, 'Reviewer must not be able to write a peer packet');
+    assertEqual(existsSync(join(peer, 'result.yaml')), false, 'Peer packet write escaped reviewer sandbox');
   });
 
   test('candidate checkout identity guard rejects mutation', () => {
@@ -595,9 +619,10 @@ test.describe('CLI fail-closed integration', () => {
 
   test('runner delegates production evidence collection to the Gate', () => {
     const runner = readFileSync(join(SKILL_DIR, 'scripts', 'review-runner.mjs'), 'utf8');
+    const reviewPlan = readFileSync(join(SKILL_DIR, 'scripts', 'modules', 'runner-review-plan.mjs'), 'utf8');
     assertTrue(runner.includes('await persistRoundEvidenceBeforeReview(roundDir, profile, currentRound)'));
     assertTrue(runner.includes('evidence = await loadPersistedRoundScope(roundDir)'));
-    assertTrue(runner.includes('(gateReviewers || reviewerSelection.reviewers)'),
+    assertTrue(reviewPlan.includes('selectedReviewers = gateReviewers || selectReviewers'),
       'Actual reviews must consume the Gate-owned reviewer selection');
     assertEqual(runner.includes('function collectEvidence('), false,
       'Runner must not maintain a second production evidence collector');
@@ -678,7 +703,7 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
         },
       });
       assertEqual(result.status, 5, `Expected exit 5, output: ${result.stdout}${result.stderr}`);
-      assertTrue(result.stdout.includes('timed out'), 'Expected explicit reviewer timeout diagnostic');
+      assertTrue(`${result.stdout}${result.stderr}`.includes('timed out'), 'Expected explicit reviewer timeout diagnostic');
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
       assertEqual(existsSync(leakMarker), false,
         `Reviewer descendants must not survive to perform delayed writes: ${result.stdout}${result.stderr}`);
@@ -695,7 +720,7 @@ setInterval(() => { if (process.ppid === 1) process.exit(0); }, 20);
     try {
       mkdirSync(fakeBin);
       const fakeCodex = join(fakeBin, 'codex');
-      const reviewerDir = join(round, 'product-flow');
+      const reviewerDir = reviewerSandboxDir(round, 'product-flow');
       const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       const descendantCode = `process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(leakMarker)}, 'survived'), 500)`;
@@ -723,7 +748,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
         },
       });
       assertEqual(result.status, 1, `Expected failed gate after successful reviewer, output: ${result.stdout}${result.stderr}`);
-      assertTrue(readFileSync(join(reviewerDir, 'score.md'), 'utf8').includes('95/100'),
+      assertTrue(readFileSync(join(round, 'product-flow', 'score.md'), 'utf8').includes('95/100'),
         'Runner must preserve reviewer-authored artifacts');
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
       assertEqual(existsSync(leakMarker), false, 'Successful reviewers must not leave descendants alive');
@@ -739,7 +764,7 @@ process.getBuiltinModule('node:child_process').spawn(process.execPath, ['-e', ${
     try {
       mkdirSync(fakeBin);
       const fakeCodex = join(fakeBin, 'codex');
-      const reviewerDir = join(round, 'product-flow');
+      const reviewerDir = reviewerSandboxDir(round, 'product-flow');
       const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       writeFileSync(fakeCodex, `#!/usr/bin/env node
@@ -784,7 +809,7 @@ setInterval(() => {}, 1000);
 
       mkdirSync(fakeBin);
       const fakeCodex = join(fakeBin, 'codex');
-      const reviewerDir = join(round, 'product-flow');
+      const reviewerDir = reviewerSandboxDir(round, 'product-flow');
       const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       writeFileSync(fakeCodex, `#!/usr/bin/env node
@@ -810,7 +835,8 @@ fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '#
         },
       });
       assertEqual(result.status, 5, `Forged round evidence must fail before Gate: ${result.stdout}${result.stderr}`);
-      assertTrue(result.stdout.includes('command evidence does not match round: npm test'), result.stdout);
+      assertTrue(`${result.stdout}${result.stderr}`.includes('command evidence does not match round: npm test'),
+        `${result.stdout}${result.stderr}`);
     } finally {
       rmSync(round, { recursive: true, force: true });
     }
@@ -821,13 +847,14 @@ fs.writeFileSync(${JSON.stringify(join(reviewerDir, 'improvement-list.md'))}, '#
       const roundNumber = TEST_ROUNDS.parallelSuccess + (parallel ? 400 : 401);
       const round = runnerRound(roundNumber);
       const fakeBin = join(TEST_DIR, `fake-bin-permanent-failure-${parallel ? 'parallel' : 'sequential'}`);
-      const invocationMarker = join(TEST_DIR, `permanent-failure-invocations-${parallel ? 'parallel' : 'sequential'}`);
+      const invocationMarker = join(reviewerSandboxDir(round, 'product-flow'), 'permanent-failure-invocations');
       try {
         mkdirSync(fakeBin);
         const fakeCodex = join(fakeBin, 'codex');
         writeFileSync(fakeCodex, `#!/usr/bin/env node
 if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
 const fs = process.getBuiltinModule('node:fs');
+fs.mkdirSync(process.env.RELEASE_QUALITY_REPORT_DIR, { recursive: true });
 fs.appendFileSync(${JSON.stringify(invocationMarker)}, 'called\\n');
 console.log(JSON.stringify({ type: 'turn.failed', error: { message: '403 Forbidden: insufficient balance' } }));
 process.exit(1);
@@ -850,7 +877,7 @@ process.exit(1);
         assertEqual(result.status, 5, `Expected Agent failure, output: ${result.stdout}${result.stderr}`);
         assertEqual(readFileSync(invocationMarker, 'utf8').trim().split('\\n').length, 1,
           `Permanent failures must launch the reviewer once: ${result.stdout}${result.stderr}`);
-        assertTrue(result.stdout.includes('not retrying permanent Agent failure'),
+        assertTrue(`${result.stdout}${result.stderr}`.includes('not retrying permanent Agent failure'),
           `Expected explicit retry decision: ${result.stdout}${result.stderr}`);
       } finally {
         rmSync(round, { recursive: true, force: true });
@@ -862,16 +889,17 @@ process.exit(1);
     const roundNumber = TEST_ROUNDS.parallelSuccess + 402;
     const round = runnerRound(roundNumber);
     const fakeBin = join(TEST_DIR, 'fake-bin-transient-failure');
-    const invocationMarker = join(TEST_DIR, 'transient-failure-invocations');
+    const invocationMarker = join(reviewerSandboxDir(round, 'product-flow'), 'transient-failure-invocations');
     try {
       mkdirSync(fakeBin);
       const fakeCodex = join(fakeBin, 'codex');
-      const reviewerDir = join(round, 'product-flow');
+      const reviewerDir = reviewerSandboxDir(round, 'product-flow');
       const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       writeFileSync(fakeCodex, `#!/usr/bin/env node
 if (process.argv.includes('--version') || process.argv.includes('--help')) process.exit(0);
 const fs = process.getBuiltinModule('node:fs');
+fs.mkdirSync(process.env.RELEASE_QUALITY_REPORT_DIR, { recursive: true });
 fs.appendFileSync(${JSON.stringify(invocationMarker)}, 'called\\n');
 if (fs.readFileSync(${JSON.stringify(invocationMarker)}, 'utf8').trim().split('\\n').length === 1) {
   console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: '403 Forbidden: insufficient balance' } }));
@@ -937,7 +965,7 @@ setInterval(() => {}, 1000);
         },
       });
       assertEqual(result.status, 5, `Expected exit 5, output: ${result.stdout}${result.stderr}`);
-      assertTrue(result.stdout.includes('timed out'), 'Expected explicit sequential timeout diagnostic');
+      assertTrue(`${result.stdout}${result.stderr}`.includes('timed out'), 'Expected explicit sequential timeout diagnostic');
       spawnSync(process.execPath, ['-e', 'setTimeout(() => {}, 700)']);
       assertEqual(existsSync(leakMarker), false, 'Sequential reviewer descendants must be terminated');
     } finally {
@@ -953,7 +981,7 @@ setInterval(() => {}, 1000);
     try {
       mkdirSync(fakeBin);
       const fakeCodex = join(fakeBin, 'codex');
-      const reviewerDir = join(round, 'product-flow');
+      const reviewerDir = reviewerSandboxDir(round, 'product-flow');
       const candidateCommit = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       const candidateTree = spawnSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).stdout.trim();
       const descendantCode = `process.on('SIGTERM', () => {}); setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(leakMarker)}, 'survived'), 500)`;

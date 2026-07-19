@@ -31,16 +31,21 @@ export async function executeReviewers(options) {
 
   const runReviewer = async (reviewer, delay, abortPeers) => {
     const reviewerDir = join(roundDir, reviewer);
+    const reviewerSandboxDir = join(
+      options.reportDir, '.reviewer-sandboxes',
+      `round-${String(currentRound).padStart(3, '0')}`, reviewer,
+    );
     ensureContainedDirectorySync(roundDir, reviewerDir);
+    ensureContainedDirectorySync(options.reportDir, reviewerSandboxDir);
     const validation = await validatePacket(
       reviewerDir, reviewer, profile, currentRound, candidateIdentity, resolvedAgent, resolvedModel,
     );
     if (validation.valid) {
-      console.log(`  ${colors.blue}↷${colors.reset} ${reviewer}: validated resume (score: ${validation.score ?? 'unknown'})`);
+      console.log(`  [round-${String(currentRound).padStart(3, '0')}/${reviewer}] ${colors.blue}↷${colors.reset} validated resume (score: ${validation.score ?? 'unknown'})`);
       return { name: reviewer, status: 'completed', skipped: true };
     }
     if (validation.reason) {
-      console.log(`  ${colors.yellow}⚡${colors.reset} ${reviewer}: invalidating stale artifacts (${validation.reason}), re-running`);
+      console.log(`  [round-${String(currentRound).padStart(3, '0')}/${reviewer}] ${colors.yellow}⚡${colors.reset} invalidating stale artifacts (${validation.reason}), re-running`);
     }
     await sleep(delay);
     const prompt = reviewerPrompts.get(reviewer);
@@ -57,7 +62,9 @@ export async function executeReviewers(options) {
         log.info(`  Retry ${attempt - 1}/${retryMax} for ${reviewer}: waiting ${Math.round(retryDelay)}ms`);
         await sleep(retryDelay);
       }
-      lastResult = await runReviewerAttempt(reviewer, reviewerDir, prompt, attempt, abortPeers);
+      lastResult = await runReviewerAttempt(
+        reviewer, reviewerDir, reviewerSandboxDir, prompt, attempt, abortPeers,
+      );
       if (lastResult.status === 'completed' || lastResult.abortedKind) return lastResult;
       if (lastResult.permanentFailure) {
         log.warn(`  ${reviewer}: not retrying permanent Agent failure`);

@@ -57,8 +57,7 @@ export function persistPhasePlan(roundDir, phase, reviewers, evidence, profileCo
 
 ## Input
 
-- **Changed files:** ${evidence.git?.changedFiles?.length || 0}
-- **Git branch:** ${evidence.git?.branch || 'unknown'}
+- **Changed files:** ${evidence.scale?.files ?? evidence.git?.changedFileCount ?? evidence.git?.changedFiles?.length ?? 0}
 - **Git commit:** ${evidence.git?.commit || 'unknown'}
 
 ## Reviewers

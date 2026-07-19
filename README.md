@@ -48,7 +48,7 @@ npm run review:help            # optional command reference
 
 export REVIEW_ROUND=100
 npm run review -- --profile quick --round "$REVIEW_ROUND" \
-  --agent codex
+  --base HEAD~1 --agent codex
 # The runner launches every quick-profile reviewer and arbitrates the round.
 # Exit 0 is approval; exit 1 means the completed review failed its score/Gate.
 ```
@@ -107,9 +107,12 @@ reasoning effort; a large `max` review receives 45 minutes with the default
 15-minute base. If an Agent only hangs during shutdown, a complete packet is
 accepted only after its schema, candidate identity, backend, and model validate.
 
-Trust boundary: the host/orchestrator, pinned Gate code, independent reviewers,
-and report root are trusted; candidate subprocesses and their output are
-untrusted. Stored SHA-256 values detect drift between collection and
+Trust boundary: the host/orchestrator, pinned Gate code, and report root are
+trusted. Candidate and reviewer subprocesses are untrusted. Each reviewer receives
+read-only source and authentication inputs plus a private writable sandbox; the host
+validates its four-file packet, publishes it into the trusted round directory, and
+removes the sandbox. A reviewer cannot write source, metadata, or a peer packet.
+Stored SHA-256 values detect drift between collection and
 arbitration, but are not signatures. A party that can rewrite Gate code,
 evidence, and adjacent metadata has crossed the local trust boundary; protect
 against that actor with externally signed CI artifacts or a protected remote
@@ -136,7 +139,10 @@ restrictive permissions but are not content-encrypted, so the host should use
 full-disk encryption for at-rest protection.
 Audit this policy non-destructively with
 `npm run reports:retention-check -- --days 30`; it exits nonzero and lists round
-directories older than the selected window so an approved deletion workflow can act.
+directories older than the selected window. After approval, enforce it with
+`npm run reports:retention-check -- --days 30 --delete --confirm DELETE-EXPIRED-ROUNDS`;
+only validated expired round directories are deleted and the action is appended to
+`quality-reports/retention-audit.jsonl`.
 
 Host workflow:
 
