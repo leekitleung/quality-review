@@ -597,6 +597,7 @@ require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'launched');
         'skills/release-quality-review/scripts/review-gate.mjs',
         'skills/release-quality-review/scripts/evidence-validator.mjs',
         'skills/release-quality-review/lib/review-utils.mjs',
+        'skills/release-quality-review/lib/automated-gate-policy.mjs',
         'skills/release-quality-review/lib/evidence-utils.mjs',
         'skills/release-quality-review/lib/model-selector.mjs',
         'skills/release-quality-review/lib/candidate-runtime.mjs',

@@ -19,3 +19,4 @@
 - Reject non-zero multi-digit failure summaries and bind each reviewer command to a command-specific output contract so audit, code-check, or sandbox text cannot forge test evidence.
 - Derive canonical reviewer evidence blocks from the current round's persisted automated checks and reject passing packets whose command, exit code, or summary does not match them exactly.
 - Split Gate reviewer selection, persisted-evidence loading, reviewer process lifecycle, and policy integration tests into focused modules while preserving fail-closed behavior.
+- Unify strict command-gate policy, bind fail packets and finding-specific citations, verify the packed artifact, expand CI release checks, and add doctor, examples, and retention-policy commands.

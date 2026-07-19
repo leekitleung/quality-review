@@ -31,13 +31,20 @@ choose and rerun with `--model`; it never silently applies a fixed fallback.
 
 ## First successful review
 
+Start with one preflight command. It checks the required runtime, Git checkout,
+selected Agent CLI, and authentication:
+
+```bash
+npm run doctor -- --agent codex
+```
+
 ```bash
 git clone <repository-url> quality-review
 cd quality-review
 node --version                 # v22 or newer
 git rev-parse --is-inside-work-tree
 npm install
-npm start                      # prints runner help; it does not start a service
+npm run review:help            # optional command reference
 
 export REVIEW_ROUND=100
 npm run review -- --profile quick --round "$REVIEW_ROUND" \
@@ -54,12 +61,11 @@ their declared diff triggers match.
 `--base <base-ref>` is the commit before the reviewed change, for example
 `--base origin/main` or `--base HEAD~1`.
 
-Terms: the **candidate** is the exact commit/tree being reviewed; a **packet**
-is one reviewer's four output files; **evidence binding** ties those files to
-the candidate; **resident** reviewers always run, **conditional** reviewers run
-when triggered, and **adversarial** reviewers challenge completion claims;
-**arbitration** is the final Gate decision. The **host/orchestrator** is the
-trusted process that launches reviewers and owns the round.
+For the first quick review, only three terms matter: the **candidate** is the exact
+commit/tree being reviewed, a **packet** is one reviewer's four output files, and the
+**Gate** is the final approval decision. Release operators can learn evidence binding,
+conditional/adversarial reviewer selection, arbitration, and host trust boundaries from
+the three copy-paste workflows and FAQ in [docs/examples.md](docs/examples.md).
 
 ## Release quality review
 
@@ -128,6 +134,9 @@ apply only when repository paths or command output contain personal data; avoid
 putting personal data in source paths or verifier output. Local report files use
 restrictive permissions but are not content-encrypted, so the host should use
 full-disk encryption for at-rest protection.
+Audit this policy non-destructively with
+`npm run reports:retention-check -- --days 30`; it exits nonzero and lists round
+directories older than the selected window so an approved deletion workflow can act.
 
 Host workflow:
 

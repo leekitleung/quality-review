@@ -10,6 +10,7 @@ first release candidate rather than a version bump from an earlier published bui
 - Keep reviewer packet command evidence fail-closed across Markdown and YAML-shaped inputs.
 - Bind passing reviewer packet summaries to canonical evidence derived from the same persisted Gate round.
 - Separate reviewer selection, persisted evidence, process lifecycle, and Gate policy test ownership.
+- Verify an installable npm artifact and exercise coverage, audit, and E2E as explicit CI release checks.
 
 ## Required approval
 

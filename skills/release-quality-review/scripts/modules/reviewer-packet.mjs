@@ -32,9 +32,9 @@ export async function validateReviewerPacket({
     if (!['pass', 'fail'].includes(parsed.status)) mismatches.push(`status=${parsed.status ?? 'missing'}`);
 
     const packetEvidence = `${contents[1]}\n${contents[2]}`;
+    const evidenceValidation = validateReviewerEvidenceBlocks(packetEvidence, automatedChecks);
+    if (!evidenceValidation.valid) mismatches.push(evidenceValidation.reason);
     if (parsed.status === 'pass') {
-      const evidenceValidation = validateReviewerEvidenceBlocks(packetEvidence, automatedChecks);
-      if (!evidenceValidation.valid) mismatches.push(evidenceValidation.reason);
       if (checkMissingEvidenceOutput(packetEvidence).length > 0) {
         mismatches.push('unsupported success claim in passing packet');
       }

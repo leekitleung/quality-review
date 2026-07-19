@@ -1,5 +1,5 @@
 const TEST_OUTPUT_PATTERN = /(?:#\s*|\b)(?:tests|pass|skipped)\s+\d+|\b\d+\s+(?:passed|skipped|ok)\b|(?<!not )\bok\s+\d+\b/i;
-const CODE_CHECK_OUTPUT_PATTERN = /node\s+--check\b|alias of typecheck\b/i;
+const CODE_CHECK_OUTPUT_PATTERN = /node\s+--check\b|alias of typecheck\b|package artifact verified:/i;
 const COVERAGE_OUTPUT_PATTERN = /\ball files\s*\||(?:#\s*|\b)(?:tests|pass)\s+\d+/i;
 const AUDIT_OUTPUT_PATTERN = /found\s+0\s+vulnerabilities/i;
 const FAILURE_PATTERN = /(?:#\s*fail|\bfailed?)\s*[:=]?\s*[1-9]\d*\b|\b[1-9]\d*\s+failed\b/i;
@@ -75,8 +75,10 @@ function canonicalSummary(record) {
   if (/\baudit\b/.test(command)) {
     return /found\s+0\s+vulnerabilities/i.test(output) ? 'found 0 vulnerabilities' : null;
   }
-  return /node\s+--check\b/i.test(output) ? 'node --check' :
-    (/alias of typecheck/i.test(output) ? 'alias of typecheck' : null);
+  const artifact = String(output || '').split('\n').find(line => /package artifact verified:/i.test(line));
+  if (artifact) return artifact.trim();
+  if (/node\s+--check\b/i.test(output)) return 'node --check';
+  return /alias of typecheck/i.test(output) ? 'alias of typecheck' : null;
 }
 
 export function canonicalReviewerEvidence(automatedChecks) {

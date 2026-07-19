@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -6,6 +9,8 @@ import {
   renderReviewerEvidenceBlocks,
   validateReviewerEvidenceBlocks,
 } from '../lib/reviewer-evidence-contract.mjs';
+import { validateAutomatedEvidence } from '../scripts/modules/persisted-gate-evidence.mjs';
+import { validateReviewerPacket } from '../scripts/modules/reviewer-packet.mjs';
 
 function record(command, output) {
   return { command, status: 'pass', exit_code: 0, output };
@@ -42,4 +47,62 @@ test('rejects invented counts and cross-command output against round evidence', 
 
   const crossCommand = 'Command: npm test\nExit code: 0\nOutput: found 0 vulnerabilities';
   assert.equal(validateReviewerEvidenceBlocks(crossCommand, automatedChecks).valid, false);
+});
+
+test('release persisted evidence rejects forged coverage summaries', () => {
+  const timedRecord = (command, output) => {
+    const value = record(command, output);
+    return {
+      ...value,
+      started_at: '2026-07-19T00:00:00.000Z',
+      finished_at: '2026-07-19T00:00:01.000Z',
+      output_bytes: Buffer.byteLength(output),
+      truncated: false,
+    };
+  };
+  const checks = {
+    testGate: timedRecord('npm test', '# tests 1\n# pass 1\n# fail 0'),
+    typecheckGate: timedRecord('npm run typecheck', 'node --check'),
+    buildGate: timedRecord('npm run build', 'node --check'),
+    lintGate: timedRecord('npm run lint', 'node --check'),
+    auditGate: timedRecord('npm audit --audit-level=high', 'found 0 vulnerabilities'),
+    coverageGate: timedRecord('npm run coverage', 'forged coverage pass'),
+    e2eGate: timedRecord('npm run test:e2e', '# tests 1\n# pass 1\n# fail 0'),
+  };
+  assert.throws(
+    () => validateAutomatedEvidence({}, 'release-gate', checks, {}),
+    /invalid coverageGate command evidence/,
+  );
+});
+
+test('failing reviewer packets still require current-round command evidence', async () => {
+  const reviewerDir = mkdtempSync(join(tmpdir(), 'reviewer-packet-'));
+  const commit = 'a'.repeat(40);
+  const tree = 'b'.repeat(40);
+  try {
+    writeFileSync(join(reviewerDir, 'result.yaml'), [
+      'reviewer: product-flow', 'profile: release-gate', 'round: 7',
+      `candidate_commit: ${commit}`, `candidate_tree: ${tree}`, 'score: 89', 'status: fail',
+      'review_backend: codex', 'review_model: gpt-5.4', 'blockers: []', 'redlines: []',
+    ].join('\n'));
+    writeFileSync(join(reviewerDir, 'score.md'), '# Score\n\n## Overall Score: 89/100\n');
+    writeFileSync(join(reviewerDir, 'blockers.md'), '# Blockers\n\nNone.\n');
+    writeFileSync(join(reviewerDir, 'improvement-list.md'), '# Improvements\n');
+    const options = {
+      reviewerDir, reviewer: 'product-flow', expectedProfile: 'release-gate', expectedRound: 7,
+      currentIdentity: { commit, tree }, expectedBackend: 'codex',
+      expectedModel: 'gpt-5.4', automatedChecks,
+    };
+    const missing = await validateReviewerPacket(options);
+    assert.equal(missing.valid, false);
+    assert.match(missing.reason, /missing round-owned command evidence/);
+
+    writeFileSync(join(reviewerDir, 'score.md'), [
+      '# Score', '', '## Overall Score: 89/100', '',
+      'Command: npm test', 'Exit code: 0', 'Output: # tests 159; # pass 159; # fail 0',
+    ].join('\n'));
+    assert.equal((await validateReviewerPacket(options)).valid, true);
+  } finally {
+    rmSync(reviewerDir, { recursive: true, force: true });
+  }
 });

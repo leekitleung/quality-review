@@ -97,12 +97,29 @@ export function checkFindingEvidenceBindings(findings, blockersContent) {
       });
       continue;
     }
-    const evidenceCount = extractFileLineReferences(section).length +
-      extractCommandEvidence(section).length + extractTestOutputs(section).length;
-    if (evidenceCount === 0) {
+    const references = extractFileLineReferences(section);
+    if (references.length === 0) {
       violations.push({
         type: 'unbound_finding_evidence',
-        desc: `finding 章节没有 file:line、结构化命令或测试证据: ${String(finding).slice(0, 120)}`,
+        desc: `finding 章节没有 file:line 证据: ${String(finding).slice(0, 120)}`,
+      });
+      continue;
+    }
+    const affected = [...section.matchAll(/^\s*(?:Affected(?: files?)?|受影响(?:文件)?)\s*[:：]\s*(.+)$/gmi)]
+      .flatMap(match => match[1].match(/[A-Za-z0-9_.][A-Za-z0-9_./-]*\.(?:ts|tsx|js|jsx|mjs|md|json|ya?ml)/g) || [])
+      .map(file => file.replace(/^\.\//, ''));
+    if (affected.length === 0) {
+      violations.push({
+        type: 'missing_finding_affected_files',
+        desc: `finding 章节缺少 Affected files 字段: ${String(finding).slice(0, 120)}`,
+      });
+      continue;
+    }
+    const cited = references.map(reference => reference.file.replace(/^\.\//, ''));
+    if (!affected.every(file => cited.includes(file))) {
+      violations.push({
+        type: 'irrelevant_finding_evidence',
+        desc: `finding 引用未绑定其 Affected files: ${String(finding).slice(0, 120)}`,
       });
     }
   }

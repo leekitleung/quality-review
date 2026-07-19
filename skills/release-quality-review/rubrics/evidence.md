@@ -24,11 +24,13 @@ Output: # tests 25; # pass 25; # fail 0
 ```
 
 `Output` 必须与 `Command` 匹配：test/E2E 需要测试计数，coverage 需要 coverage
-汇总，audit 需要零漏洞摘要，build/typecheck/lint 需要对应代码检查摘要。其他命令的
+汇总，audit 需要零漏洞摘要，build 需要安装包验证或代码检查摘要，typecheck/lint 需要对应代码检查摘要。其他命令的
 成功文本不能替代当前命令的输出。对于 `status: pass`，至少一个完整命令块还必须逐字匹配
 本轮 Gate 持久化自动化证据派生的规范化摘要；旧轮次、手写计数或跨命令摘要均无效。
 `templates/delivery-packet/evidence.md` 中的 YAML 是
 交付包格式，不是 reviewer packet 格式，也不能直接授权 reviewer pass。
+上述同轮命令证据对 pass/fail packet 均为必需。Machine blocker/redline 还必须在独立章节声明
+`Affected files:`，且至少一个同节 `file:line` 引用指向声明文件；任意无关引用不能满足 finding 绑定。
 
 证据层级（按优先级）：
 

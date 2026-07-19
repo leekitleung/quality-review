@@ -8,6 +8,7 @@ import test from 'node:test';
 
 const PROJECT_ROOT = fileURLToPath(new URL('../../..', import.meta.url));
 const RUNNER = join(PROJECT_ROOT, 'skills/deep-optimization-lab/scripts/experiment-runner.mjs');
+const COLLECTOR = join(PROJECT_ROOT, 'skills/deep-optimization-lab/scripts/baseline-collector.mjs');
 
 function createWorkspace(t) {
   const workspace = mkdtempSync(join(tmpdir(), 'deep-optimization-lab-'));
@@ -54,4 +55,14 @@ test('experiment runner rejects a shell-shaped profile without executing it', t 
   assert.equal(result.status, 4, `${result.stdout}${result.stderr}`);
   assert.match(result.stderr, /Invalid --profile/);
   assert.equal(existsSync(marker), false);
+});
+
+test('baseline collector rejects output paths outside the project root', t => {
+  const workspace = createWorkspace(t);
+  const result = spawnSync(process.execPath, [
+    COLLECTOR, '--profile', 'project-quality', '--output', '../escaped-baseline',
+  ], { cwd: workspace, encoding: 'utf8' });
+
+  assert.equal(result.status, 4, `${result.stdout}${result.stderr}`);
+  assert.match(result.stderr, /must stay inside the project root/);
 });

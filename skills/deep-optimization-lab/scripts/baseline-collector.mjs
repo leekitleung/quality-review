@@ -15,7 +15,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 
@@ -92,6 +92,13 @@ for (let i = 0; i < args.length; i++) {
     i++;
   }
 }
+const resolvedOutputDir = resolve(PROJECT_ROOT, outputDir);
+const relativeOutputDir = relative(PROJECT_ROOT, resolvedOutputDir);
+if (relativeOutputDir === '..' || relativeOutputDir.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) {
+  console.error('Error: --output must stay inside the project root');
+  process.exit(4);
+}
+outputDir = resolvedOutputDir;
 
 // Shared metrics/sources for project-quality base profile
 const PROJECT_QUALITY_METRICS = [
@@ -228,7 +235,7 @@ async function collectBaseline() {
 async function measureTestCoverage() {
   try {
     // Run tests with coverage
-    const result = execSync('npm test -- --coverage 2>&1 || true', { encoding: 'utf-8', timeout: 60000 });
+    const result = execSync('npm test -- --coverage', { encoding: 'utf-8', timeout: 60000 });
 
     // Parse coverage from output (simplified)
     const coverageMatch = result.match(/All files[^}]+?\s+([\d.]+)%/);
@@ -237,7 +244,9 @@ async function measureTestCoverage() {
     }
 
     // Count test files
-    const testCount = execSync('find . -name "*.test.ts" | wc -l', { encoding: 'utf-8', shell: 'bash' }).trim();
+    const testCount = execSync('find . -name "*.test.ts" | wc -l', {
+      encoding: 'utf-8', shell: 'bash', timeout: 10000,
+    }).trim();
     return { value: parseInt(testCount), unit: 'files', note: 'test file count' };
   } catch {
     return { value: 0, unit: 'unknown', note: 'could not measure' };
@@ -249,7 +258,7 @@ async function measureTestCoverage() {
  */
 async function measureLintErrors() {
   try {
-    const result = execSync('npm run lint 2>&1 || true', { encoding: 'utf-8', timeout: 30000 });
+    const result = execSync('npm run lint', { encoding: 'utf-8', timeout: 30000 });
 
     // Count error lines
     const errorLines = result.split('\n').filter(line => line.includes('error'));
@@ -264,7 +273,7 @@ async function measureLintErrors() {
  */
 async function measureTypeErrors() {
   try {
-    const result = execSync('npm run typecheck 2>&1 || true', { encoding: 'utf-8', timeout: 30000 });
+    const result = execSync('npm run typecheck', { encoding: 'utf-8', timeout: 30000 });
 
     // Check for error count
     const errorMatch = result.match(/Found (\d+) error/);
@@ -289,11 +298,17 @@ async function measureTypeErrors() {
 async function measureDocumentationCoverage() {
   try {
     // Count README and doc files
-    const readmeCount = execSync('find . -maxdepth 3 -name "README.md" -o -name "CHANGELOG.md" | wc -l', { encoding: 'utf-8', shell: 'bash' }).trim();
-    const docsCount = execSync('find docs -name "*.md" 2>/dev/null | wc -l', { encoding: 'utf-8', shell: 'bash' }).trim();
+    const readmeCount = execSync('find . -maxdepth 3 -name "README.md" -o -name "CHANGELOG.md" | wc -l', {
+      encoding: 'utf-8', shell: 'bash', timeout: 10000,
+    }).trim();
+    const docsCount = execSync('find docs -name "*.md" 2>/dev/null | wc -l', {
+      encoding: 'utf-8', shell: 'bash', timeout: 10000,
+    }).trim();
 
     // Count code files that should have docs
-    const srcCount = execSync('find apps packages -name "*.ts" -not -path "*/node_modules/*" | wc -l', { encoding: 'utf-8', shell: 'bash' }).trim();
+    const srcCount = execSync('find apps packages -name "*.ts" -not -path "*/node_modules/*" | wc -l', {
+      encoding: 'utf-8', shell: 'bash', timeout: 10000,
+    }).trim();
 
     return {
       value: parseInt(readmeCount) + parseInt(docsCount),

@@ -398,7 +398,7 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity, auto
   // Independent reviewers may cite candidate diff code for static claims. Runtime
   // claims still require command/test evidence, and self-authored language is rejected.
   allViolations.push(...checkMissingEvidenceOutput(content));
-  if (packet?.status === 'pass') {
+  if (packet) {
     const evidenceBinding = validateReviewerEvidenceBlocks(content, automatedChecks);
     if (!evidenceBinding.valid) {
       allViolations.push({ type: 'round_evidence_mismatch', desc: evidenceBinding.reason });

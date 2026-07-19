@@ -576,8 +576,13 @@ test('binds every machine blocker and redline to evidence in its own Markdown se
   ).length, 1);
   assertEqual(checkFindingEvidenceBindings(
     [finding],
-    '## DQA-TEST-P1-01\nEvidence: skills/release-quality-review/lib/model-selector.mjs:20\n',
+    '## DQA-TEST-P1-01\nAffected files: skills/release-quality-review/lib/model-selector.mjs\nEvidence: skills/release-quality-review/lib/model-selector.mjs:20\n',
   ).length, 0);
+  const irrelevant = checkFindingEvidenceBindings(
+    [finding],
+    '## DQA-TEST-P1-01\nAffected files: skills/release-quality-review/lib/review-utils.mjs\nEvidence: skills/release-quality-review/lib/model-selector.mjs:20\n',
+  );
+  assertEqual(irrelevant[0]?.type, 'irrelevant_finding_evidence');
 });
 
 process.on('exit', () => {

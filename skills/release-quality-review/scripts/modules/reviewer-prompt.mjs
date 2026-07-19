@@ -39,6 +39,7 @@ export function generateReviewerPrompt({
 - ✅ score.md 必须至少包含一个完整的 Command/Exit code/Output 三行块
 - ❌ 修改命令、exit code、数字或 Output 文本会使 packet fail closed
 - ✅ 每个 blockers/redlines 条目必须在 blockers.md 中有独立标题，标题原样包含该条目的完整文本或唯一标识符
+- ✅ 每个 blocker/redline 标题下必须写 \`Affected files: path/to/file.ext\`，且至少一个同节 \`file:line\` 引用必须指向所声明文件；共享命令块不能替代 finding-specific 静态证据
 - ✅ file:line 引用必须使用文件的实际物理行号，不得把 JSON 内嵌输出的行偏移当作文件行号
 - ✅ 引用**历史报告**或**其他 Reviewer 的发现**
 - ✅ 提供具体的错误信息、堆栈跟踪或命令输出

@@ -369,6 +369,9 @@ round scope 和 Gate-owned reviewer selection，避免启动集合与最终仲�
 不一致时 fail closed。静态 file:line 引用不能单独授权通过；Runner 在接收 packet 时即执行这项检查，
 使缺失或伪造证据的 pass 包进入既有重试流程。证据启动、Git 身份读取和最终 Gate 调用均使用
 异步子进程/文件 API，避免 reviewer 编排热路径阻塞事件循环。
+失败 packet 同样必须包含至少一个本轮规范化共享命令块。每个 machine blocker/redline 还必须声明
+`Affected files:`，并在同一章节提供至少一个指向所声明文件的实际 `file:line` 引用；共享命令摘要
+不能替代 finding-specific 静态证据。
 Runner 在 reviewer 启动前及 `--no-collect` Gate 复核时都要求工作树保持 clean；持久化
 evidence 后出现未提交漂移会 fail closed。Reviewer 的进程树、超时、重试和并行/串行调度由
 独立 execution engine 负责，测试按 core、evidence/security、runner/gate/E2E 三组入口执行。

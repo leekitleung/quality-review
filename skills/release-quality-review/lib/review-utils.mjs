@@ -5,6 +5,8 @@
  * Functions here are pure logic with no side effects.
  */
 
+import { STRICT_AUTOMATED_STATUS_KEYS } from './automated-gate-policy.mjs';
+
 // ============================================================================
 // Score Parsing
 // ============================================================================
@@ -542,11 +544,8 @@ export function validateResultYamlContract(yamlContent) {
 }
 
 export function strictAutomatedChecksPassed(autoChecks, evidenceValidationPassed) {
-  return Boolean(autoChecks) && autoChecks.testGate?.status === 'pass' &&
-    autoChecks.typecheckGate?.status === 'pass' && autoChecks.buildGate?.status === 'pass' &&
-    autoChecks.lintGate?.status === 'pass' && autoChecks.auditGate?.status === 'pass' &&
-    autoChecks.coverageGate?.status === 'pass' && autoChecks.e2eGate?.status === 'pass' &&
-    autoChecks.secrets?.status === 'pass' && autoChecks.circularDeps?.status === 'pass' &&
+  return Boolean(autoChecks) &&
+    STRICT_AUTOMATED_STATUS_KEYS.every(key => autoChecks[key]?.status === 'pass') &&
     evidenceValidationPassed;
 }
 

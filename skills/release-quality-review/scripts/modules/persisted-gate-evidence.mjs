@@ -8,6 +8,7 @@ import {
   validateCleanCandidateEvidence,
   validateRollbackEvidence,
 } from '../../lib/review-utils.mjs';
+import { requiredCommandGateKeys } from '../../lib/automated-gate-policy.mjs';
 import { readContainedFileSync } from '../../lib/security-utils.mjs';
 import { validCandidateCheckoutEvidence, validCommandEvidence } from './evidence.mjs';
 import { resolveVerificationCommands } from './verification-policy.mjs';
@@ -69,21 +70,20 @@ function validateAgenticEvidence(roundDir, metadata) {
   }
 }
 
-function validateAutomatedEvidence(config, profile, automatedChecks, metadata) {
+export function validateAutomatedEvidence(config, profile, automatedChecks, metadata) {
   const verification = resolveVerificationCommands(config);
-  const expectedCommands = {
+  const commandsByGate = {
     testGate: verification.test,
     typecheckGate: verification.typecheck,
     buildGate: verification.build,
     lintGate: verification.lint,
     auditGate: verification.audit,
+    coverageGate: verification.coverage,
+    e2eGate: verification.e2e,
   };
-  if (['release-gate', 'full', 'agentic-release-gate'].includes(profile)) {
-    expectedCommands.e2eGate = verification.e2e;
-  }
-  if (profile === 'agentic-release-gate') expectedCommands.coverageGate = verification.coverage;
 
-  for (const [name, expectedCommand] of Object.entries(expectedCommands)) {
+  for (const name of requiredCommandGateKeys(profile)) {
+    const expectedCommand = commandsByGate[name];
     if (!validCommandEvidence(automatedChecks[name], expectedCommand) ||
         (name === 'testGate' && !hasConcreteVerificationOutput('test', automatedChecks[name]?.output)) ||
         (name === 'coverageGate' && !hasConcreteVerificationOutput('coverage', automatedChecks[name]?.output))) {
