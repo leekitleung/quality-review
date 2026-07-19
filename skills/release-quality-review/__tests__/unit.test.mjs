@@ -660,16 +660,21 @@ test.describe('Radar reviewer model selection', () => {
     assertEqual(selected.model, 'gpt-online');
     assertEqual(selected.selection.snapshot_sha256, createHash('sha256').update(body).digest('hex'));
 
-    for (const [fetchImpl, expected] of [
-      [async () => { throw new Error('offline'); }, 'Radar request failed: offline'],
-      [async () => ({ ok: false, status: 503 }), 'HTTP 503'],
-      [async () => ({ ok: true, text: async () => { throw new Error('body failed'); } }), 'body failed'],
-      [async () => ({ ok: true, text: async () => '{invalid' }), 'not valid JSON'],
+    for (const [fetchImpl, expectedMessage, expectedCode, expectedStatus] of [
+      [async () => { throw 'offline'; }, 'Radar request failed: offline', 'RADAR_REQUEST_FAILED'],
+      [async () => ({ ok: false, status: 503 }), 'HTTP 503', 'RADAR_HTTP_ERROR', 503],
+      [async () => ({ ok: true, text: async () => { throw 'body failed'; } }), 'body failed', 'RADAR_BODY_READ_FAILED'],
+      [async () => ({ ok: true, text: async () => '{invalid' }), 'not valid JSON', 'RADAR_INVALID_JSON'],
     ]) {
-      await assertRejects(
-        fetchRadarReviewerModel({ now, fetchImpl }),
-        expected,
-      );
+      let rejection;
+      try {
+        await fetchRadarReviewerModel({ now, fetchImpl });
+      } catch (error) {
+        rejection = error;
+      }
+      assertTrue(rejection?.message.includes(expectedMessage), `Expected rejection containing ${expectedMessage}`);
+      assertEqual(rejection?.code, expectedCode, `Expected ${expectedCode}`);
+      if (expectedStatus !== undefined) assertEqual(rejection?.status, expectedStatus, 'Expected HTTP status');
     }
   });
 });

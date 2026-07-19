@@ -434,6 +434,8 @@ test.describe('CLI fail-closed integration', () => {
     ], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 30000 });
     assertEqual(malformedSnapshot.status, 4, `${malformedSnapshot.stdout}${malformedSnapshot.stderr}`);
     assertTrue(malformedSnapshot.stderr.includes('main agent must choose a model'));
+    assertTrue(malformedSnapshot.stderr.includes('Radar diagnostic: {"code":"NO_CANDIDATES"}'),
+      `${malformedSnapshot.stdout}${malformedSnapshot.stderr}`);
     for (const [args, expected] of [
       [['--model', TEST_CODEX_MODEL], 'require explicit --agent'],
       [['--agent', 'claude'], 'claude reviews require explicit --model'],
@@ -808,7 +810,7 @@ setInterval(() => {}, 1000);
         cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 5000,
         env: {
           ...process.env, PATH: `${fakeBin}:${process.env.PATH}`,
-          RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '100', RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
+          RELEASE_QUALITY_REVIEWER_TIMEOUT_MS: '1000', RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS: '100',
           RELEASE_QUALITY_REVIEWER_RETRY_MAX: '0', RELEASE_QUALITY_REVIEWER_START_DELAY_MS: '1',
         },
       });

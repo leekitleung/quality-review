@@ -462,6 +462,13 @@ async function resolveReviewIdentity(roundDir) {
       `Codex Radar could not select a reviewer model: ${error.message}. ` +
       'The main agent must choose a model and rerun with --model.',
     );
+    failure.cause = error;
+    failure.radarDiagnostic = {
+      code: typeof error.code === 'string' ? error.code : 'RADAR_SELECTION_FAILED',
+      ...(Number.isInteger(error.status) ? { status: error.status } : {}),
+      ...(Number.isFinite(error.ageHours) ? { ageHours: error.ageHours } : {}),
+      ...(Number.isFinite(error.maxAgeHours) ? { maxAgeHours: error.maxAgeHours } : {}),
+    };
     failure.exitCode = 4;
     throw failure;
   }
@@ -877,5 +884,8 @@ async function main() {
 
 main().catch(err => {
   console.error(`\n${c.red}Error:${c.reset}`, err.message);
+  if (err.radarDiagnostic) {
+    console.error('Radar diagnostic:', JSON.stringify(err.radarDiagnostic));
+  }
   process.exit(err.exitCode || 1);
 });

@@ -67,7 +67,11 @@ function candidateFromEntry(key, entry) {
 
 export function extractRadarCandidates(snapshot) {
   const modelIq = snapshot?.model_iq;
-  if (!modelIq || typeof modelIq !== 'object') throw new Error('Radar snapshot is missing model_iq');
+  if (!modelIq || typeof modelIq !== 'object') {
+    const error = new Error('Radar snapshot is missing model_iq');
+    error.code = 'MISSING_MODEL_IQ';
+    throw error;
+  }
   const entries = Object.entries(modelIq.comparisons || {});
   if (modelIq.latest) entries.push(['latest', modelIq.latest]);
   const unique = new Map();
@@ -95,18 +99,32 @@ export function selectRadarReviewerModel(snapshot, {
   preferLightweight = true,
 } = {}) {
   if (!/^2\./.test(String(snapshot?.schema_version || ''))) {
-    throw new Error(`unsupported Radar schema_version: ${snapshot?.schema_version ?? 'missing'}`);
+    const error = new Error(`unsupported Radar schema_version: ${snapshot?.schema_version ?? 'missing'}`);
+    error.code = 'INVALID_SCHEMA_VERSION';
+    throw error;
   }
   const updatedAt = snapshot?.model_iq?.updated_at;
   const updatedTime = Date.parse(updatedAt || '');
-  if (!Number.isFinite(updatedTime)) throw new Error('Radar snapshot has no valid model_iq.updated_at');
+  if (!Number.isFinite(updatedTime)) {
+    const error = new Error('Radar snapshot has no valid model_iq.updated_at');
+    error.code = 'MISSING_UPDATED_AT';
+    throw error;
+  }
   const ageHours = (now.getTime() - updatedTime) / 3_600_000;
   if (ageHours < -1 || ageHours > maxAgeHours) {
-    throw new Error(`Radar snapshot is stale or future-dated (${ageHours.toFixed(1)} hours old)`);
+    const error = new Error(`Radar snapshot is stale or future-dated (${ageHours.toFixed(1)} hours old)`);
+    error.code = 'STALE_SNAPSHOT';
+    error.ageHours = ageHours;
+    error.maxAgeHours = maxAgeHours;
+    throw error;
   }
 
   const candidates = extractRadarCandidates(snapshot);
-  if (candidates.length === 0) throw new Error('Radar snapshot contains no usable Codex model candidates');
+  if (candidates.length === 0) {
+    const error = new Error('Radar snapshot contains no usable Codex model candidates');
+    error.code = 'NO_CANDIDATES';
+    throw error;
+  }
   const qualified = candidates.filter(candidate => candidate.score > minimumIqExclusive);
   const qualifiedLightweight = qualified.filter(candidate => LIGHTWEIGHT_EFFORTS.has(candidate.reasoningEffort));
   let pool;
@@ -145,25 +163,45 @@ export async function fetchRadarReviewerModel({
   fetchImpl = globalThis.fetch, now = new Date(), timeoutMs = 5000,
   maxAgeHours = DEFAULT_RADAR_MAX_AGE_HOURS, preferLightweight = true,
 } = {}) {
-  if (typeof fetchImpl !== 'function') throw new Error('Radar fetch is unavailable');
+  if (typeof fetchImpl !== 'function') {
+    const error = new Error('Radar fetch is unavailable');
+    error.code = 'RADAR_FETCH_UNAVAILABLE';
+    throw error;
+  }
   let response;
   try {
     response = await fetchImpl(CODEX_RADAR_SUMMARY_URL, { signal: AbortSignal.timeout(timeoutMs) });
-  } catch (error) {
-    throw new Error(`Radar request failed: ${error.message}`);
+  } catch (cause) {
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    const error = new Error(`Radar request failed: ${causeMessage}`);
+    error.code = 'RADAR_REQUEST_FAILED';
+    error.cause = cause;
+    throw error;
   }
-  if (!response?.ok) throw new Error(`Radar request failed with HTTP ${response?.status ?? 'unknown'}`);
+  if (!response?.ok) {
+    const error = new Error(`Radar request failed with HTTP ${response?.status ?? 'unknown'}`);
+    error.code = 'RADAR_HTTP_ERROR';
+    error.status = response?.status;
+    throw error;
+  }
   let body;
   try {
     body = await response.text();
-  } catch (error) {
-    throw new Error(`Radar response body failed: ${error.message}`);
+  } catch (cause) {
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    const error = new Error(`Radar response body failed: ${causeMessage}`);
+    error.code = 'RADAR_BODY_READ_FAILED';
+    error.cause = cause;
+    throw error;
   }
   let snapshot;
   try {
     snapshot = JSON.parse(body);
-  } catch {
-    throw new Error('Radar response is not valid JSON');
+  } catch (cause) {
+    const error = new Error('Radar response is not valid JSON');
+    error.code = 'RADAR_INVALID_JSON';
+    error.cause = cause;
+    throw error;
   }
   const result = selectRadarReviewerModel(snapshot, { now, maxAgeHours, preferLightweight });
   result.selection.snapshot_sha256 = createHash('sha256').update(body).digest('hex');

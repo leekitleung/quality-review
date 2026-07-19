@@ -104,7 +104,7 @@ export function loadExistingScores(
 
         hasReport = true;
       } catch (e) {
-        packetError = `Invalid result.yaml: ${e.message}`;
+        packetError = `Invalid ${reviewer}/result.yaml: ${e.message}`;
       }
     }
 
@@ -127,7 +127,7 @@ export function loadExistingScores(
 
         hasReport = true;
       } catch (e) {
-        packetError = `Invalid score.md: ${e.message}`;
+        packetError = `Invalid ${reviewer}/score.md: ${e.message}`;
       }
     }
 
@@ -138,7 +138,7 @@ export function loadExistingScores(
         blockers.push(...parseBlockers(blockerContent));
         hasReport = true;
       } catch (e) {
-        packetError = `Invalid blockers.md: ${e.message}`;
+        packetError = `Invalid ${reviewer}/blockers.md: ${e.message}`;
       }
     }
 
@@ -148,7 +148,7 @@ export function loadExistingScores(
         improvements = readContainedFileSync(roundDir, improvementPath, 'utf-8');
         hasReport = true;
       } catch (e) {
-        packetError = `Invalid improvement-list.md: ${e.message}`;
+        packetError = `Invalid ${reviewer}/improvement-list.md: ${e.message}`;
       }
     }
 
