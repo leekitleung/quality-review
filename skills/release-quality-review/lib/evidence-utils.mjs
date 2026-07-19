@@ -1,8 +1,9 @@
 import path from 'node:path';
 
-const COMMAND_PATTERN = /\b(?:pnpm|npm|yarn)\s+(?:run\s+)?[a-zA-Z0-9:._-]+(?:\s+--[^\s`),;]+)*/g;
-const EXIT_ZERO_PATTERN = /\b(?:exit(?:ed|_code)?|return(?:ed)?|status)\s*(?:code)?\s*[:=]?\s*`?0\b/i;
-const OUTPUT_SUMMARY_PATTERN = /(?:#\s*|\b)(?:tests|pass|fail|skipped)\s+\d+|\b\d+\s+(?:passed|failed|skipped|ok)\b|(?<!not )\bok\s+\d+\b|found\s+0\s+vulnerabilities|in sync\s*\(\d+\s+adapters\)|node\s+--check\b|alias of typecheck\b|operation not permitted/i;
+const TEST_OUTPUT_PATTERN = /(?:#\s*|\b)(?:tests|pass|skipped)\s+\d+|\b\d+\s+(?:passed|skipped|ok)\b|(?<!not )\bok\s+\d+\b/i;
+const CODE_CHECK_OUTPUT_PATTERN = /node\s+--check\b|alias of typecheck\b/i;
+const COVERAGE_OUTPUT_PATTERN = /\ball files\s*\||(?:#\s*|\b)(?:tests|pass)\s+\d+/i;
+const AUDIT_OUTPUT_PATTERN = /found\s+0\s+vulnerabilities/i;
 const SHARED_VERIFICATION_COMMANDS = new Set([
   'npm test',
   'npm run typecheck',
@@ -22,8 +23,13 @@ const SHARED_VERIFICATION_COMMANDS = new Set([
   'yarn lint',
 ]);
 
-function hasPassingOutput(summary) {
-  return OUTPUT_SUMMARY_PATTERN.test(summary) &&
+export function hasPassingCommandOutput(command, summary) {
+  let outputPattern = CODE_CHECK_OUTPUT_PATTERN;
+  if (/\b(?:test|test:e2e|test:integration)\b/.test(command)) outputPattern = TEST_OUTPUT_PATTERN;
+  else if (/\bcoverage\b/.test(command)) outputPattern = COVERAGE_OUTPUT_PATTERN;
+  else if (/\baudit\b/.test(command)) outputPattern = AUDIT_OUTPUT_PATTERN;
+
+  return outputPattern.test(summary) &&
     !/\bnot\s+ok\b/i.test(summary) &&
     !/(?:#\s*fail|\bfailed?)\s*[:=]?\s*[1-9]\d*\b|\b[1-9]\d*\s+failed\b/i.test(summary);
 }
@@ -46,17 +52,9 @@ export function resolveFileReference(projectRoot, file) {
 
 export function extractCommandEvidence(content) {
   const records = [];
-  for (const match of content.matchAll(COMMAND_PATTERN)) {
-    const start = Math.max(0, match.index - 120);
-    const end = Math.min(content.length, match.index + match[0].length + 500);
-    const context = content.slice(start, end);
-    if (SHARED_VERIFICATION_COMMANDS.has(match[0]) && EXIT_ZERO_PATTERN.test(context) && hasPassingOutput(context)) {
-      records.push({ command: match[0], context });
-    }
-  }
-  for (const match of String(content || '').matchAll(/\bcommand:\s*["']?([^"'\n]+?)["']?\s*[\r\n]+[\s\S]{0,240}?exit_code:\s*0\s*[\r\n]+[\s\S]{0,240}?(?:output_summary|output):\s*["']?([^"'\n]+)["']?/gi)) {
+  for (const match of String(content || '').matchAll(/^Command:\s*([^\r\n]+)\r?\nExit code:\s*0\r?\nOutput:\s*([^\r\n]+)$/gmi)) {
     const command = match[1].trim();
-    if (SHARED_VERIFICATION_COMMANDS.has(command) && hasPassingOutput(match[2])) {
+    if (SHARED_VERIFICATION_COMMANDS.has(command) && hasPassingCommandOutput(command, match[2])) {
       records.push({ command, context: match[0] });
     }
   }

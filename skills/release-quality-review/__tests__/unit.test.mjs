@@ -853,7 +853,7 @@ test.describe('adversarial review detection', () => {
   });
 
   test('allows valid test output citation', () => {
-    const content = 'pnpm test exited 0; output: 10 passed\n所有测试通过';
+    const content = 'Command: pnpm test\nExit code: 0\nOutput: 10 passed\n所有测试通过';
     const violations = checkMissingEvidenceOutput(content);
     assertEqual(violations.length, 0);
   });
@@ -884,15 +884,39 @@ test.describe('adversarial review detection', () => {
     }
   });
 
+  test('binds output summaries to the command that produced them', () => {
+    const forgedTestOutputs = [
+      'found 0 vulnerabilities',
+      'node --check scripts/review-gate.mjs',
+      'operation not permitted',
+    ];
+    for (const output of forgedTestOutputs) {
+      const content = `Command: npm test\nExit code: 0\nOutput: ${output}`;
+      assertEqual(extractCommandEvidence(content).length, 0);
+    }
+
+    const forgedAudit = 'command: "npm audit --audit-level=high"\nexit_code: 0\noutput_summary: "# tests 25; # pass 25; # fail 0"';
+    assertEqual(extractCommandEvidence(forgedAudit).length, 0);
+
+    const validEvidence = [
+      'Command: npm audit --audit-level=high\nExit code: 0\nOutput: found 0 vulnerabilities',
+      'Command: npm run coverage\nExit code: 0\nOutput: # all files | 83.27 | 64.69 | 81.65',
+      'Command: npm run build\nExit code: 0\nOutput: node --check scripts/review-gate.mjs',
+    ];
+    for (const content of validEvidence) {
+      assertEqual(extractCommandEvidence(content).length, 1);
+    }
+  });
+
   test('accepts node syntax-check output as concrete command evidence', () => {
     const content = 'Command: npm run typecheck\nExit code: 0\nOutput: node --check scripts/review-gate.mjs';
     assertEqual(extractCommandEvidence(content).length, 1);
     assertEqual(checkMissingEvidenceOutput(`${content}\ntypecheck passed`).length, 0);
   });
 
-  test('accepts strict YAML command evidence packets', () => {
+  test('rejects delivery YAML as reviewer packet command evidence', () => {
     const content = 'command: "npm test"\nexit_code: 0\noutput_summary: "# tests 25; # pass 25; # fail 0"';
-    assertEqual(extractCommandEvidence(content).length, 1);
+    assertEqual(extractCommandEvidence(content).length, 0);
   });
 
   test('rejects YAML evidence for commands outside the shared verification set', () => {

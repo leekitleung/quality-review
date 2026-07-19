@@ -16,3 +16,4 @@
 - Keep evidence startup, Git identity reads, metadata loading, and final Gate arbitration asynchronous; reject passing reviewer packets without structured command evidence before accepting an attempt; and cover collector-level sandbox startup recovery.
 - Fail closed on persisted-evidence dirty-worktree drift, preserve silent verification timeout diagnostics, split release tests by ownership, and move reviewer lifecycle/retry orchestration into an execution engine.
 - Restore non-agentic persisted-scope resume, centralize verification command policy, reject shell and symlink manifest escapes, and split runner lifecycle, reviewer selection, and Gate E2E tests into separate entry points.
+- Reject non-zero multi-digit failure summaries and bind each reviewer command to a command-specific output contract so audit, code-check, or sandbox text cannot forge test evidence.

@@ -15,6 +15,19 @@
 ### P2: 执行门禁
 **必须有真实测试/构建/文件证据**
 
+Reviewer packet 的 `score.md` / `blockers.md` 只使用以下命令证据格式：
+
+```text
+Command: npm test
+Exit code: 0
+Output: # tests 25; # pass 25; # fail 0
+```
+
+`Output` 必须与 `Command` 匹配：test/E2E 需要测试计数，coverage 需要 coverage
+汇总，audit 需要零漏洞摘要，build/typecheck/lint 需要对应代码检查摘要。其他命令的
+成功文本不能替代当前命令的输出。`templates/delivery-packet/evidence.md` 中的 YAML 是
+交付包格式，不是 reviewer packet 格式，也不能直接授权 reviewer pass。
+
 证据层级（按优先级）：
 
 | 层级 | 证据类型 | 可信度 |

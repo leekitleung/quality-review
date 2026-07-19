@@ -2,6 +2,10 @@
 
 证据包。
 
+> 本文件描述交付包的 YAML 结构。Reviewer packet 的运行证据必须遵循
+> `rubrics/evidence.md` 中唯一的 `Command` / `Exit code` / `Output` Markdown 格式；
+> 本文件中的 `commands_executed` 不能直接授权 reviewer pass。
+
 ## 执行的命令
 
 ```yaml
