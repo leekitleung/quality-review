@@ -25,7 +25,7 @@ const SHARED_VERIFICATION_COMMANDS = new Set([
 function hasPassingOutput(summary) {
   return OUTPUT_SUMMARY_PATTERN.test(summary) &&
     !/\bnot\s+ok\b/i.test(summary) &&
-    !/(?:#\s*fail|\bfailed?|\bfail)\s*[:=]?\s*[1-9]\b/i.test(summary);
+    !/(?:#\s*fail|\bfailed?)\s*[:=]?\s*[1-9]\d*\b|\b[1-9]\d*\s+failed\b/i.test(summary);
 }
 
 const FILE_LINE_PATTERN = /`?((?:\/|\.\.?\/)?[A-Za-z0-9_.][A-Za-z0-9_./\\-]*\.(?:ts|tsx|js|jsx|mjs|md|json|ya?ml)):(\d+)`?/g;

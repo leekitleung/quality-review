@@ -872,8 +872,16 @@ test.describe('adversarial review detection', () => {
   });
 
   test('rejects failed TAP output even when it includes ok counts', () => {
-    const content = 'Command: npm test\nExit code: 0\nOutput: 174 ok; # fail 1; not ok 175';
-    assertEqual(extractCommandEvidence(content).length, 0);
+    const outputs = [
+      '174 ok; # fail 1; not ok 175',
+      '174 ok; # fail 10',
+      '174 ok; 10 failed',
+      '174 ok; failed: 12',
+    ];
+    for (const output of outputs) {
+      const content = `Command: npm test\nExit code: 0\nOutput: ${output}`;
+      assertEqual(extractCommandEvidence(content).length, 0);
+    }
   });
 
   test('accepts node syntax-check output as concrete command evidence', () => {
