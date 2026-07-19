@@ -426,6 +426,7 @@ function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
       '--config', 'model_providers.chatgpt-http.wire_api="responses"',
       '--config', 'model_providers.chatgpt-http.requires_openai_auth=true',
       '--config', 'model_providers.chatgpt-http.supports_websockets=false',
+      '--config', 'model_providers.chatgpt-http.stream_idle_timeout_ms=900000',
     ];
     const minimalRuntimeArgs = [
       '--disable', 'apps', '--disable', 'enable_mcp_apps',
