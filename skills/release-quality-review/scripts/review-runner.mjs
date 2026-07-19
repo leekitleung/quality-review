@@ -427,11 +427,16 @@ function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
       '--config', 'model_providers.chatgpt-http.requires_openai_auth=true',
       '--config', 'model_providers.chatgpt-http.supports_websockets=false',
     ];
+    const minimalRuntimeArgs = [
+      '--disable', 'apps', '--disable', 'enable_mcp_apps',
+      '--disable', 'plugin_sharing', '--disable', 'remote_plugin',
+    ];
     return {
       command: 'codex',
       args: [
         'exec', '--json', '--model', selectedModel, ...effortArgs, ...httpProviderArgs,
-        '--ephemeral', '--ignore-user-config', '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt,
+        ...minimalRuntimeArgs, '--ephemeral', '--ignore-user-config', '--ignore-rules',
+        '--sandbox', 'workspace-write', '--cd', PROJECT_ROOT, prompt,
       ],
     };
   }

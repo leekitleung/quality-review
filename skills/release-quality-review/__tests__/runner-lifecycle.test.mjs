@@ -367,6 +367,8 @@ test.describe('CLI fail-closed integration', () => {
       'Reviewer invocation must avoid unreliable WebSocket startup retries');
     assertTrue(runner.includes('model_providers.chatgpt-http.requires_openai_auth=true'),
       'HTTP reviewer provider must retain ChatGPT authentication');
+    assertTrue(runner.includes("'--disable', 'plugin_sharing', '--disable', 'remote_plugin'"),
+      'Reviewer invocation must not start unrelated remote plugin services');
   });
 
   test('dry-run supports Codex Radar auto-selection and validates explicit identity', t => {
