@@ -11,6 +11,7 @@ import {
 } from '../lib/reviewer-evidence-contract.mjs';
 import { validateAutomatedEvidence } from '../scripts/modules/persisted-gate-evidence.mjs';
 import { validateReviewerPacket } from '../scripts/modules/reviewer-packet.mjs';
+import { generateReviewerPrompt } from '../scripts/modules/reviewer-prompt.mjs';
 
 function record(command, output) {
   return { command, status: 'pass', exit_code: 0, output };
@@ -36,6 +37,16 @@ test('renders the only reviewer packet command evidence accepted for the round',
   const rendered = renderReviewerEvidenceBlocks(automatedChecks);
   assert.match(rendered, /Command: npm test\nExit code: 0\nOutput: # tests 159; # pass 159; # fail 0/);
   assert.match(rendered, /Command: npm run build\nExit code: 0\nOutput: node --check/);
+});
+
+test('reserves structured command labels for shared round evidence', () => {
+  const prompt = generateReviewerPrompt({
+    reviewerName: 'product-flow', reviewerContent: 'review', currentRound: 7,
+    candidateIdentity: { commit: 'a'.repeat(40), tree: 'b'.repeat(40) },
+    reviewBackend: 'codex', reviewModel: 'gpt-5.4', reviewReasoningEffort: null,
+    profile: 'release-gate', skillDir: '/skill', reviewerOutputDir: '/output', automatedChecks,
+  });
+  assert.match(prompt, /任何本地诊断都不得使用字面标签/);
 });
 
 test('rejects invented counts and cross-command output against round evidence', () => {

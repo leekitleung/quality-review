@@ -15,6 +15,7 @@ const NETWORK_SYSTEM_SERVICES = [
 
 export function buildCandidateSandboxProfile({ readRoots, writeRoots, allowNetwork }) {
   const quote = value => JSON.stringify(value);
+  const readSubpaths = readRoots.filter(root => root !== '/');
   return [
     '(version 1)',
     '(deny default)',
@@ -28,7 +29,7 @@ export function buildCandidateSandboxProfile({ readRoots, writeRoots, allowNetwo
     ] : []),
     '(allow dynamic-code-generation)',
     '(allow file-read-metadata)',
-    `(allow file-read* (literal "/") ${readRoots.slice(1).map(root => `(subpath ${quote(root)})`).join(' ')})`,
+    `(allow file-read* (literal "/") ${readSubpaths.map(root => `(subpath ${quote(root)})`).join(' ')})`,
     `(allow file-write* ${writeRoots.map(root => `(subpath ${quote(root)})`).join(' ')})`,
   ].join(' ');
 }

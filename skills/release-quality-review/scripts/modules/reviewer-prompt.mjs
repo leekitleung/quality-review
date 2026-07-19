@@ -37,6 +37,7 @@ export function generateReviewerPrompt({
 - ✅ 引用**已有测试**的输出结果
 - ✅ 共享命令证据只能逐字复制下方由 Gate 从本轮 automated-checks.json 派生的块
 - ✅ score.md 必须至少包含一个完整的 Command/Exit code/Output 三行块
+- ❌ 除逐字复制共享块外，任何本地诊断都不得使用字面标签 “Command:”、“Exit code:” 或 “Output:”；本地诊断只能用普通 prose 描述
 - ❌ 修改命令、exit code、数字或 Output 文本会使 packet fail closed
 - ✅ 每个 blockers/redlines 条目必须在 blockers.md 中有独立标题，标题原样包含该条目的完整文本或唯一标识符
 - ✅ 每个 blocker/redline 标题下必须写 \`Affected files: path/to/file.ext\`，且至少一个同节 \`file:line\` 引用必须指向所声明文件；共享命令块不能替代 finding-specific 静态证据
