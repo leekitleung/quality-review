@@ -2,6 +2,21 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { log } from './constants.mjs';
 import { parseYamlProfile } from '../../lib/review-utils.mjs';
+import { VERIFICATION_COMMAND_NAMES } from './verification-policy.mjs';
+
+const SECTION_KEYS = Object.freeze({
+  verification: new Set(VERIFICATION_COMMAND_NAMES),
+  gate: new Set([
+    'min_score', 'fail_on_redlines', 'fail_on_p0_p1_blockers', 'require_all_reviewers', 'max_rounds',
+  ]),
+  execution: new Set(['start_delay_ms', 'timeout_ms', 'retry_max']),
+});
+
+function configurationError(message) {
+  const error = new Error(message);
+  error.exitCode = 4;
+  return error;
+}
 
 // Reviewer profiles (frozen to prevent accidental mutation)
 export const PROFILES = Object.freeze({
@@ -61,51 +76,40 @@ function validateProfileThreshold(profileName, profileConfig) {
  * @returns {object} Config object
  */
 export function loadConfig(configFile) {
+  if (!existsSync(configFile)) return { verification: {}, gate: {}, execution: {} };
+  let content;
   try {
-    if (existsSync(configFile)) {
-      const content = readFileSync(configFile, 'utf-8');
-      const config = {
-        verification: {},
-        gate: {},
-      };
-      const lines = content.split('\n');
-      let currentSection = '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-
-        if (trimmed.startsWith('verification:') || trimmed.startsWith('gate:')) {
-          currentSection = trimmed.replace(':', '').trim();
-          continue;
-        }
-
-        if (trimmed && trimmed.includes(':')) {
-          const [key, ...valueParts] = trimmed.split(':');
-          const value = valueParts.join(':').trim();
-
-          if (value) {
-            const cleanValue = value.replace(/^["']|["']$/g, '');
-
-            if (currentSection === 'verification' || ['test', 'build', 'lint', 'typecheck', 'e2e', 'audit'].includes(key.trim())) {
-              config.verification[key.trim()] = cleanValue;
-            } else if (currentSection === 'gate' || ['min_score', 'fail_on_redlines', 'fail_on_p0_p1_blockers'].includes(key.trim())) {
-              config.gate[key.trim()] = cleanValue;
-            } else {
-              config[key.trim()] = cleanValue;
-            }
-          }
-        }
-      }
-      // Validate threshold consistency
-      const configProfile = config.profile || 'default';
-      validateProfileThreshold(configProfile, config);
-      return config;
-    }
-  } catch (e) {
-    log.warn(`Could not load config: ${e.message}`);
+    content = readFileSync(configFile, 'utf-8');
+  } catch (error) {
+    throw configurationError(`Could not load config: ${error.message}`);
   }
-  return { verification: {}, gate: {} };
+  const config = { verification: {}, gate: {}, execution: {} };
+  let currentSection = '';
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const topLevel = !/^\s/.test(line);
+    const sectionMatch = topLevel && trimmed.match(/^([A-Za-z_][\w-]*):\s*$/);
+    if (sectionMatch) {
+      currentSection = sectionMatch[1];
+      continue;
+    }
+    const property = trimmed.match(/^([A-Za-z_][\w-]*):\s*(.+)$/);
+    if (!property) continue;
+    const [, key, rawValue] = property;
+    const cleanValue = rawValue.replace(/\s+#.*$/, '').replace(/^["']|["']$/g, '').trim();
+    if (topLevel) {
+      currentSection = '';
+      config[key] = cleanValue;
+      continue;
+    }
+    const allowed = SECTION_KEYS[currentSection];
+    if (!allowed) continue;
+    if (!allowed.has(key)) throw configurationError(`unknown ${currentSection} config key: ${key}`);
+    config[currentSection][key] = cleanValue;
+  }
+  validateProfileThreshold(config.profile || 'default', config);
+  return config;
 }
 
 /**

@@ -38,6 +38,7 @@ import { executeReviewers } from './modules/reviewer-execution.mjs';
 import { validateReviewerPacket } from './modules/reviewer-packet.mjs';
 import { generateReviewerPrompt } from './modules/reviewer-prompt.mjs';
 import { resolveRunnerReviewPlan } from './modules/runner-review-plan.mjs';
+import { loadConfig } from './modules/config.mjs';
 
 const PROJECT_ROOT = process.cwd();
 const SKILL_DIR = join(PROJECT_ROOT, 'skills', 'release-quality-review');
@@ -317,56 +318,6 @@ function collectDryRunEvidence() {
     git: { changedFiles: [...new Set([...changedFiles, ...untracked])], diff },
     structure: {},
   };
-}
-
-// Load config
-function loadConfig() {
-  try {
-    if (existsSync(CONFIG_FILE)) {
-      const content = readFileSync(CONFIG_FILE, 'utf-8');
-      const config = {
-        verification: {},
-        gate: {},
-        execution: {},
-      };
-      let currentSection = '';
-
-      for (const line of content.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#')) continue;
-
-        // Section headers
-        if (trimmed.startsWith('verification:') || trimmed.startsWith('gate:') || trimmed.startsWith('execution:')) {
-          currentSection = trimmed.replace(':', '').trim();
-          continue;
-        }
-
-        if (trimmed && trimmed.includes(':')) {
-          const [key, ...valueParts] = trimmed.split(':');
-          const value = valueParts.join(':').trim();
-
-          if (value && !key.includes('-')) {
-            const cleanValue = value.replace(/^["']|["']$/g, '');
-
-            // Map to correct section
-            if (currentSection === 'verification' || ['test', 'build', 'lint', 'typecheck', 'e2e', 'audit'].includes(key.trim())) {
-              config.verification[key.trim()] = cleanValue;
-            } else if (currentSection === 'gate' || ['min_score', 'fail_on_redlines', 'fail_on_p0_p1_blockers'].includes(key.trim())) {
-              config.gate[key.trim()] = cleanValue;
-            } else if (currentSection === 'execution' || ['start_delay_ms', 'timeout_ms', 'retry_max'].includes(key.trim())) {
-              config.execution[key.trim()] = cleanValue;
-            } else {
-              config[key.trim()] = cleanValue;
-            }
-          }
-        }
-      }
-      return config;
-    }
-  } catch (e) {
-    // Ignore
-  }
-  return { verification: {}, gate: {} };
 }
 
 // Get current git commit info
@@ -698,7 +649,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
   }
 
   // Collect evidence with config
-  const config = loadConfig();
+  const config = loadConfig(CONFIG_FILE);
   let evidence;
   if (dryRun) {
     evidence = collectDryRunEvidence();

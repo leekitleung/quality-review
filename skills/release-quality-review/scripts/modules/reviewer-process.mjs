@@ -118,9 +118,17 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
           postValidation = await validatePacket(
             reviewerDir, reviewer, profile, currentRound, candidateIdentity, resolvedAgent, resolvedModel,
           );
-          if (postValidation.valid) rmSync(reviewerSandboxDir, { recursive: true, force: true });
         } catch (error) {
           postValidation = { valid: false, reason: `packet publish failed: ${error.message}` };
+        }
+      }
+      if (postValidation.valid) {
+        try {
+          rmSync(reviewerSandboxDir, {
+            recursive: true, force: true, maxRetries: 20, retryDelay: 50,
+          });
+        } catch (error) {
+          postValidation = { valid: false, reason: `reviewer sandbox cleanup failed: ${error.message}` };
         }
       }
       const complete = postValidation.valid;

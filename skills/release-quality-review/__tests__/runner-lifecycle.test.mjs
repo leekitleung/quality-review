@@ -116,6 +116,7 @@ function radarSnapshot(comparisons, updatedAt = '2026-07-17T10:00:00+08:00') {
 // Create test directory at module load time
 mkdirSync(TEST_DIR, { recursive: true });
 process.env.RELEASE_QUALITY_CODEX_AUTH_MODE = 'none';
+process.env.RELEASE_QUALITY_REVIEWER_FIXTURE_EXECUTOR = '1';
 
 // ============================================================================
 // Test Utilities

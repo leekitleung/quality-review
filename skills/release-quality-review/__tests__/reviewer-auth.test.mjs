@@ -29,7 +29,7 @@ test('Codex reviewer auth adapter requires an explicit no-auth mode for fixtures
     const home = prepareCodexHome({}, root, 'none');
     assert.equal(existsSync(join(home, 'auth.json')), false);
     assert.equal(resolveReviewerRuntimePolicy('codex', {
-      RELEASE_QUALITY_CODEX_AUTH_MODE: 'none', NODE_TEST_CONTEXT: 'child-v8',
+      RELEASE_QUALITY_CODEX_AUTH_MODE: 'none', RELEASE_QUALITY_REVIEWER_FIXTURE_EXECUTOR: '1',
     }).requireExactWriteIsolation, false);
     assert.equal(resolveReviewerRuntimePolicy('codex', {
       RELEASE_QUALITY_CODEX_AUTH_MODE: 'none',

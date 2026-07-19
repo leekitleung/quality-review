@@ -8,12 +8,17 @@ export const DEFAULT_VERIFICATION_COMMANDS = Object.freeze({
   e2e: 'npm run test:e2e',
 });
 
+export const VERIFICATION_COMMAND_NAMES = Object.freeze(Object.keys(DEFAULT_VERIFICATION_COMMANDS));
+
 export function resolveVerificationCommands(config = {}) {
   const configured = config.verification || {};
-  const commandNames = Object.keys(DEFAULT_VERIFICATION_COMMANDS);
+  const unknown = Object.keys(configured).filter(name => !VERIFICATION_COMMAND_NAMES.includes(name));
+  if (unknown.length > 0) {
+    throw new Error(`unknown verification config keys: ${unknown.join(', ')}`);
+  }
   return Object.freeze({
     ...DEFAULT_VERIFICATION_COMMANDS,
-    ...Object.fromEntries(commandNames
+    ...Object.fromEntries(VERIFICATION_COMMAND_NAMES
       .filter(name => typeof configured[name] === 'string')
       .map(name => [name, configured[name]])),
     audit: DEFAULT_VERIFICATION_COMMANDS.audit,

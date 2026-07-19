@@ -2,6 +2,8 @@
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadConfig } from './modules/config.mjs';
+import { VERIFICATION_COMMAND_NAMES } from './modules/verification-policy.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = join(__dirname, '..');
@@ -12,7 +14,13 @@ const errors = [];
 const warnings = [];
 
 function checkConfigConsistency() {
-  const config = readFileSync(CONFIG_PATH, 'utf8');
+  let config;
+  try {
+    config = loadConfig(CONFIG_PATH);
+  } catch (error) {
+    errors.push(error.message);
+    return;
+  }
   const pkg = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf8'));
 
   const expectedPm = pkg.packageManager?.startsWith('pnpm') ? 'pnpm' :
@@ -20,16 +28,9 @@ function checkConfigConsistency() {
 
   if (!expectedPm) {
     warnings.push('Cannot determine expected package manager from packageManager field');
-    return;
   }
 
-  const verificationSection = config.match(/^verification:([\s\S]*?)(?=^\w|\n\n|$)/m);
-  if (!verificationSection) {
-    errors.push('Could not find verification section in config');
-    return;
-  }
-
-  const verificationText = verificationSection[0];
+  const verificationText = Object.values(config.verification).join('\n');
   const npmCommands = verificationText.match(/npm(?:\s|$)/g) || [];
   const pnpmCommands = verificationText.match(/pnpm(?:\s|$)/g) || [];
 
@@ -41,12 +42,8 @@ function checkConfigConsistency() {
     errors.push(`Config uses 'pnpm' commands but project uses npm. Found ${pnpmCommands.length} pnpm commands.`);
   }
 
-  const requiredGates = ['test', 'build', 'lint', 'typecheck', 'audit'];
-  for (const gate of requiredGates) {
-    const gateMatch = verificationText.match(new RegExp(`^\\s*${gate}:\\s*["'](.+?)["']`, 'm'));
-    if (!gateMatch) {
-      warnings.push(`Missing '${gate}' gate command in config`);
-    }
+  for (const gate of VERIFICATION_COMMAND_NAMES) {
+    if (!config.verification[gate]) errors.push(`Missing '${gate}' gate command in config`);
   }
 }
 

@@ -5,8 +5,11 @@ export function resolveReviewerRuntimePolicy(agent, toolEnv) {
   if (codexAuthMode !== null && !['file', 'none'].includes(codexAuthMode)) {
     throw new Error(`Unsupported Codex reviewer auth mode: ${codexAuthMode}`);
   }
-  const fixtureExecution = agent === 'codex' && codexAuthMode === 'none' &&
-    Boolean(toolEnv.NODE_TEST_CONTEXT);
+  const fixtureCapability = toolEnv.RELEASE_QUALITY_REVIEWER_FIXTURE_EXECUTOR;
+  if (fixtureCapability !== undefined && !['0', '1'].includes(fixtureCapability)) {
+    throw new Error(`Unsupported reviewer fixture capability: ${fixtureCapability}`);
+  }
+  const fixtureExecution = agent === 'codex' && codexAuthMode === 'none' && fixtureCapability === '1';
   return Object.freeze({
     codexAuthMode,
     fixtureExecution,
