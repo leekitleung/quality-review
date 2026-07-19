@@ -367,6 +367,22 @@ test.describe('security boundaries', () => {
     const nested = spawnSync(outer.command, outer.args, { cwd: PROJECT_ROOT, encoding: 'utf8' });
     assertEqual(nested.status, 0, nested.stderr);
     assertEqual(existsSync(protectedTarget), false, 'Nested candidate must not write the real report root');
+
+    const attestationDir = mkdtempSync(join(tmpdir(), 'reviewer-exact-attestation-'));
+    t.after(() => rmSync(attestationDir, { recursive: true, force: true }));
+    const readCanary = join(attestationDir, 'read-canary');
+    const writeCanary = join(attestationDir, 'write-canary');
+    writeFileSync(readCanary, 'trusted');
+    const securityUtilsUrl = new URL('../lib/security-utils.mjs', import.meta.url).href;
+    const exactScript = `import(${JSON.stringify(securityUtilsUrl)}).then(({wrapCandidateCommand})=>{try{wrapCandidateCommand(process.execPath,['-e',''],{readOnlyRoots:[${JSON.stringify(PROJECT_ROOT)}],writeRoots:[${JSON.stringify(isolated)}],outerSandboxAttestation:{attested:true,readCanary:${JSON.stringify(readCanary)},writeCanary:${JSON.stringify(writeCanary)}},requireExactWriteIsolation:true});process.exit(6)}catch(error){process.exit(error.message.includes('exact write isolation is required')?0:7)}})`;
+    const exactOuter = wrapCandidateCommand(process.execPath, ['-e', exactScript], {
+      readOnlyRoots: [PROJECT_ROOT], writeRoots: [isolated], hostHome,
+    });
+    const exactNested = spawnSync(exactOuter.command, exactOuter.args, {
+      cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+    });
+    assertEqual(exactNested.status, 0,
+      `Non-fixture nested reviewer sandbox must fail closed: ${exactNested.stdout}${exactNested.stderr}`);
   });
 
   test('candidate evidence output is redacted before persistence', () => {

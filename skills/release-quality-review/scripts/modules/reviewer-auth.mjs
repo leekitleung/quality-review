@@ -13,12 +13,7 @@ export function reviewerAuthRoots(agent, toolEnv) {
   return [...new Set(candidates.filter(path => path && existsSync(path) && path !== home))];
 }
 
-export function isCodexFixtureExecution(toolEnv) {
-  return toolEnv.RELEASE_QUALITY_CODEX_AUTH_MODE === 'none' && Boolean(toolEnv.NODE_TEST_CONTEXT);
-}
-
-export function prepareCodexHome(toolEnv, reviewerSandboxDir) {
-  const authMode = toolEnv.RELEASE_QUALITY_CODEX_AUTH_MODE || 'file';
+export function prepareCodexHome(toolEnv, reviewerSandboxDir, authMode = 'file') {
   if (!['file', 'none'].includes(authMode)) {
     throw new Error(`Unsupported Codex reviewer auth mode: ${authMode}`);
   }

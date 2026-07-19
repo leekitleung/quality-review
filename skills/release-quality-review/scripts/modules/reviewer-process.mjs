@@ -1,23 +1,11 @@
 import { spawn } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { rmSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
-import {
-  isPathWithin, readContainedFile, redactSensitiveText, wrapCandidateCommand, writeContainedFile,
-} from '../../lib/security-utils.mjs';
-import {
-  isCodexFixtureExecution, prepareCodexHome, reviewerAuthRoots,
-} from './reviewer-auth.mjs';
+import { isPathWithin, readContainedFile, redactSensitiveText, writeContainedFile } from '../../lib/security-utils.mjs';
+import { prepareReviewerRuntime } from './reviewer-runtime.mjs';
 
 const PACKET_FILES = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md'];
-
-function invocationReadRoot(command, searchPath) {
-  if (isAbsolute(command) && existsSync(command)) return dirname(command);
-  for (const directory of String(searchPath || '').split(':').filter(Boolean)) {
-    if (existsSync(join(directory, command))) return directory;
-  }
-  return null;
-}
 
 async function publishPacket(sandboxDir, reviewerDir) {
   for (const file of PACKET_FILES) {
@@ -75,35 +63,10 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
     if (!isPathWithin(reportDir, reviewerSandboxDir)) {
       throw new Error('reviewer sandbox escapes the report root');
     }
-    const executableRoot = invocationReadRoot(invocation.command, toolEnv.PATH);
-    const codexHome = resolvedAgent === 'codex' ? prepareCodexHome(toolEnv, reviewerSandboxDir) : null;
-    const fixtureExecution = resolvedAgent === 'codex' && isCodexFixtureExecution(toolEnv);
-    const wrapped = wrapCandidateCommand(invocation.command, invocation.args, {
-      readOnlyRoots: [
-        projectRoot,
-        ...(resolvedAgent === 'claude' ? reviewerAuthRoots(resolvedAgent, toolEnv) : []),
-        executableRoot,
-      ].filter(Boolean),
-      writeRoots: [reviewerSandboxDir],
-      allowNetwork: true,
-      outerSandboxAttestation: options.outerSandboxAttestation,
-      requireExactWriteIsolation: !fixtureExecution,
+    const { wrapped, reviewerEnv } = prepareReviewerRuntime({
+      invocation, resolvedAgent, toolEnv, candidateEnv, reviewerSandboxDir,
+      projectRoot, reviewerReportDir, outerSandboxAttestation: options.outerSandboxAttestation,
     });
-    const reviewerEnv = {
-      ...candidateEnv,
-      PATH: toolEnv.PATH,
-      HOME: reviewerSandboxDir,
-      TMPDIR: reviewerSandboxDir,
-      TMP: reviewerSandboxDir,
-      TEMP: reviewerSandboxDir,
-      RELEASE_QUALITY_REPORT_DIR: reviewerReportDir,
-    };
-    if (resolvedAgent === 'codex') {
-      reviewerEnv.CODEX_HOME = codexHome;
-    } else if (resolvedAgent === 'claude') {
-      const authRoot = reviewerAuthRoots(resolvedAgent, toolEnv)[0];
-      if (authRoot) reviewerEnv.CLAUDE_CONFIG_DIR = authRoot;
-    }
     const proc = spawn(wrapped.command, wrapped.args, {
       cwd: projectRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
