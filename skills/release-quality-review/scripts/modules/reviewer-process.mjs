@@ -3,31 +3,11 @@ import { existsSync, rmSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative } from 'node:path';
 
 import {
-  ensureContainedDirectorySync, isPathWithin, readContainedFile, readContainedFileSync,
-  redactSensitiveText, wrapCandidateCommand, writeContainedFile, writeContainedFileSync,
+  isPathWithin, readContainedFile, redactSensitiveText, wrapCandidateCommand, writeContainedFile,
 } from '../../lib/security-utils.mjs';
+import { prepareCodexHome, reviewerAuthRoots } from './reviewer-auth.mjs';
 
 const PACKET_FILES = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md'];
-
-function reviewerAuthRoots(agent, toolEnv) {
-  const home = toolEnv.HOME;
-  const candidates = agent === 'codex'
-    ? [toolEnv.CODEX_HOME, home && join(home, '.codex')]
-    : [toolEnv.CLAUDE_CONFIG_DIR, home && join(home, '.claude')];
-  return [...new Set(candidates.filter(path => path && existsSync(path) && path !== home))];
-}
-
-function prepareCodexHome(toolEnv, reviewerSandboxDir) {
-  const authRoot = reviewerAuthRoots('codex', toolEnv)[0];
-  if (!authRoot || !existsSync(join(authRoot, 'auth.json'))) {
-    throw new Error('Codex auth.json is unavailable for isolated reviewer execution');
-  }
-  const codexHome = join(reviewerSandboxDir, '.codex');
-  ensureContainedDirectorySync(reviewerSandboxDir, codexHome);
-  const auth = readContainedFileSync(authRoot, join(authRoot, 'auth.json'), 'utf8');
-  writeContainedFileSync(codexHome, join(codexHome, 'auth.json'), auth);
-  return codexHome;
-}
 
 function invocationReadRoot(command, searchPath) {
   if (isAbsolute(command) && existsSync(command)) return dirname(command);
