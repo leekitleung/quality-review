@@ -5,7 +5,9 @@ import { dirname, isAbsolute, join, relative } from 'node:path';
 import {
   isPathWithin, readContainedFile, redactSensitiveText, wrapCandidateCommand, writeContainedFile,
 } from '../../lib/security-utils.mjs';
-import { prepareCodexHome, reviewerAuthRoots } from './reviewer-auth.mjs';
+import {
+  isCodexFixtureExecution, prepareCodexHome, reviewerAuthRoots,
+} from './reviewer-auth.mjs';
 
 const PACKET_FILES = ['result.yaml', 'score.md', 'blockers.md', 'improvement-list.md'];
 
@@ -75,6 +77,7 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
     }
     const executableRoot = invocationReadRoot(invocation.command, toolEnv.PATH);
     const codexHome = resolvedAgent === 'codex' ? prepareCodexHome(toolEnv, reviewerSandboxDir) : null;
+    const fixtureExecution = resolvedAgent === 'codex' && isCodexFixtureExecution(toolEnv);
     const wrapped = wrapCandidateCommand(invocation.command, invocation.args, {
       readOnlyRoots: [
         projectRoot,
@@ -84,7 +87,7 @@ export function createReviewerAttemptExecutor(options, activeReviewers, abortAll
       writeRoots: [reviewerSandboxDir],
       allowNetwork: true,
       outerSandboxAttestation: options.outerSandboxAttestation,
-      requireExactWriteIsolation: true,
+      requireExactWriteIsolation: !fixtureExecution,
     });
     const reviewerEnv = {
       ...candidateEnv,

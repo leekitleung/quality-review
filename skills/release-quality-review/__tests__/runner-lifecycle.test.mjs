@@ -375,8 +375,10 @@ test.describe('CLI fail-closed integration', () => {
       'Reviewer invocation must not start unrelated remote plugin services');
     assertTrue(runner.includes("'--dangerously-bypass-approvals-and-sandbox', '--cd', PROJECT_ROOT"),
       'Externally sandboxed reviewers must not start an unsupported nested sandbox');
-    assertTrue(reviewerProcess.includes('requireExactWriteIsolation: true'),
-      'Codex sandbox bypass requires exact outer write isolation');
+    assertTrue(reviewerProcess.includes('requireExactWriteIsolation: !fixtureExecution'),
+      'Production Codex sandbox bypass must require exact outer write isolation');
+    assertTrue(reviewerProcess.includes("resolvedAgent === 'codex' && isCodexFixtureExecution(toolEnv)"),
+      'Only an explicit Codex test fixture may reuse an attested outer sandbox');
   });
 
   test('dry-run supports Codex Radar auto-selection and validates explicit identity', t => {
