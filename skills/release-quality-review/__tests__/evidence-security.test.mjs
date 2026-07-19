@@ -369,6 +369,20 @@ test.describe('security boundaries', () => {
     assertEqual(existsSync(protectedTarget), false, 'Nested candidate must not write the real report root');
   });
 
+  test('network sandbox permits only required macOS system service lookups', { skip: process.platform !== 'darwin' }, () => {
+    const wrapped = wrapCandidateCommand(process.execPath, ['-e', ''], {
+      readOnlyRoots: [PROJECT_ROOT], allowNetwork: true,
+    });
+    const profile = wrapped.args[1];
+    assertTrue(profile.includes('(allow network*)'), 'Network access must be explicit');
+    assertTrue(profile.includes('(global-name "com.apple.trustd.agent")'),
+      'TLS trust service must be reachable');
+    assertTrue(profile.includes('(global-name "com.apple.SystemConfiguration.configd")'),
+      'Network configuration service must be reachable');
+    assertEqual(profile.includes('(allow mach-lookup)'), false,
+      'Mach lookup must not be granted without a service filter');
+  });
+
   test('candidate evidence output is redacted before persistence', () => {
     const record = runEvidenceCommand('fixture', PROJECT_ROOT, () => 'token=abcdefghijklmnop');
     assertEqual(record.status, 'pass');
