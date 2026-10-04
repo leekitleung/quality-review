@@ -65,11 +65,14 @@ import {
 } from '../lib/evidence-utils.mjs';
 import { detectChangeScale as detectGateChangeScale, printScaleDetection } from '../scripts/modules/scale.mjs';
 import { printHelp as printGateHelp } from '../scripts/modules/cli.mjs';
+import { generateFinalReport, generateSummary } from '../scripts/modules/reports.mjs';
 import {
   collectEvidence, formatGitEvidenceFailure, prepareTrustedAuditWorkspace,
   runAutomatedChecks, runEvidenceCommand,
 } from '../scripts/modules/evidence.mjs';
-import { createCandidateRuntime, validateCandidateCheckoutIdentity } from '../lib/candidate-runtime.mjs';
+import {
+  createCandidateRuntime, resolveRepositoryContext, validateCandidateCheckoutIdentity,
+} from '../lib/candidate-runtime.mjs';
 import {
   extractRadarCandidates, fetchRadarReviewerModel, selectRadarReviewerModel,
 } from '../lib/model-selector.mjs';
@@ -682,7 +685,7 @@ test.describe('Radar reviewer model selection', () => {
 test('strict automated checks reject failed coverage', () => {
   const pass = { status: 'pass' };
   const checks = {
-    testGate: pass, typecheckGate: pass, buildGate: pass, lintGate: pass, auditGate: pass,
+    installGate: pass, testGate: pass, typecheckGate: pass, buildGate: pass, lintGate: pass, auditGate: pass,
     coverageGate: { status: 'fail' }, e2eGate: pass, secrets: pass, circularDeps: pass,
   };
   assertEqual(strictAutomatedChecksPassed(checks, true), false);
@@ -744,6 +747,83 @@ test.describe('persistPhaseResult', () => {
     const content = readFileSync(resultFile, 'utf-8');
     assertTrue(content.includes('destructive-qa'), 'Should list failed reviewer');
     assertTrue(content.includes('75/100'), 'Should show score');
+  });
+});
+
+test('repository context preserves a nested project path', () => {
+  const repositoryRoot = join(TEST_DIR, `nested-repository-${randomUUID()}`);
+  const projectRoot = join(repositoryRoot, 'apps', 'sticky-card');
+  mkdirSync(projectRoot, { recursive: true });
+  spawnSync('git', ['init', '--quiet'], { cwd: repositoryRoot });
+  const context = resolveRepositoryContext(projectRoot);
+  assertEqual(context.repositoryRoot, repositoryRoot);
+  assertEqual(context.projectRelative, join('apps', 'sticky-card'));
+});
+
+// ============================================================================
+// TESTS - fail-closed report generation
+// ============================================================================
+
+test.describe('report generation gate integrity', () => {
+  const passingReviewer = () => ({
+    score: 95,
+    status: 'pass',
+    blockers: [],
+    isValidReviewer: true,
+  });
+
+  const failingReviewer = () => ({
+    score: 86,
+    status: 'fail',
+    blockers: [],
+    isValidReviewer: true,
+  });
+
+  test('summary cannot claim all reviewers passed when any score is below 90', () => {
+    const roundDir = join(TEST_DIR, 'summary-low-score');
+    mkdirSync(roundDir, { recursive: true });
+    const report = generateSummary(
+      roundDir,
+      'full',
+      1,
+      { 'product-flow': passingReviewer(), 'zero-doc-user': failingReviewer() },
+      true,
+    );
+    assertEqual(report, false, 'Low reviewer score must force a failed summary');
+    const content = readFileSync(join(roundDir, 'summary.md'), 'utf8');
+    assertTrue(content.includes('❌ QUALITY GATE FAILED'), 'Summary must show a failed gate');
+    assertTrue(!content.includes('✅ ALL REVIEWERS PASSED'), 'Summary must not claim a pass');
+  });
+
+  test('final report refuses to create an approved artifact below the score threshold', () => {
+    const roundDir = join(TEST_DIR, 'final-report-low-score');
+    mkdirSync(roundDir, { recursive: true });
+    let errorMessage = '';
+    try {
+      generateFinalReport(
+        roundDir,
+        { 'product-flow': passingReviewer(), 'zero-doc-user': failingReviewer() },
+        null,
+        'full',
+      );
+    } catch (error) {
+      errorMessage = error.message;
+    }
+    assertTrue(errorMessage.includes('reviewer gate failed'), 'Low score must reject final report generation');
+    assertTrue(!existsSync(join(roundDir, 'final-report.md')), 'Rejected report must not be written');
+  });
+
+  test('final report is generated only when every reviewer packet passes', () => {
+    const roundDir = join(TEST_DIR, 'final-report-pass');
+    mkdirSync(roundDir, { recursive: true });
+    const reportPath = generateFinalReport(
+      roundDir,
+      { 'product-flow': passingReviewer(), 'zero-doc-user': { ...passingReviewer(), score: 90 } },
+      null,
+      'full',
+    );
+    assertTrue(existsSync(reportPath), 'Passing report should be generated');
+    assertTrue(readFileSync(reportPath, 'utf8').includes('APPROVED FOR RELEASE'), 'Report must be approved');
   });
 });
 

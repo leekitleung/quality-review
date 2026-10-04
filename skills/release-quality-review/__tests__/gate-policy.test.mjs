@@ -1,3 +1,17 @@
+/**
+ * Gate Policy Integration Tests
+ *
+ * Note: These tests use POSIX shell fixtures (/usr/bin/env sh).
+ * On Windows, use WSL2 for full test coverage.
+ */
+
+import { platform } from 'node:process';
+
+if (platform === 'win32') {
+  console.log('Skipping gate-policy tests on Windows - requires POSIX shell (use WSL2)');
+  process.exit(0);
+}
+
 import {
   chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, utimesSync, writeFileSync,
 } from 'node:fs';

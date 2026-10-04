@@ -72,6 +72,7 @@ test('release persisted evidence rejects forged coverage summaries', () => {
     };
   };
   const checks = {
+    installGate: timedRecord('npm ci --ignore-scripts --no-audit --no-fund', 'added 1 package'),
     testGate: timedRecord('npm test', '# tests 1\n# pass 1\n# fail 0'),
     typecheckGate: timedRecord('npm run typecheck', 'node --check'),
     buildGate: timedRecord('npm run build', 'node --check'),

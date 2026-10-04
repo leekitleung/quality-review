@@ -1,9 +1,12 @@
 /**
- * Unit Tests for Release Quality Review Scripts
+ * E2E Gate Tests
  *
  * Run with: npm test
  *
  * Tests import production code from lib/review-utils.mjs - no simplified reimplementations.
+ *
+ * Note: These tests use POSIX shell fixtures (/usr/bin/env sh).
+ * On Windows, use WSL2 for full test coverage.
  *
  * Tests:
  * 1. parseYamlProfile - YAML profile parsing (from production code)
@@ -12,6 +15,13 @@
  * 4. Phase persistence functions
  * 5. parseYamlResult - result.yaml parsing (from production code)
  */
+
+import { platform } from 'node:process';
+
+if (platform === 'win32') {
+  console.log('Skipping gate-e2e tests on Windows - requires POSIX shell (use WSL2)');
+  process.exit(0);
+}
 
 import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync, cpSync } from 'fs';
 import { basename, join, relative } from 'path';

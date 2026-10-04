@@ -1,10 +1,20 @@
 /**
- * Unit Tests for Release Quality Review Scripts
+ * Runner Lifecycle Tests
  *
  * Run with: npm test
  *
  * Tests import production code from lib/review-utils.mjs - no simplified reimplementations.
+ *
+ * Note: These tests use POSIX shell fixtures (/usr/bin/env sh).
+ * On Windows, use WSL2 for full test coverage.
  */
+
+import { platform } from 'node:process';
+
+if (platform === 'win32') {
+  console.log('Skipping runner-lifecycle tests on Windows - requires POSIX shell (use WSL2)');
+  process.exit(0);
+}
 
 import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync, cpSync } from 'fs';
 import { basename, join, relative } from 'path';
