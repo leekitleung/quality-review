@@ -186,8 +186,11 @@ const baselineFile = join(EXPERIMENT_LOGS, 'baseline.yaml');
 if (!existsSync(baselineFile)) {
   console.warn('⚠️  No baseline found. Run baseline-collector.mjs first.');
   console.warn('   Creating baseline now...');
+  // Resolve the collector next to this script, not relative to the current
+  // working directory: the runner is documented to work from any project root.
+  const COLLECTOR = fileURLToPath(new URL('./baseline-collector.mjs', import.meta.url));
   execFileSync(process.execPath, [
-    'skills/deep-optimization-lab/scripts/baseline-collector.mjs', '--profile', profile,
+    COLLECTOR, '--profile', profile,
   ], { stdio: 'inherit', cwd: PROJECT_ROOT });
 }
 
