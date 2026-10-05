@@ -360,6 +360,18 @@ export function validateResultYamlContract(yamlContent) {
   return { valid: true, error: null };
 }
 
+/**
+ * Strict-profile automated gate decision.
+ *
+ * Every gate in STRICT_AUTOMATED_STATUS_KEYS must be explicitly `pass` - a
+ * missing record counts as failure (fail closed) - and the adversarial
+ * evidence-source validation must also have passed. The validator output is
+ * an independent re-check of where reviewer evidence came from; automation
+ * passing alone does not satisfy the strict gate.
+ * @param {object|null} autoChecks - Collected automated-checks record.
+ * @param {boolean} evidenceValidationPassed
+ * @returns {boolean}
+ */
 export function strictAutomatedChecksPassed(autoChecks, evidenceValidationPassed) {
   return Boolean(autoChecks) &&
     STRICT_AUTOMATED_STATUS_KEYS.every(key => autoChecks[key]?.status === 'pass') &&

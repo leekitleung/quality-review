@@ -12,6 +12,25 @@ import { buildCandidateSandboxProfile } from './sandbox-profile.mjs';
 import { FILE_PERMISSIONS } from './config-constants.mjs';
 import { gateError } from './error-messages.mjs';
 
+// Filesystem boundary primitives for the gate. Everything the candidate or a
+// reviewer may touch passes through one of these helpers: path containment
+// checks, subprocess environment filtering, sandbox command wrapping, and
+// report-root-confined reads/writes. The invariants documented here are
+// security contracts - the adversarial tests in __tests__/evidence-security
+// and sandbox-profile pin them, so tighten a check only with a new attack
+// case, never to make a failing fixture pass.
+
+/**
+ * True when `candidate` resolves inside `root` (or equals it).
+ *
+ * SECURITY: the comparison runs on `path.relative` output, not string
+ * prefixes, so `..` segments and drive-relative paths cannot slip through.
+ * Separators are normalized to '/' because Windows `path.relative` mixes
+ * them and a naive prefix check would accept `root\..\escape`.
+ * @param {string} root - Containing directory (either separator style).
+ * @param {string} candidate - Path to test; need not exist.
+ * @returns {boolean}
+ */
 export function isPathWithin(root, candidate) {
   const rootPath = path.resolve(root);
   const candPath = path.resolve(candidate);
@@ -31,6 +50,16 @@ export function isRealDirectory(dir) {
   }
 }
 
+/**
+ * Resolve a repository-relative path, refusing absolute input and escapes.
+ * Absolute input is rejected outright (not re-rooted) so a crafted
+ * RELEASE_QUALITY_REPORT_DIR cannot point at an arbitrary directory.
+ * @param {string} root - Repository root.
+ * @param {string} relative - Non-empty, non-absolute relative path.
+ * @param {string} [label] - Name used in error messages.
+ * @returns {string} Absolute resolved path.
+ * @throws {Error} When the input is empty, absolute, or escapes `root`.
+ */
 export function resolveWithinRoot(root, relative, label = 'path') {
   if (typeof relative !== 'string' || !relative || path.isAbsolute(relative)) {
     throw new Error(`${label} must be a non-empty repository-relative path`);
@@ -42,6 +71,14 @@ export function resolveWithinRoot(root, relative, label = 'path') {
   return resolved;
 }
 
+/**
+ * Locate the round-report root, confined to the project. The env override is
+ * treated as untrusted input: it must stay inside the repository.
+ * @param {string} projectRoot
+ * @param {object} [source] - Environment to read (defaults to process.env).
+ * @returns {string} Absolute report directory path.
+ * @throws {Error} When RELEASE_QUALITY_REPORT_DIR escapes the repository.
+ */
 export function resolveReportDirectory(projectRoot, source = process.env) {
   return resolveWithinRoot(
     projectRoot,
@@ -67,6 +104,17 @@ const SUBPROCESS_ENV_ALLOWLIST = new Set([
   'RELEASE_QUALITY_REVIEWER_FIXTURE_EXECUTOR',
 ]);
 
+/**
+ * Filter an environment down to an explicit allowlist for subprocesses.
+ *
+ * SECURITY: deny-by-default. The host shell routinely carries credentials
+ * (API keys, proxy URLs, cloud tokens) that must not reach candidate code.
+ * Keys are matched uppercased because Windows env vars are case-insensitive.
+ * Extend the allowlist only for variables a tool demonstrably needs - an
+ * over-broad allowlist is a credential leak, not a convenience.
+ * @param {object} [source]
+ * @returns {object} Fresh env object containing only allowlisted entries.
+ */
 export function createSubprocessEnv(source = process.env) {
   const result = {};
   for (const [key, value] of Object.entries(source || {})) {
@@ -75,6 +123,18 @@ export function createSubprocessEnv(source = process.env) {
   return result;
 }
 
+/**
+ * Build a candidate environment with a private, disposable HOME/TMP.
+ *
+ * SECURITY: untrusted code must not see - or be able to poison - the host
+ * user's config, caches, or credentials (CODEX_HOME, XDG_*, APPDATA are
+ * deleted, not passed through). Everything writable defaults into
+ * `isolatedHome`, which `createCandidateRuntime` removes on exit.
+ * @param {object} [source]
+ * @param {string} isolatedHome - Pre-created empty directory.
+ * @returns {object} Env object.
+ * @throws {Error} When `isolatedHome` is missing.
+ */
 export function createCandidateSubprocessEnv(source = process.env, isolatedHome) {
   if (typeof isolatedHome !== 'string' || !isolatedHome) throw new Error('isolated home is required');
   const result = createSubprocessEnv(source);
@@ -89,6 +149,16 @@ export function createCandidateSubprocessEnv(source = process.env, isolatedHome)
   return result;
 }
 
+/**
+ * Read an outer-sandbox attestation from the environment.
+ *
+ * The attestation asserts: "this process already runs inside an enforced
+ * sandbox; here are canary paths proving it". It is an untrusted claim until
+ * useVerifiedOuterSandbox re-probes the canaries at spawn time.
+ * @param {object} [source]
+ * @returns {{ attested: true, readCanary: string, writeCanary: string } | null}
+ *   Frozen attestation, or null when unattested or canary paths are absent.
+ */
 export function outerSandboxAttestationFromEnv(source = process.env) {
   if (source?.RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED !== '1') return null;
   const readCanary = source.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY;
@@ -97,6 +167,25 @@ export function outerSandboxAttestationFromEnv(source = process.env) {
   return Object.freeze({ attested: true, readCanary, writeCanary });
 }
 
+/**
+ * Run a command bare, trusting only a *verified* outer sandbox.
+ *
+ * SECURITY: the attestation canaries must exist (read path readable, write
+ * path absent), live outside every declared sandbox root (so candidate code
+ * cannot forge or delete them), and the live probe must re-confirm denial in
+ * a fresh child process. The probe exists because the attestation alone is
+ * just an env var: if the outer sandbox was disabled after launch, the write
+ * canary becomes writable and this function fails closed. Exact write
+ * isolation (reviewers) is never satisfied by attestation - reviewer packets
+ * must be shielded from each other by a real profile.
+ * @param {string} command
+ * @param {string[]} args
+ * @param {object} sandbox - allowedRoots/readOnlyRoots/writeRoots,
+ *   outerSandboxAttestation, requireExactWriteIsolation.
+ * @returns {{ command: string, args: string[] }} Unwrapped command (already
+ *   inside the verified outer boundary).
+ * @throws {Error} Fail-closed on any canary or probe inconsistency.
+ */
 function useVerifiedOuterSandbox(command, args, {
   allowedRoots, readOnlyRoots, writeRoots, outerSandboxAttestation, requireExactWriteIsolation,
 }) {
@@ -131,6 +220,29 @@ function useVerifiedOuterSandbox(command, args, {
   return { command, args };
 }
 
+/**
+ * Wrap a candidate/reviewer command for filesystem-isolated execution.
+ *
+ * Platform decision tree, all failing closed:
+ * - macOS: run under /usr/bin/sandbox-exec with a generated profile; a
+ *   probe first confirms seatbelt is actually enforceable.
+ * - Linux inside a container (/.dockerenv) WITH verified attestation:
+ *   run bare, the container is the boundary (see useVerifiedOuterSandbox).
+ * - Everything else, including Windows: throw. There is deliberately no
+ *   unsandboxed mode - an env var cannot substitute for an enforced
+ *   filesystem boundary.
+ *
+ * SECURITY: read roots are intentionally broad (the toolchain and system
+ * libraries must be readable); writes are the hard boundary and are confined
+ * to writeRoots plus /dev. `hostHome` is rejected as a sandbox root: a
+ * writable HOME would let candidate code rewrite host credentials.
+ * @param {string} command - Executable to wrap.
+ * @param {string[]} args - Arguments passed through unchanged.
+ * @param {object} [options] - allowedRoots, readOnlyRoots, writeRoots,
+ *   hostHome, allowNetwork, outerSandboxAttestation, requireExactWriteIsolation.
+ * @returns {{ command: string, args: string[] }} Wrapped invocation.
+ * @throws {Error} When no enforced boundary is available or roots are unsafe.
+ */
 export function wrapCandidateCommand(command, args, {
   allowedRoots = [], readOnlyRoots = [], writeRoots = [], hostHome = null, allowNetwork = false,
   outerSandboxAttestation = null, requireExactWriteIsolation = false,
@@ -180,6 +292,19 @@ export function wrapCandidateCommand(command, args, {
   return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, command, ...args] };
 }
 
+/**
+ * Create `directory` under `root`, refusing symlinked path components.
+ *
+ * SECURITY: every pre-existing component is lstat-ed - a symlink planted at
+ * any depth would redirect the whole subtree outside the report root. The
+ * final realpath is re-checked against the *resolved* root so a racing
+ * rename between the lstat loop and realpath still fails closed.
+ * @param {string} root
+ * @param {string} directory
+ * @param {number} [mode] - Optional chmod applied to the final directory.
+ * @returns {string} Realpath of the created directory.
+ * @throws {Error} On escapes, symlink components, or non-directory paths.
+ */
 export function ensureContainedDirectorySync(root, directory, mode = null) {
   const rootPath = path.resolve(root);
   const target = path.resolve(directory);
@@ -207,6 +332,18 @@ export function ensureContainedDirectorySync(root, directory, mode = null) {
   return targetReal;
 }
 
+/**
+ * Read a file confined to `root`, rejecting symlinks.
+ *
+ * SECURITY: checks run twice - on the given path and on its realpath - so a
+ * symlink swapped in after the first check (TOCTOU) still cannot redirect
+ * the read outside the report root.
+ * @param {string} root
+ * @param {string} file
+ * @param {string} [encoding]
+ * @returns {string|Buffer} File contents.
+ * @throws {Error} When the file escapes the root or is not a regular file.
+ */
 export function readContainedFileSync(root, file, encoding = 'utf8') {
   const rootReal = realpathSync(root);
   const resolved = path.resolve(file);
@@ -229,6 +366,19 @@ export async function readContainedFile(root, file, encoding = 'utf8') {
   return readFile(fileReal, encoding);
 }
 
+/**
+ * Atomically write a file inside the report root: temp file + fsync + rename.
+ *
+ * SECURITY: the wx flag fails if an attacker pre-planted the temp name
+ * (unpredictable pid+UUID suffix), the rename happens only after the parent
+ * directory's dev/ino identity is re-verified (a swapped parent would move
+ * the write target outside the root), and pre-existing symlinks at the
+ * destination are rejected rather than followed.
+ * @param {string} root
+ * @param {string} file
+ * @param {string|Buffer} content
+ * @throws {Error} On escapes, symlink destinations, or parent races.
+ */
 export function writeContainedFileSync(root, file, content) {
   const rootReal = realpathSync(root);
   const parentReal = ensureContainedDirectorySync(root, path.dirname(file));
@@ -288,6 +438,18 @@ export async function writeContainedFile(root, file, content) {
   }
 }
 
+/**
+ * Detect credential-shaped content (token formats, key:value pairs, PEM).
+ *
+ * SECURITY: detect and redact below are a matched pair - every pattern here
+ * must have a redaction counterpart, and the gate refuses evidence that
+ * still matches this detector AFTER redaction. The JWT-shaped pattern is
+ * deliberately broad (three dot-separated base64 runs); run it only on
+ * gate-owned evidence, never on arbitrary user text, to keep false positives
+ * tolerable.
+ * @param {string|Buffer} value
+ * @returns {boolean}
+ */
 export function containsSensitiveText(value) {
   const text = String(value || '').replace(/\[REDACTED[^\]]*\]/g, '');
   return [
@@ -308,6 +470,16 @@ export function containsSensitiveText(value) {
   ].some(pattern => pattern.test(text));
 }
 
+/**
+ * Replace credential-shaped content with labeled [REDACTED *] markers.
+ *
+ * Order matters: PEM blocks (multi-line) are stripped before the generic
+ * key:value rules so the header line does not defeat the block match.
+ * Output is what gets persisted into round evidence, which is why the
+ * containsSensitiveText post-check must pass on it.
+ * @param {string|Buffer} value
+ * @returns {string}
+ */
 export function redactSensitiveText(value) {
   return String(value || '')
     .replace(/-----BEGIN [^-]+ PRIVATE KEY-----[\s\S]*?-----END [^-]+ PRIVATE KEY-----/gi, '[REDACTED PEM]')

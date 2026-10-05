@@ -8,6 +8,18 @@ import {
 import { TIMEOUTS } from './config-constants.mjs';
 import { gateError } from './error-messages.mjs';
 
+/**
+ * Resolve the Git repository that contains `projectRoot`.
+ *
+ * The gate may be invoked from a subdirectory of a worktree (a package
+ * inside a monorepo); evidence collection and the verify scripts clone the
+ * *repository* and then descend into `projectRelative`, so candidate identity
+ * always refers to the same tree regardless of the invocation directory.
+ * @param {string} projectRoot - Directory the gate was launched from.
+ * @param {Function} [gitExecFile] - Injectable for tests.
+ * @returns {{ repositoryRoot: string, projectRelative: string }} Frozen.
+ * @throws {Error} When the path is not contained by its repository.
+ */
 export function resolveRepositoryContext(projectRoot, gitExecFile = nodeExecFileSync) {
   const projectPath = resolve(projectRoot);
   const repositoryRoot = resolve(gitExecFile('git', ['rev-parse', '--show-toplevel'], {
@@ -22,6 +34,15 @@ export function resolveRepositoryContext(projectRoot, gitExecFile = nodeExecFile
   return Object.freeze({ repositoryRoot, projectRelative });
 }
 
+/**
+ * Confirm the isolated checkout still matches the reviewed commit/tree and
+ * that the source worktree was clean when evidence collection started.
+ * @param {{ commit: string, tree: string, status: string }} source
+ * @param {{ commit: string, tree: string, status: string }} initial
+ * @param {{ commit: string, tree: string, status: string }} final
+ * @returns {{ status: 'pass', source_commit: string, source_tree: string, initial: object, final: object }}
+ * @throws {Error} On any identity drift or dirty source status.
+ */
 export function validateCandidateCheckoutIdentity(source, initial, final) {
   if (source.status !== '' || initial.status !== '' || final.status !== '' ||
       initial.commit !== source.commit || initial.tree !== source.tree ||
@@ -31,6 +52,20 @@ export function validateCandidateCheckoutIdentity(source, initial, final) {
   return { status: 'pass', source_commit: source.commit, source_tree: source.tree, initial, final };
 }
 
+/**
+ * Create an isolated execution context for candidate verification.
+ *
+ * Every command the candidate runs goes through execFileSync here, which
+ * wraps it via wrapCandidateCommand (sandbox) and injects the candidate env
+ * (private HOME, attestation canaries). `projectRoot` may be a subdirectory;
+ * checkouts clone the containing repository and return the nested project
+ * path so evidence collection sees the expected working tree.
+ * @param {string} projectRoot - Project directory inside its repository.
+ * @param {string} label - Used to name the temp dirs (traceability).
+ * @param {object|null} [outerSandboxAttestation] - Verified outer boundary.
+ * @returns {{ env, isolatedHome, execSync, execFileSync, prepareCheckout,
+ *   readIdentity, validateCheckout }}
+ */
 export function createCandidateRuntime(projectRoot, label, outerSandboxAttestation = null) {
   const { repositoryRoot, projectRelative } = resolveRepositoryContext(projectRoot);
   const isolatedHome = mkdtempSync(join(tmpdir(), `release-quality-review-${label}-home-`));

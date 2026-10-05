@@ -103,6 +103,13 @@ export function hasConcreteVerificationOutput(kind, output) {
   return true;
 }
 
+// The clean-candidate and rollback transcripts are positional evidence
+// contracts: validateCleanCandidateEvidence / validateRollbackEvidence match
+// records by INDEX against these lists, so reordering or inserting a command
+// here must be applied together with every fixture transcript in __tests__/
+// (evidence-security) and with scripts/verify-clean-candidate.mjs. The
+// final-status commands exist to prove the isolated checkout stayed clean —
+// a non-empty status after the run is evidence of tampering, not style.
 export const CLEAN_CANDIDATE_COMMANDS = [
   ['clone', 'git clone --quiet --no-local <source> <candidate>'],
   ['script-integrity', 'verify package verification scripts'],

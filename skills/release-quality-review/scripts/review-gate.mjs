@@ -388,6 +388,13 @@ async function runGate() {
   const generatedArtifactsSafe = sensitiveArtifactFindings.length === 0;
   const arbitrationEligible = !singleReviewer && excludeReviewers.length === 0;
 
+  // The gate passes only if EVERY conjunctive condition holds. This is
+  // deliberately fail-fast and non-negotiable: engineering verification
+  // (automatedChecksPassed) is necessary evidence but never substitutes for
+  // the reviewer score gate (allPassed), and no weighted average can offset
+  // a single failed condition. arbitrationEligible keeps partial reviewer
+  // sets (single reviewer, explicit exclusions) from being reported as a
+  // full-panel approval.
   const gatePassed = allPassed && reviewIdentityValid && !hasRedlines && evidenceValidationPassed && goalModeViolations.length === 0 && goalInstructionValid && artifactCompletenessPassed && generatedArtifactsSafe && automatedChecksPassed && arbitrationEligible;
 
   log.title('GATE STATUS');
