@@ -152,13 +152,26 @@ diagnostics language change, in the same commit as the change.
    it is not authenticated; a real review round stays blocked until a
    reviewer CLI is logged in on a sandbox-capable host. See P4.1 note above.
 
+**Session 4 (2026-10-05, zcode backend).** With both existing backends
+unusable on this host (codex unauthenticated; claude routed to an
+out-of-credit OpenRouter endpoint), the gate gained `zcode` as a third
+reviewer backend (GLM-family models, explicit `--model`, file-based
+credentials copied into the reviewer sandbox — design in
+[docs/plans/2026-10-05-zcode-reviewer-backend-design.md](plans/2026-10-05-zcode-reviewer-backend-design.md)).
+Measured caveat: zcode CLI 0.16.9 headless mode has no model-selection
+entry ("Select a model before continuing"), so real rounds with zcode wait
+on a CLI build that accepts `--model`; all validation paths are covered by
+tests today (suite now 201 tests, 201 pass). Doctor discovers the bundled
+CLI and verifies credentials file-based.
+
 ## Recommended next steps
 
 1. ~~Verify the `Skill quality` CI job turns green~~ ✅ Done — green on
    `macos-latest` at `1a1e2c8` after the platform and checkout fixes.
-2. Authenticate the codex CLI, then run a real `quick` round
-   (`npm run review -- --profile quick --round N --base HEAD~1 --agent codex`)
-   to convert this engineering verification into a gate approval.
+2. Run a real `quick` round to convert this engineering verification into a
+   gate approval — any one of: codex after `codex login`; claude after
+   OpenRouter top-up (`--model claude-sonnet-4-5`); or zcode once its CLI
+   supports headless `--model` (`--agent zcode --model glm-5.3-flash`).
 3. Decide the retention-cleanup scope for the 108 expired local report
    rounds and execute it via `npm run reports:retention-check -- --delete
    --confirm DELETE-EXPIRED-ROUNDS`.

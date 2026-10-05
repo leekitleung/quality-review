@@ -6,8 +6,8 @@ Requires Node.js 22+ and a Git checkout because candidate identity and rollback
 checks depend on Git metadata. Clone the repository, then run `npm install`;
 there are no runtime dependencies.
 
-Reviews require one supported Agent CLI. Install and authenticate either Codex
-or Claude before the quickstart, then verify the selected backend:
+Reviews require one supported Agent CLI. Install and authenticate either Codex,
+Claude, or ZCode before the quickstart, then verify the selected backend:
 
 ```bash
 # Codex backend
@@ -17,11 +17,16 @@ codex login status
 # Or Claude backend
 claude --version
 claude auth status
+
+# Or ZCode backend
+zcode --version            # or the desktop app's bundled CLI; see `npm run doctor`
 ```
 
 The review command automatically launches reviewer processes; it is not a
-collection-only command. Every actual review requires `--agent`. Claude also
-requires an explicit compatible `--model`. Codex accepts an explicit model or,
+collection-only command. Every actual review requires `--agent`. Claude and
+ZCode also require an explicit compatible `--model` (ZCode accepts GLM-family
+model ids, e.g. `glm-5.3-flash`; its headless CLI must support `--model` —
+see `docs/plans/2026-10-05-zcode-reviewer-backend-design.md`). Codex accepts an explicit model or,
 when the model is omitted, selects from the fresh Codex Radar public summary.
 `quick`/`default` prefer lightweight (`low`/`medium`) combinations above IQ
 100, then any combination above IQ 100; release, full, and agentic profiles use

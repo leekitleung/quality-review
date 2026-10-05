@@ -52,7 +52,7 @@ semantics; see `docs/WINDOWS-SETUP.md` for the NTFS caveat.
 | `RELEASE_QUALITY_RETRY_MAX_JITTER_MS` | `300` | retry backoff jitter cap |
 | `RELEASE_QUALITY_REVIEWER_START_DELAY_MS` | `0` | parallel-mode start delay |
 | `RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS` | `5000` | grace period before reviewer kill |
-| `REVIEW_AGENT` / `REVIEW_MODEL` / `REVIEW_REASONING_EFFORT` | unset | default reviewer backend, model, effort |
+| `REVIEW_AGENT` / `REVIEW_MODEL` / `REVIEW_REASONING_EFFORT` | unset | default reviewer backend (`claude`, `codex` or `zcode`), model, effort; claude/zcode require an explicit model (zcode: GLM-family ids) |
 
 The effective reviewer deadline is
 `RELEASE_QUALITY_REVIEWER_TIMEOUT_MS × scale multiplier × effort multiplier`
