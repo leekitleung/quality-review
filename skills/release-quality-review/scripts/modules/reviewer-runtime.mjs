@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 
 import { wrapCandidateCommand } from '../../lib/security-utils.mjs';
-import { prepareCodexHome, reviewerAuthRoots } from './reviewer-auth.mjs';
+import { prepareCodexHome, prepareZcodeHome, reviewerAuthRoots } from './reviewer-auth.mjs';
 import { resolveReviewerRuntimePolicy } from './reviewer-runtime-policy.mjs';
 
 function invocationReadRoot(command, searchPath) {
@@ -22,9 +22,14 @@ export function prepareReviewerRuntime({
   const codexHome = resolvedAgent === 'codex'
     ? prepareCodexHome(toolEnv, reviewerSandboxDir, policy.codexAuthMode)
     : null;
+  // zcode resolves its config from HOME, which already points at the sandbox:
+  // copying the credentials in is the only preparation needed.
+  if (resolvedAgent === 'zcode') prepareZcodeHome(toolEnv, reviewerSandboxDir);
   const wrapped = wrapCandidateCommand(invocation.command, invocation.args, {
     readOnlyRoots: [
       projectRoot,
+      // zcode reads its credentials from the copied-in sandbox home, so only
+      // claude needs the host auth root mounted read-only.
       ...(resolvedAgent === 'claude' ? reviewerAuthRoots(resolvedAgent, toolEnv) : []),
       executableRoot,
     ].filter(Boolean),

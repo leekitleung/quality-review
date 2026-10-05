@@ -13,18 +13,20 @@ const EFFORT_RANK = new Map([
 export function validateReviewModelIdentity({ backend, model, reasoningEffort = null }, {
   requireReasoningEffort = false,
 } = {}) {
-  if (!['claude', 'codex'].includes(backend)) return { valid: false, error: 'invalid review backend' };
+  if (!['claude', 'codex', 'zcode'].includes(backend)) return { valid: false, error: 'invalid review backend' };
   if (typeof model !== 'string' || !/^[A-Za-z0-9._:/-]{1,128}$/.test(model)) {
     return { valid: false, error: 'invalid review model' };
   }
   const claudeModel = /^(?:claude-|sonnet$|opus$|haiku$)/i.test(model);
+  const glmModel = /^glm(?:[-_.].*)?$/i.test(model);
   if (backend === 'codex' && claudeModel) return { valid: false, error: `model ${model} is not valid for codex backend` };
   if (backend === 'claude' && !claudeModel) return { valid: false, error: `model ${model} is not valid for claude backend` };
+  if (backend === 'zcode' && !glmModel) return { valid: false, error: `model ${model} is not valid for zcode backend` };
   if (reasoningEffort !== null && !REVIEW_REASONING_EFFORTS.has(reasoningEffort)) {
     return { valid: false, error: 'invalid review reasoning effort' };
   }
-  if (backend === 'claude' && reasoningEffort !== null) {
-    return { valid: false, error: 'Claude review identity cannot set Codex reasoning effort' };
+  if ((backend === 'claude' || backend === 'zcode') && reasoningEffort !== null) {
+    return { valid: false, error: 'review identity cannot set Codex reasoning effort' };
   }
   if (backend === 'codex' && requireReasoningEffort && reasoningEffort === null) {
     return { valid: false, error: 'Codex Radar identity is missing reasoning effort' };

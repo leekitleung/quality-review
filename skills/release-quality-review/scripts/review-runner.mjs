@@ -130,8 +130,8 @@ function parseCliArgs(args) {
   else if (arg === '--base' && args[i + 1]) options.diffBase = args[++i];
   else if (arg === '--agent' && args[i + 1]) {
     const agent = args[++i];
-    if (!['claude', 'codex'].includes(agent)) {
-      console.error('Invalid --agent: must be "claude" or "codex"');
+    if (!['claude', 'codex', 'zcode'].includes(agent)) {
+      console.error('Invalid --agent: must be "claude", "codex" or "zcode"');
       process.exit(4);
     }
     options.agentCli = agent;
@@ -162,16 +162,16 @@ if (!/^[a-z0-9-]+$/.test(profile) || (reviewerOverride && !/^[a-z0-9-]+$/.test(r
 }
 
 const explicitModel = model && model !== 'auto' ? model : null;
-if (agentCli && !['claude', 'codex'].includes(agentCli)) {
-  console.error('Invalid review agent: must be "claude" or "codex"');
+if (agentCli && !['claude', 'codex', 'zcode'].includes(agentCli)) {
+  console.error('Invalid review agent: must be "claude", "codex" or "zcode"');
   process.exit(4);
 }
 if ((!dryRun || agentCli || model || reasoningEffort) && !agentCli) {
   console.error('actual reviews require explicit --agent');
   process.exit(4);
 }
-if (agentCli === 'claude' && !explicitModel) {
-  console.error('claude reviews require explicit --model');
+if ((agentCli === 'claude' || agentCli === 'zcode') && !explicitModel) {
+  console.error(`${agentCli} reviews require explicit --model`);
   process.exit(4);
 }
 if (reasoningEffort && !/^(?:minimal|low|medium|high|xhigh|max)$/.test(reasoningEffort)) {
@@ -367,6 +367,17 @@ function getAgentInvocation(agent, selectedModel, selectedEffort, prompt) {
       args: ['-p', '--model', selectedModel, '--permission-mode', 'acceptEdits', '--no-session-persistence', prompt],
     };
   }
+  if (agent === 'zcode') {
+    // The model flag requires a zcode CLI whose headless runtime accepts
+    // --model; 0.16.9 has no such flag and fails closed at parse time (see
+    // docs/plans/2026-10-05-zcode-reviewer-backend-design.md). Passing it
+    // keeps the invocation correct once the CLI supports it, and identity
+    // attribution needs an explicit model either way.
+    return {
+      command: 'zcode',
+      args: ['--model', selectedModel, '-p', prompt],
+    };
+  }
   if (agent === 'codex') {
     const effortArgs = selectedEffort
       ? ['--config', `model_reasoning_effort=${JSON.stringify(selectedEffort)}`]
@@ -506,7 +517,7 @@ function bindRoundBackend(roundDir, identity) {
     failure.exitCode = 4;
     throw failure;
   }
-  if (!['claude', 'codex'].includes(existing.backend) || existing.backend !== identity.backend) {
+  if (!['claude', 'codex', 'zcode'].includes(existing.backend) || existing.backend !== identity.backend) {
     const failure = new Error(`round backend is locked to ${existing.backend || 'invalid'}, cannot use ${identity.backend}`);
     failure.exitCode = 4;
     throw failure;
