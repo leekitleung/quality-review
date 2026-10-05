@@ -47,8 +47,9 @@ evades the gate, so every new module ships with a test that loads it.
 Four suites (`gate-e2e`, `gate-policy`, `reviewer-selection`,
 `runner-lifecycle`) build POSIX git-wrapper fixtures and exit early on
 Windows via a `process.platform === 'win32'` guard at the top of the file.
-On Windows native the suite reports `121+ pass, 1 skip, 0 fail`; WSL2 and
-macOS run everything. See `docs/WINDOWS-SETUP.md` before assuming a Windows
+On Windows native the guarded files contribute no subtests and the remaining
+suites pass (`0 fail`, one macOS-specific sandbox test skips); WSL2 and macOS
+run everything. See `docs/WINDOWS-SETUP.md` before assuming a Windows
 failure is a product bug.
 
 ## Adding a test

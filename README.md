@@ -77,7 +77,7 @@ adapters directly.
 
 The candidate and reviewer filesystem sandbox is native on macOS and verified
 inside attested Linux containers; on Windows it fails closed by design. Windows
-native supports the unit test suite (121/122, POSIX fixtures skip), typecheck,
+native runs the unit test suite with the POSIX fixture suites skipped, plus typecheck,
 skill sync, and package verification; full gate collection requires macOS or an
 attested container. See [docs/WINDOWS-SETUP.md](docs/WINDOWS-SETUP.md) for the
 capability matrix and WSL2 guidance.

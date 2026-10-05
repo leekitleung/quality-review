@@ -113,7 +113,7 @@ cat EXECUTION-PLAN.md | less
 
 | Metric | Current | Target | Status |
 |--------|---------|--------|--------|
-| Tests Passing | 133/134 (1 platform skip on Windows; 134/134 on macOS/Linux) | 100% | ✅ |
+| Tests Passing | 134/135 (1 platform skip on Windows; 135/135 on macOS/Linux) | 100% | ✅ |
 | Coverage | 100% lines/branches/functions | 100% | ✅ |
 | Windows Support | Documented (docs/WINDOWS-SETUP.md); gate fails closed by design | Documented | ✅ |
 | Configuration | Centralized (lib/config-constants.mjs) | Centralized | ✅ |
@@ -137,7 +137,7 @@ cat EXECUTION-PLAN.md | less
 ### Verification Log (2026-10-05, Windows native)
 
 ```
-npm test             # 134 tests: 133 pass, 0 fail, 1 skip
+npm test             # 135 tests: 134 pass, 0 fail, 1 skip
 npm run coverage     # 100.00 lines / 100.00 branches / 100.00 functions
 npm run lint         # syntax checked: 50 files
 npm run skill:check-drift  # in sync (14 adapters)

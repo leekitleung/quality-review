@@ -14,7 +14,7 @@ WSL2, a container, or macOS.
 
 | Capability | Windows native | WSL2 | macOS | Linux container (attested) |
 |---|---|---|---|---|
-| Unit tests (`npm test`) | 121/122 pass, 1 skip | 122/122 | 122/122 | 122/122 |
+| Unit tests (`npm test`) | all pass except POSIX fixture suites | full suite | full suite | full suite |
 | `npm run typecheck` / `lint` | ✅ | ✅ | ✅ | ✅ |
 | `npm run skill:sync` / `skill:check-drift` | ✅ | ✅ | ✅ | ✅ |
 | `npm run build` (package verification) | ✅ | ✅ | ✅ | ✅ |
@@ -51,8 +51,9 @@ exit early on Windows:
 Skipping POSIX fixture tests on Windows - use WSL2
 ```
 
-This is expected, not a failure. The suite reports `121 pass, 1 skip, 0 fail`.
-Under WSL2 the same command runs every test (`122 pass, 0 fail`).
+This is expected, not a failure. The suite reports `0 fail` with one
+macOS-specific sandbox test skipped; the four guarded files contribute no
+subtests. Under WSL2 the same command runs every suite in full.
 
 ## Why the gate fails closed on Windows
 
