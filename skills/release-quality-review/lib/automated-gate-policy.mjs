@@ -1,5 +1,7 @@
+export const INSTALL_GATE_COMMAND = 'npm ci --ignore-scripts --no-audit --no-fund';
+
 export const STRICT_COMMAND_GATE_KEYS = Object.freeze([
-  'testGate', 'typecheckGate', 'buildGate', 'lintGate',
+  'installGate', 'testGate', 'typecheckGate', 'buildGate', 'lintGate',
   'auditGate', 'coverageGate', 'e2eGate',
 ]);
 

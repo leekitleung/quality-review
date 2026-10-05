@@ -9,8 +9,10 @@ import {
   createCandidateSubprocessEnv, createSubprocessEnv, redactSensitiveText, resolveWithinRoot,
   outerSandboxAttestationFromEnv, writeContainedFile, wrapCandidateCommand,
 } from '../lib/security-utils.mjs';
+import { resolveRepositoryContext } from '../lib/candidate-runtime.mjs';
 
 const root = process.cwd();
+const { repositoryRoot, projectRelative } = resolveRepositoryContext(root);
 const subprocessEnv = createSubprocessEnv();
 function parseArgs(args) {
   let baseRef = null;
@@ -101,7 +103,8 @@ if (sourceStatus.exit_code !== 0 || sourceStatus.output.trim()) {
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-quality-rollback-'));
 const inheritedAttestation = outerSandboxAttestationFromEnv();
 const attestationRoot = inheritedAttestation ? null : await mkdtemp(path.join(os.tmpdir(), 'release-quality-attestation-'));
-const rollbackRoot = path.join(temporary, 'rollback');
+const rollbackRepository = path.join(temporary, 'rollback');
+const rollbackRoot = path.join(rollbackRepository, projectRelative);
 const isolatedHome = await mkdtemp(path.join(temporary, 'home-'));
 const candidateEnv = createCandidateSubprocessEnv(process.env, isolatedHome);
 const outerReadCanary = inheritedAttestation?.readCanary || path.join(attestationRoot, 'read-canary');
@@ -118,16 +121,16 @@ candidateEnv.COREPACK_HOME = corepackHome;
 candidateEnv.COREPACK_ENABLE_NETWORK = '0';
 candidateEnv.COREPACK_DEFAULT_TO_LATEST = '0';
 const cloneSandboxOptions = {
-  readOnlyRoots: [root, ...(existsSync(corepackHome) ? [corepackHome] : [])],
+  readOnlyRoots: [repositoryRoot, ...(existsSync(corepackHome) ? [corepackHome] : [])],
   writeRoots: [temporary], outerSandboxAttestation,
 };
 const sandboxOptions = {
-  readOnlyRoots: [rollbackRoot, ...(existsSync(corepackHome) ? [corepackHome] : [])],
+  readOnlyRoots: [rollbackRepository, ...(existsSync(corepackHome) ? [corepackHome] : [])],
   writeRoots: [temporary], outerSandboxAttestation,
 };
 const records = [sourceStatus];
 try {
-  const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', root, rollbackRoot], temporary, candidateEnv,
+  const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', repositoryRoot, rollbackRepository], temporary, candidateEnv,
     'git clone --quiet --no-local <source> <rollback>', cloneSandboxOptions);
   records.push(clone);
   if (clone.exit_code === 0) {

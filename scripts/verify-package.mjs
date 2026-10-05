@@ -6,8 +6,15 @@ import { join } from 'node:path';
 
 const projectRoot = process.cwd();
 const workDir = mkdtempSync(join(tmpdir(), 'quality-review-package-'));
+const npmCli = process.env.npm_execpath || join(
+  process.platform === 'win32' ? process.env.ProgramW6432 || process.env.ProgramFiles || 'C:\\Program Files' : '/usr',
+  process.platform === 'win32' ? 'nodejs' : 'local',
+  'node_modules', 'npm', 'bin', 'npm-cli.js',
+);
+const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
+const npmArgs = args => process.platform === 'win32' ? [npmCli, ...args] : args;
 try {
-  const packOutput = execFileSync('npm', ['pack', '--json', '--pack-destination', workDir], {
+  const packOutput = execFileSync(npmCommand, npmArgs(['pack', '--json', '--pack-destination', workDir]), {
     cwd: projectRoot, encoding: 'utf8', timeout: 60000,
   });
   const pack = JSON.parse(packOutput)[0];
@@ -20,7 +27,7 @@ try {
   if (forbidden.length > 0) throw new Error(`artifact contains forbidden paths: ${forbidden.join(', ')}`);
   const tarball = join(workDir, pack.filename);
   const consumer = join(workDir, 'consumer');
-  execFileSync('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--prefix', consumer, tarball], {
+  execFileSync(npmCommand, npmArgs(['install', '--ignore-scripts', '--no-audit', '--no-fund', '--prefix', consumer, tarball]), {
     cwd: projectRoot, encoding: 'utf8', timeout: 60000,
   });
   const installedRoot = join(consumer, 'node_modules', 'quality-review-skills');

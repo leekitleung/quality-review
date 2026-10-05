@@ -52,6 +52,7 @@ import {
 import {
   ensureContainedDirectorySync,
   readContainedFileSync,
+  redactSensitiveText,
   resolveReportDirectory,
 } from '../lib/security-utils.mjs';
 
@@ -224,6 +225,13 @@ async function runGate() {
       log.success(`Evidence collected`);
     } catch (e) {
       log.error(`Evidence collection failed: ${e.message}`);
+      persistFinalArbitration(
+        roundDir,
+        false,
+        `evidence collection failed: ${redactSensitiveText(e.message)}`,
+        reviewers,
+        process.argv,
+      );
       return false;
     }
   } else {

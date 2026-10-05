@@ -9,10 +9,12 @@ import {
   outerSandboxAttestationFromEnv, wrapCandidateCommand,
 } from '../skills/release-quality-review/lib/security-utils.mjs';
 import {
-  findTrivialVerificationScripts, hasConcreteVerificationOutput,
+  CLEAN_CANDIDATE_COMMANDS, findTrivialVerificationScripts, hasConcreteVerificationOutput,
 } from '../skills/release-quality-review/lib/review-utils.mjs';
+import { resolveRepositoryContext } from '../skills/release-quality-review/lib/candidate-runtime.mjs';
 
 const root = process.cwd();
+const { repositoryRoot, projectRelative } = resolveRepositoryContext(root);
 const subprocessEnv = createSubprocessEnv();
 const args = process.argv.slice(2);
 if (args.length === 1 && (args[0] === '--help' || args[0] === '-h')) {
@@ -68,8 +70,8 @@ if (sourceStatus.exit_code !== 0 || sourceStatus.output.trim()) {
 
 const sourceManifest = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 const sourceScriptIssues = findTrivialVerificationScripts(sourceManifest.scripts, [
-  'npm test', 'npm run coverage', 'npm run skill:check-drift', 'npm run lint',
-  'npm run build', 'npm run skill:check', 'npm run skill:verify',
+  'npm test', 'npm run coverage', 'npm run typecheck', 'npm run lint',
+  'npm run build', 'npm run test:e2e',
 ]);
 if (sourceScriptIssues.length > 0) {
   const commit = run('candidate-commit', 'git', ['rev-parse', 'HEAD'], root);
@@ -101,7 +103,8 @@ if (sourceScriptIssues.length > 0) {
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'release-quality-review-'));
 const inheritedAttestation = outerSandboxAttestationFromEnv();
 const attestationRoot = inheritedAttestation ? null : await mkdtemp(path.join(os.tmpdir(), 'release-quality-attestation-'));
-const candidate = path.join(temporary, 'candidate');
+const candidateRepository = path.join(temporary, 'candidate');
+const candidate = path.join(candidateRepository, projectRelative);
 const isolatedHome = await mkdtemp(path.join(temporary, 'home-'));
 const candidateEnv = createCandidateSubprocessEnv(process.env, isolatedHome);
 const outerReadCanary = inheritedAttestation?.readCanary || path.join(attestationRoot, 'read-canary');
@@ -115,25 +118,25 @@ candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY = outerReadCanary;
 candidateEnv.RELEASE_QUALITY_OUTER_SANDBOX_WRITE_CANARY = outerWriteCanary;
 const records = [];
 try {
-  const cloneSandboxOptions = { readOnlyRoots: [root], writeRoots: [temporary], outerSandboxAttestation };
-  const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', root, candidate], temporary, candidateEnv,
+  const cloneSandboxOptions = { readOnlyRoots: [repositoryRoot], writeRoots: [temporary], outerSandboxAttestation };
+  const clone = run('clone', 'git', ['clone', '--quiet', '--no-local', repositoryRoot, candidateRepository], temporary, candidateEnv,
     'git clone --quiet --no-local <source> <candidate>', cloneSandboxOptions);
   records.push(clone);
   if (clone.exit_code === 0) {
-    const sandboxOptions = { readOnlyRoots: [candidate], writeRoots: [temporary], outerSandboxAttestation };
+    const sandboxOptions = { readOnlyRoots: [candidateRepository], writeRoots: [temporary], outerSandboxAttestation };
     const startedAt = new Date().toISOString();
     let scriptIssues = [];
     try {
       const manifest = JSON.parse(await readFile(path.join(candidate, 'package.json'), 'utf8'));
       scriptIssues = findTrivialVerificationScripts(manifest.scripts, [
-        'npm test', 'npm run coverage', 'npm run skill:check-drift', 'npm run lint',
-        'npm run build', 'npm run skill:check', 'npm run skill:verify',
+        'npm test', 'npm run coverage', 'npm run typecheck', 'npm run lint',
+        'npm run build', 'npm run test:e2e',
       ]);
     } catch {
       scriptIssues = [{ command: 'package.json', script: 'unreadable' }];
     }
     const scriptOutput = scriptIssues.length === 0
-      ? 'verified 7 non-trivial verification scripts'
+      ? 'verified 6 non-trivial verification scripts'
       : `trivial or missing verification scripts: ${scriptIssues.map(issue => issue.script).join(', ')}`;
     records.push({
       id: 'script-integrity', command: 'verify package verification scripts',
@@ -157,32 +160,33 @@ try {
         ['install', 'npm', ['ci', '--ignore-scripts']],
         ['test', 'npm', ['test']],
         ['coverage', 'npm', ['run', 'coverage']],
-        ['drift', 'npm', ['run', 'skill:check-drift']],
+        ['typecheck', 'npm', ['run', 'typecheck']],
         ['lint', 'npm', ['run', 'lint']],
         ['build', 'npm', ['run', 'build']],
         ['audit', 'npm', [
           'audit', '--audit-level=high', '--registry=https://registry.npmjs.org/',
           `--userconfig=${userConfig}`, `--globalconfig=${globalConfig}`,
         ]],
-        ['skill-check', 'npm', ['run', 'skill:check']],
-        ['skill-verify', 'npm', ['run', 'skill:verify']],
+        ['e2e', 'npm', ['run', 'test:e2e']],
         ['final-status', 'git', ['status', '--porcelain', '--untracked-files=all']],
       ]) records.push(run(
         id, command, args, id === 'audit' ? auditRoot : candidate, candidateEnv,
         id === 'audit' ? 'npm audit --audit-level=high' : null,
         id === 'audit'
-          ? { readOnlyRoots: [auditRoot], writeRoots: [isolatedHome], allowNetwork: true }
-          : sandboxOptions
+          ? { readOnlyRoots: [auditRoot], writeRoots: [isolatedHome], allowNetwork: true, outerSandboxAttestation }
+          : id === 'install'
+            ? { ...sandboxOptions, allowNetwork: true }
+            : sandboxOptions
       ));
     }
   }
-  const sandboxOptions = { readOnlyRoots: [candidate], writeRoots: [temporary], outerSandboxAttestation };
+  const sandboxOptions = { readOnlyRoots: [candidateRepository], writeRoots: [temporary], outerSandboxAttestation };
   const commit = run('candidate-commit', 'git', ['rev-parse', 'HEAD'], root);
   const tree = run('candidate-tree', 'git', ['rev-parse', 'HEAD^{tree}'], root);
   const isolatedCommit = run('isolated-commit', 'git', ['rev-parse', 'HEAD'], candidate, candidateEnv, null, sandboxOptions);
   const isolatedTree = run('isolated-tree', 'git', ['rev-parse', 'HEAD^{tree}'], candidate, candidateEnv, null, sandboxOptions);
   const finalSourceStatus = run('final-source-status', 'git', ['status', '--porcelain', '--untracked-files=all'], root);
-  const passed = records.length === 12 && records.every(record => record.exit_code === 0) &&
+  const passed = records.length === CLEAN_CANDIDATE_COMMANDS.length && records.every(record => record.exit_code === 0) &&
     hasConcreteVerificationOutput('test', records.find(record => record.id === 'test')?.output) &&
     hasConcreteVerificationOutput('coverage', records.find(record => record.id === 'coverage')?.output) &&
     records.at(-1).output.trim() === '' && isolatedCommit.exit_code === 0 && isolatedTree.exit_code === 0 &&

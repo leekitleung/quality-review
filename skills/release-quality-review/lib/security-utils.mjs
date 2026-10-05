@@ -56,7 +56,7 @@ const SUBPROCESS_ENV_ALLOWLIST = new Set([
   'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LANGUAGE',
   'LC_ALL', 'LC_CTYPE', 'TERM', 'COLORTERM', 'TERM_PROGRAM', 'TZ', 'CI', 'NO_COLOR',
   'FORCE_COLOR', 'CODEX_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'SYSTEMROOT', 'WINDIR',
-  'CLAUDE_CONFIG_DIR',
+  'CLAUDE_CONFIG_DIR', 'PLAYWRIGHT_BROWSERS_PATH', 'NPM_CONFIG_CACHE',
   'COMSPEC', 'PATHEXT', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'NODE_TEST_CONTEXT',
   'NODE_V8_COVERAGE',
   'RELEASE_QUALITY_OUTER_SANDBOX_ATTESTED', 'RELEASE_QUALITY_OUTER_SANDBOX_READ_CANARY',
@@ -95,38 +95,54 @@ export function outerSandboxAttestationFromEnv(source = process.env) {
   return Object.freeze({ attested: true, readCanary, writeCanary });
 }
 
+function useVerifiedOuterSandbox(command, args, {
+  allowedRoots, readOnlyRoots, writeRoots, outerSandboxAttestation, requireExactWriteIsolation,
+}) {
+  const readCanary = outerSandboxAttestation?.readCanary;
+  const writeCanary = outerSandboxAttestation?.writeCanary;
+  const declaredRoots = [...allowedRoots, ...readOnlyRoots, ...writeRoots].map(root => path.resolve(root));
+  const canariesAreValid = outerSandboxAttestation?.attested === true &&
+    path.isAbsolute(readCanary || '') && path.isAbsolute(writeCanary || '') && existsSync(readCanary) &&
+    !existsSync(writeCanary) &&
+    declaredRoots.every(root => !isPathWithin(root, readCanary) && !isPathWithin(root, writeCanary));
+  if (!canariesAreValid) throw new Error('candidate filesystem sandbox unavailable; nested execution fails closed');
+  if (requireExactWriteIsolation) {
+    throw new Error('reviewer filesystem sandbox unavailable; exact write isolation is required');
+  }
+  const capability = spawnSync(process.execPath, ['-e', `
+    const fs = require('node:fs');
+    let denied = 0;
+    try { fs.readFileSync(${JSON.stringify(readCanary)}); } catch { denied++; }
+    try { fs.writeFileSync(${JSON.stringify(writeCanary)}, 'forged'); } catch { denied++; }
+    process.exit(denied === 2 ? 0 : 1);
+  `], { encoding: 'utf8' });
+  if (capability.status !== 0 || existsSync(writeCanary)) {
+    rmSync(writeCanary, { force: true });
+    throw new Error('outer sandbox capability check failed closed');
+  }
+  return { command, args };
+}
+
 export function wrapCandidateCommand(command, args, {
   allowedRoots = [], readOnlyRoots = [], writeRoots = [], hostHome = null, allowNetwork = false,
   outerSandboxAttestation = null, requireExactWriteIsolation = false,
 } = {}) {
-  if (process.platform !== 'darwin') throw new Error(`candidate filesystem sandbox is unavailable on ${process.platform}`);
+  if (process.platform !== 'darwin') {
+    const isDockerContainer = process.platform === 'linux' && existsSync('/.dockerenv');
+    if (!isDockerContainer || !outerSandboxAttestation) {
+      throw new Error(`candidate filesystem sandbox is unavailable on ${process.platform}`);
+    }
+    return useVerifiedOuterSandbox(command, args, {
+      allowedRoots, readOnlyRoots, writeRoots, outerSandboxAttestation, requireExactWriteIsolation,
+    });
+  }
   const probe = spawnSync('/usr/bin/sandbox-exec', [
     '-p', '(version 1) (allow default)', '/usr/bin/true',
   ], { encoding: 'utf8' });
   if (probe.status !== 0 && /sandbox_apply:\s*Operation not permitted/i.test(`${probe.stdout || ''}${probe.stderr || ''}`)) {
-    const readCanary = outerSandboxAttestation?.readCanary;
-    const writeCanary = outerSandboxAttestation?.writeCanary;
-    const declaredRoots = [...allowedRoots, ...readOnlyRoots, ...writeRoots].map(root => path.resolve(root));
-    const canariesAreValid = outerSandboxAttestation?.attested === true &&
-      path.isAbsolute(readCanary || '') && path.isAbsolute(writeCanary || '') && existsSync(readCanary) &&
-      !existsSync(writeCanary) &&
-      declaredRoots.every(root => !isPathWithin(root, readCanary) && !isPathWithin(root, writeCanary));
-    if (!canariesAreValid) throw new Error('candidate filesystem sandbox unavailable; nested execution fails closed');
-    if (requireExactWriteIsolation) {
-      throw new Error('reviewer filesystem sandbox unavailable; exact write isolation is required');
-    }
-    const capability = spawnSync(process.execPath, ['-e', `
-      const fs = require('node:fs');
-      let denied = 0;
-      try { fs.readFileSync(${JSON.stringify(readCanary)}); } catch { denied++; }
-      try { fs.writeFileSync(${JSON.stringify(writeCanary)}, 'forged'); } catch { denied++; }
-      process.exit(denied === 2 ? 0 : 1);
-    `], { encoding: 'utf8' });
-    if (capability.status !== 0 || existsSync(writeCanary)) {
-      rmSync(writeCanary, { force: true });
-      throw new Error('outer sandbox capability check failed closed');
-    }
-    return { command, args };
+    return useVerifiedOuterSandbox(command, args, {
+      allowedRoots, readOnlyRoots, writeRoots, outerSandboxAttestation, requireExactWriteIsolation,
+    });
   }
   if (probe.status !== 0) throw new Error('candidate filesystem sandbox probe failed closed');
   hostHome ||= userInfo().homedir;

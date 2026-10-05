@@ -1,10 +1,22 @@
 import { execFileSync as nodeExecFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import {
-  createCandidateSubprocessEnv, ensureContainedDirectorySync, wrapCandidateCommand,
+  createCandidateSubprocessEnv, ensureContainedDirectorySync, isPathWithin, wrapCandidateCommand,
 } from './security-utils.mjs';
+
+export function resolveRepositoryContext(projectRoot, gitExecFile = nodeExecFileSync) {
+  const projectPath = resolve(projectRoot);
+  const repositoryRoot = resolve(gitExecFile('git', ['rev-parse', '--show-toplevel'], {
+    cwd: projectPath, encoding: 'utf8', timeout: 10000,
+  }).trim());
+  const projectRelative = relative(repositoryRoot, projectPath);
+  if (!isPathWithin(repositoryRoot, projectPath) || isAbsolute(projectRelative)) {
+    throw new Error('project root must be contained by its Git repository');
+  }
+  return Object.freeze({ repositoryRoot, projectRelative });
+}
 
 export function validateCandidateCheckoutIdentity(source, initial, final) {
   if (source.status !== '' || initial.status !== '' || final.status !== '' ||
@@ -16,6 +28,7 @@ export function validateCandidateCheckoutIdentity(source, initial, final) {
 }
 
 export function createCandidateRuntime(projectRoot, label, outerSandboxAttestation = null) {
+  const { repositoryRoot, projectRelative } = resolveRepositoryContext(projectRoot);
   const isolatedHome = mkdtempSync(join(tmpdir(), `release-quality-review-${label}-home-`));
   const attestationRoot = outerSandboxAttestation ? null :
     mkdtempSync(join(tmpdir(), `release-quality-review-${label}-attestation-`));
@@ -63,16 +76,17 @@ export function createCandidateRuntime(projectRoot, label, outerSandboxAttestati
 
   function prepareCheckout() {
     checkoutParent ||= mkdtempSync(join(tmpdir(), `release-quality-review-${label}-checkout-`));
-    const checkout = join(checkoutParent, 'candidate-checkout');
-    if (!existsSync(checkout)) {
-      execFileSync('git', ['clone', '--quiet', '--no-hardlinks', projectRoot, checkout], {
-        cwd: projectRoot, encoding: 'utf8', timeout: 30000,
-        sandboxReadOnlyRoots: [projectRoot],
+    const repositoryCheckout = join(checkoutParent, 'candidate-checkout');
+    const projectCheckout = join(repositoryCheckout, projectRelative);
+    if (!existsSync(repositoryCheckout)) {
+      execFileSync('git', ['clone', '--quiet', '--no-hardlinks', repositoryRoot, repositoryCheckout], {
+        cwd: repositoryRoot, encoding: 'utf8', timeout: 30000,
+        sandboxReadOnlyRoots: [repositoryRoot],
         sandboxWriteRoots: [isolatedHome, checkoutParent],
       });
-      ensureContainedDirectorySync(checkout, join(checkout, 'quality-reports'));
+      ensureContainedDirectorySync(projectCheckout, join(projectCheckout, 'quality-reports'));
     }
-    return checkout;
+    return projectCheckout;
   }
 
   function validateCheckout(root, initial) {

@@ -109,12 +109,11 @@ export const CLEAN_CANDIDATE_COMMANDS = [
   ['install', 'npm ci --ignore-scripts'],
   ['test', 'npm test'],
   ['coverage', 'npm run coverage'],
-  ['drift', 'npm run skill:check-drift'],
+  ['typecheck', 'npm run typecheck'],
   ['lint', 'npm run lint'],
   ['build', 'npm run build'],
   ['audit', 'npm audit --audit-level=high'],
-  ['skill-check', 'npm run skill:check'],
-  ['skill-verify', 'npm run skill:verify'],
+  ['e2e', 'npm run test:e2e'],
   ['final-status', 'git status --porcelain --untracked-files=all'],
 ];
 
@@ -152,6 +151,7 @@ export const ROLLBACK_COMMANDS = [
   ['revert', 'git revert --no-commit <base>..HEAD'],
   ['rollback-tree', 'git write-tree'],
   ['package-manager', 'verify pre-provisioned rollback package manager'],
+  ['install', 'npm ci --ignore-scripts'],
   ['rollback-commit', 'git commit <rollback snapshot>'],
   ['test', 'npm test'],
   ['final-source-status', 'git status --porcelain --untracked-files=all'],
@@ -182,7 +182,7 @@ export function validateRollbackEvidence(rollback, candidateCommit, candidateTre
     rollback.commands[2].output.trim() === candidateCommit &&
     rollback.commands[3].output.trim() === candidateTree &&
     rollback.commands[5].output.trim() === baseTree &&
-    rollback.commands[8].output.trim() !== '' &&
-    rollback.commands[9].output.trim() === '';
+    rollback.commands[9].output.trim() !== '' &&
+    rollback.commands[10].output.trim() === '';
 }
 

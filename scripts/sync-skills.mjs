@@ -47,7 +47,7 @@ async function digest(files) {
 }
 
 function validateFrontmatter(content, file) {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) throw new Error(`${file}: missing YAML frontmatter`);
   const keys = [...match[1].matchAll(/^([a-z][a-z0-9-]*):/gm)].map(item => item[1]);
   const unexpected = keys.filter(key => !['name', 'description'].includes(key));

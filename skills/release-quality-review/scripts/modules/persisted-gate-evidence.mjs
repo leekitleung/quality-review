@@ -8,7 +8,7 @@ import {
   validateCleanCandidateEvidence,
   validateRollbackEvidence,
 } from '../../lib/review-utils.mjs';
-import { requiredCommandGateKeys } from '../../lib/automated-gate-policy.mjs';
+import { INSTALL_GATE_COMMAND, requiredCommandGateKeys } from '../../lib/automated-gate-policy.mjs';
 import { readContainedFileSync } from '../../lib/security-utils.mjs';
 import { validCandidateCheckoutEvidence, validCommandEvidence } from './evidence.mjs';
 import { resolveVerificationCommands } from './verification-policy.mjs';
@@ -73,6 +73,7 @@ function validateAgenticEvidence(roundDir, metadata) {
 export function validateAutomatedEvidence(config, profile, automatedChecks, metadata) {
   const verification = resolveVerificationCommands(config);
   const commandsByGate = {
+    installGate: INSTALL_GATE_COMMAND,
     testGate: verification.test,
     typecheckGate: verification.typecheck,
     buildGate: verification.build,

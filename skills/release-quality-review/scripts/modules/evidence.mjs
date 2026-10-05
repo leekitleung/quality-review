@@ -9,6 +9,7 @@ import {
   detectChangeScale, findTrivialVerificationScripts, validateCleanCandidateEvidence, validateRollbackEvidence,
 } from '../../lib/review-utils.mjs';
 import { createCandidateRuntime } from '../../lib/candidate-runtime.mjs';
+import { INSTALL_GATE_COMMAND } from '../../lib/automated-gate-policy.mjs';
 import { resolveVerificationCommands, validateVerificationCommands } from './verification-policy.mjs';
 
 export function formatGitEvidenceFailure(error) {
@@ -128,11 +129,12 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
   const { prepareCheckout, readIdentity, validateCheckout } = runtime;
   const candidateRoot = prepareCheckout();
   const initialCandidateIdentity = readIdentity(candidateRoot);
-  const runCandidateCommand = (command, cwd) => runEvidenceCommand(command, cwd, (cmd, options) =>
+  const runCandidateCommand = (command, cwd, commandOptions = {}) => runEvidenceCommand(command, cwd, (cmd, options) =>
     runtime.execSync(cmd, {
       ...options,
       sandboxReadOnlyRoots: [candidateRoot],
       sandboxWriteRoots: [runtime.isolatedHome, candidateRoot],
+      sandboxAllowNetwork: commandOptions.allowNetwork === true,
     }));
   const { auditRoot, userConfig, globalConfig } = prepareTrustedAuditWorkspace(candidateRoot, runtime.isolatedHome);
   const runTrustedAudit = () => runEvidenceCommand('npm audit --audit-level=high', auditRoot, (_cmd, options) =>
@@ -171,7 +173,7 @@ export function validateEvidenceCompleteness(evidence, projectRoot) {
   if (!ac) return false;
 
   // Required gate commands must have valid structure
-  const requiredGates = ['testGate', 'typecheckGate', 'buildGate', 'lintGate', 'auditGate', 'e2eGate'];
+  const requiredGates = ['installGate', 'testGate', 'typecheckGate', 'buildGate', 'lintGate', 'auditGate', 'e2eGate'];
   for (const gate of requiredGates) {
     const gateResult = ac[gate];
     if (!gateResult) return false;
@@ -339,6 +341,7 @@ export function runAutomatedChecks(
     oversizedFiles: { status: 'pass', issues: [] },
     circularDeps: { status: 'pass', issues: [] },
     secrets: { status: 'pass', issues: [] },
+    installGate: null,
     testGate: null,
     typecheckGate: null,
     buildGate: null,
@@ -424,6 +427,12 @@ export function runAutomatedChecks(
     checks.secrets.status = 'warn';
     checks.secrets.issues = [`source scan encountered error: ${e.message}`];
   }
+
+  // Install dependencies in the isolated checkout before running project gates.
+  log.info(`Installing candidate dependencies: ${INSTALL_GATE_COMMAND}`);
+  checks.installGate = runCommand(INSTALL_GATE_COMMAND, candidateRoot, {
+    allowNetwork: true,
+  });
 
   // Gate commands
   log.info(`Running test gate: ${testCmd}`);

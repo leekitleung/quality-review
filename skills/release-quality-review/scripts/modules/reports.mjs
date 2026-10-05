@@ -5,6 +5,27 @@ import { readContainedFileSync, writeContainedFileSync } from '../../lib/securit
 import { redactSensitiveText } from '../../lib/security-utils.mjs';
 import { reviewerPacketPassed } from './scores.mjs';
 
+function findReviewerGateFailures(scores, reviewerPacketPassed_) {
+  return Object.entries(scores || {})
+    .filter(([, result]) => !reviewerPacketPassed_(result))
+    .map(([reviewer, result]) => ({
+      reviewer,
+      score: result?.score ?? 'N/A',
+      status: result?.status || 'missing',
+      blockers: result?.blockers?.length || 0,
+    }));
+}
+
+function assertFinalReportEligible(scores, reviewerPacketPassed_) {
+  const failures = findReviewerGateFailures(scores, reviewerPacketPassed_);
+  if (failures.length > 0) {
+    const details = failures
+      .map(failure => `${failure.reviewer}=${failure.score}/100 (${failure.status}, blockers=${failure.blockers})`)
+      .join(', ');
+    throw new Error(`Cannot generate release-approved report: reviewer gate failed: ${details}`);
+  }
+}
+
 /**
  * Generate summary report for a round
  * @param {string} roundDir - Round directory
@@ -19,6 +40,12 @@ import { reviewerPacketPassed } from './scores.mjs';
 export function generateSummary(roundDir, profile, roundNumber, scores, allPassed, evidence = null, reviewerPacketPassed_ = reviewerPacketPassed) {
   const reportPath = join(roundDir, 'summary.md');
   const timestamp = new Date().toISOString();
+  // Never trust a caller-provided pass flag: summaries are evidence artifacts,
+  // so their verdict must agree with every reviewer packet.
+  const reviewerResults = Object.values(scores || {});
+  const computedAllPassed = reviewerResults.length > 0 &&
+    reviewerResults.every(result => reviewerPacketPassed_(result));
+  const effectiveAllPassed = Boolean(allPassed) && computedAllPassed;
 
   let content = `# Quality Review Summary - Round ${roundNumber}\n\n`;
   content += `**Profile:** ${profile}\n`;
@@ -129,7 +156,7 @@ export function generateSummary(roundDir, profile, roundNumber, scores, allPasse
 
   content += `---\n\n`;
 
-  if (allPassed) {
+  if (effectiveAllPassed) {
     content += `## ✅ ALL REVIEWERS PASSED\n\n`;
     content += `This release has passed all quality gates. It is ready to ship.\n`;
     content += `\nTo generate the final report:\n`;
@@ -151,7 +178,7 @@ export function generateSummary(roundDir, profile, roundNumber, scores, allPasse
 
   writeContainedFileSync(roundDir, reportPath, content);
   log.success(`Summary written to: ${reportPath}`);
-  return allPassed;
+  return effectiveAllPassed;
 }
 
 /**
@@ -164,6 +191,10 @@ export function generateSummary(roundDir, profile, roundNumber, scores, allPasse
  * @returns {string} Report path
  */
 export function generateFinalReport(roundDir, scores, evidence = null, profile, reviewerPacketPassed_ = reviewerPacketPassed) {
+  // This function is intentionally fail-closed so callers cannot create an
+  // APPROVED report by passing a stale or optimistic gate boolean upstream.
+  assertFinalReportEligible(scores, reviewerPacketPassed_);
+
   const reportPath = join(roundDir, 'final-report.md');
   const timestamp = new Date().toISOString();
 

@@ -45,6 +45,13 @@ description: Run an evidence-backed multi-reviewer release quality gate with ind
 - 支持回溯和问题定位
 - Round N 的结果是 Round N+1 的输入
 
+### P4.1: 结论权威性与门禁分离 ⭐
+- **工程验证通过不等于多 Reviewer 质量门禁通过**。`build`、`test`、`smoke` 等自动化命令是必要证据，但不能替代 Reviewer 分数门槛。
+- 只有 `review-gate.mjs` 返回退出码 `0`，且本轮 `quality-reports/round-NNN/` 下的机器结果、摘要和最终仲裁证据一致时，才可以称为“质量门禁通过”或“发布批准”。
+- 项目目录中的历史报告、手工汇总、截图或没有 `result.yaml` 的 `final-report.md` 都是诊断材料，不是发布证据，不能覆盖 Gate 结论。
+- 任何 Reviewer 低于配置的 `min_score`（默认 90）时，结论必须是失败；不能用平均分、P0/P1 已修复或自动化测试通过来抵消低分。
+- 生成器和宿主都必须 fail closed：摘要必须从 Reviewer packet 重新计算通过状态，批准报告只能在所有 Reviewer packet 通过时生成。
+
 ### P5: Right-size Throttle ⭐
 - **根据变更规模自动调整流程复杂度**
 - Micro/Small (<5 文件, <100 行): quick profile
@@ -226,6 +233,7 @@ node skills/release-quality-review/scripts/review-runner.mjs --profile release-g
 1. **所有 Reviewer >= 90/100**
 2. **无 P0/P1 blocker 或 redline**
 3. **有实际证据支撑评分**
+4. **工程门禁与质量门禁分别报告，不得把前者单独表述为整体质检通过**
 
 ## 目录结构
 
