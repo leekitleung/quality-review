@@ -35,12 +35,24 @@ async function filesUnder(dir) {
   return files;
 }
 
+/**
+ * Content bytes that must hash identically on every platform: checkout line
+ * endings vary with git autocrlf (CRLF on Windows hosts, LF elsewhere), so
+ * all line terminators are normalized to LF before hashing. Lone `\r` is
+ * folded too so mixed-endian edits cannot split the identity.
+ */
+function canonicalBytes(content) {
+  return content.toString('utf8').replace(/\r\n?/g, '\n');
+}
+
 async function digest(files) {
   const hash = createHash('sha256');
   for (const file of files.sort()) {
-    hash.update(path.relative(root, file));
+    // Path identity is POSIX-normalized: path.relative emits `\` on Windows
+    // and `/` elsewhere, which would make the lock hash host-dependent.
+    hash.update(path.relative(root, file).split(path.sep).join('/'));
     hash.update('\0');
-    hash.update(await readFile(file));
+    hash.update(canonicalBytes(await readFile(file)));
     hash.update('\0');
   }
   return hash.digest('hex');
@@ -120,7 +132,10 @@ async function main() {
   const drift = [];
   for (const [relative, expected] of generated) {
     try {
-      if (await readFile(resolveWithinRoot(root, relative, 'adapter path'), 'utf8') !== expected) drift.push(relative);
+      // Adapter files are committed text: a Windows autocrlf checkout reads
+      // CRLF, so the comparison normalizes line endings like the hash does.
+      const actual = canonicalBytes(await readFile(resolveWithinRoot(root, relative, 'adapter path'), 'utf8'));
+      if (actual !== expected) drift.push(relative);
     } catch {
       drift.push(relative);
     }
