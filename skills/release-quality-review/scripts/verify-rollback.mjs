@@ -10,6 +10,7 @@ import {
   outerSandboxAttestationFromEnv, writeContainedFile, wrapCandidateCommand,
 } from '../lib/security-utils.mjs';
 import { resolveRepositoryContext } from '../lib/candidate-runtime.mjs';
+import { MAX_BUFFER, TIMEOUTS } from '../lib/config-constants.mjs';
 
 const root = process.cwd();
 const { repositoryRoot, projectRelative } = resolveRepositoryContext(root);
@@ -55,7 +56,7 @@ function run(id, command, commandArgs, cwd, env = subprocessEnv, displayCommand 
   const startedAt = new Date().toISOString();
   const executable = sandboxOptions ? wrapCandidateCommand(command, commandArgs, sandboxOptions) : { command, args: commandArgs };
   const result = spawnSync(executable.command, executable.args, {
-    cwd, encoding: 'utf8', timeout: 180000, maxBuffer: 8 * 1024 * 1024, env,
+    cwd, encoding: 'utf8', timeout: TIMEOUTS.ROLLBACK_OPERATION, maxBuffer: MAX_BUFFER.ROLLBACK_OUTPUT, env,
   });
   const raw = `${result.stdout || ''}${result.stderr || ''}`;
   const redacted = redactSensitiveText(raw);
@@ -74,7 +75,7 @@ function run(id, command, commandArgs, cwd, env = subprocessEnv, displayCommand 
 }
 
 function gitValue(args, cwd = root) {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 10000, env: subprocessEnv });
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION, env: subprocessEnv });
   if (result.status !== 0) throw new Error(String(result.stderr || 'git command failed').trim());
   return result.stdout.trim();
 }

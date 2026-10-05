@@ -55,6 +55,7 @@ import {
   redactSensitiveText,
   resolveReportDirectory,
 } from '../lib/security-utils.mjs';
+import { FILE_PERMISSIONS, TIMEOUTS } from '../lib/config-constants.mjs';
 
 function resolveReportDirectoryOrExit() {
   try {
@@ -101,7 +102,7 @@ function resolveDiffBase(ref) {
     return execFileSync('git', ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], {
       cwd: PROJECT_ROOT,
       encoding: 'utf8',
-      timeout: 10000,
+      timeout: TIMEOUTS.GIT_OPERATION,
     }).trim();
   } catch {
     log.error(`Unable to resolve --base ref: ${ref}`);
@@ -122,7 +123,7 @@ if (options.detectScale) {
 // Command execution wrapper
 function execSync_(cmd, opts = {}) {
   try {
-    return execSync(cmd, { encoding: 'utf-8', timeout: opts.timeout ?? 30000, cwd: opts.cwd ?? PROJECT_ROOT, ...opts });
+    return execSync(cmd, { encoding: 'utf-8', timeout: opts.timeout ?? TIMEOUTS.EVIDENCE_COMMAND, cwd: opts.cwd ?? PROJECT_ROOT, ...opts });
   } catch (err) {
     if (err.stdout && !opts.suppressOutput) console.error(err.stdout);
     if (err.stderr && !opts.suppressOutput) console.error(err.stderr);
@@ -177,7 +178,7 @@ async function runGate() {
   log.info(`Reviewers: ${reviewers.join(', ')}`);
   console.log('');
 
-  ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR, 0o700);
+  ensureContainedDirectorySync(PROJECT_ROOT, REPORT_DIR, FILE_PERMISSIONS.REPORT_DIR);
   let roundDir = join(REPORT_DIR, `round-${String(effectiveRoundNumber).padStart(3, '0')}`);
 
   const isNewRound = !existsSync(roundDir);
@@ -189,8 +190,8 @@ async function runGate() {
     log.info(`Continuing round: ${roundDir}`);
   }
 
-  const currentCandidateCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000 }).trim();
-  const currentCandidateTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000 }).trim();
+  const currentCandidateCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION }).trim();
+  const currentCandidateTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION }).trim();
 
   if (!isNewRound && collectEvidenceOpt) {
     const existingMetadataPath = join(roundDir, 'metadata.json');
@@ -302,7 +303,7 @@ async function runGate() {
       const evidenceValidatorScript = join(SKILL_DIR, 'scripts', 'evidence-validator.mjs');
       if (existsSync(evidenceValidatorScript)) {
         const roundName = `round-${String(effectiveRoundNumber).padStart(3, '0')}`;
-        const validatorOutput = execSync(`node "${evidenceValidatorScript}" --round ${roundName} --base ${resolvedDiffBase}`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 60000 });
+        const validatorOutput = execSync(`node "${evidenceValidatorScript}" --round ${roundName} --base ${resolvedDiffBase}`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: TIMEOUTS.EVIDENCE_VALIDATION });
         evidenceValidationPassed = validatorOutput.includes('✅ All reviewers passed');
         if (evidenceValidationPassed) {
           log.success('Evidence source validation passed');
@@ -355,7 +356,7 @@ async function runGate() {
     try {
       const goalGateScript = join(SKILL_DIR, 'scripts', 'goal-instruction-gate.mjs');
       if (existsSync(goalGateScript)) {
-        const plain = execSync(`node "${goalGateScript}" --file "${join(roundDir, 'generated-goal.md')}"`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 30000 });
+        const plain = execSync(`node "${goalGateScript}" --file "${join(roundDir, 'generated-goal.md')}"`, { encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: TIMEOUTS.GOAL_INSTRUCTION });
         const scoreMatch = plain.replace(/\x1b\[[0-9;]*m/g, '').match(/Score:\s*(\d+)/);
         goalInstructionResult = { passed: (scoreMatch ? parseInt(scoreMatch[1], 10) : 0) >= 90, score: scoreMatch ? parseInt(scoreMatch[1], 10) : 0 };
         if (goalInstructionResult.passed) {

@@ -18,6 +18,7 @@
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'path';
+import { TIMEOUTS } from '../lib/config-constants.mjs';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -479,7 +480,7 @@ function runForensicAnalysis(packetDir) {
   // Check git status for actual changes
   try {
     const gitStatus = execFileSync('git', ['status', '--short'], {
-      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 5000,
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: TIMEOUTS.VERSION_CHECK,
     }).trim();
 
     if (!gitStatus) {

@@ -9,6 +9,7 @@ import {
 import { lstat, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 
 import { buildCandidateSandboxProfile } from './sandbox-profile.mjs';
+import { FILE_PERMISSIONS } from './config-constants.mjs';
 
 export function isPathWithin(root, candidate) {
   const rootPath = path.resolve(root);
@@ -180,8 +181,8 @@ export function ensureContainedDirectorySync(root, directory, mode = null) {
         throw new Error(`output directory component is not a real directory: ${current}`);
       }
     } else {
-      mkdirSync(current, { mode: 0o700 });
-      chmodSync(current, 0o700);
+      mkdirSync(current, { mode: FILE_PERMISSIONS.REPORT_DIR });
+      chmodSync(current, FILE_PERMISSIONS.REPORT_DIR);
     }
   }
   const targetReal = realpathSync(target);
@@ -225,7 +226,7 @@ export function writeContainedFileSync(root, file, content) {
   const temporary = path.join(parentReal, `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
   let descriptor;
   try {
-    descriptor = openSync(temporary, 'wx', 0o600);
+    descriptor = openSync(temporary, 'wx', FILE_PERMISSIONS.REPORT_FILE);
     writeFileSync(descriptor, content);
     fsyncSync(descriptor);
     closeSync(descriptor);
@@ -252,7 +253,7 @@ export async function writeContainedFile(root, file, content) {
   const destination = path.join(parentReal, path.basename(file));
   const temporary = path.join(parentReal, `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
   try {
-    const handle = await open(temporary, 'wx', 0o600);
+    const handle = await open(temporary, 'wx', FILE_PERMISSIONS.REPORT_FILE);
     try {
       await handle.writeFile(content);
       await handle.sync();

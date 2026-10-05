@@ -2,6 +2,7 @@ import { readdirSync, statSync } from 'fs';
 import { join, relative } from 'path';
 import { log } from './constants.mjs';
 import { containsSensitiveText, readContainedFileSync } from '../../lib/security-utils.mjs';
+import { SCAN_LIMITS } from '../../lib/config-constants.mjs';
 
 /**
  * Scan round artifacts for security issues
@@ -37,7 +38,7 @@ export function scanRoundArtifacts(roundDir) {
       const size = statSync(file).size;
       totalBytes += size;
 
-      if (fileCount > 500 || totalBytes > 20 * 1024 * 1024 || size > 2 * 1024 * 1024) {
+      if (fileCount > SCAN_LIMITS.MAX_FILES || totalBytes > SCAN_LIMITS.MAX_TOTAL_BYTES || size > SCAN_LIMITS.MAX_FILE_BYTES) {
         findings.push(`${label}: artifact scan limit exceeded`);
         continue;
       }

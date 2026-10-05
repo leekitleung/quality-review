@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
+import { TIMEOUTS } from '../skills/release-quality-review/lib/config-constants.mjs';
 
 const args = process.argv.slice(2);
 const agentIndex = args.indexOf('--agent');
@@ -32,7 +33,7 @@ if (!selected) {
   const version = spawnSync(selected, ['--version'], { encoding: 'utf8' });
   record(`${selected} CLI`, version.status === 0, version.stdout.trim() || version.stderr.trim());
   const authArgs = selected === 'codex' ? ['login', 'status'] : ['auth', 'status'];
-  const auth = spawnSync(selected, authArgs, { encoding: 'utf8', timeout: 10000 });
+  const auth = spawnSync(selected, authArgs, { encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION });
   record(`${selected} authentication`, auth.status === 0, auth.stdout.trim() || auth.stderr.trim());
 }
 

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 
 import { selectReviewers } from '../../lib/review-utils.mjs';
+import { MAX_BUFFER, TIMEOUTS } from '../../lib/config-constants.mjs';
 import { PROFILES, loadYamlProfile } from './config.mjs';
 
 export function selectGateReviewers({
@@ -19,14 +20,14 @@ export function selectGateReviewers({
     log.info(` Resident reviewers: ${JSON.stringify(yamlProfile.resident_reviewers)}`);
     log.info(` Conditional reviewers: ${JSON.stringify(yamlProfile.conditional_reviewers)}`);
     const gitOutput = execFileSync('git', ['diff', '--name-only', resolvedDiffBase], {
-      encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+      encoding: 'utf8', cwd: projectRoot, timeout: TIMEOUTS.GIT_OPERATION,
     });
     const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
-      encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+      encoding: 'utf8', cwd: projectRoot, timeout: TIMEOUTS.GIT_OPERATION,
     });
     const changedFiles = [...new Set(`${gitOutput}\n${untracked}`.split('\n').filter(file => file.trim()))];
     const diffContent = execFileSync('git', ['diff', resolvedDiffBase], {
-      encoding: 'utf8', cwd: projectRoot, timeout: 10000, maxBuffer: 10 * 1024 * 1024,
+      encoding: 'utf8', cwd: projectRoot, timeout: TIMEOUTS.GIT_OPERATION, maxBuffer: MAX_BUFFER.GIT_OUTPUT,
     });
     let selection;
     try {

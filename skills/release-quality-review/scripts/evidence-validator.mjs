@@ -24,6 +24,7 @@ import {
 } from '../lib/evidence-utils.mjs';
 import { validateReviewerEvidenceBlocks } from '../lib/reviewer-evidence-contract.mjs';
 import { resolveReportDirectory } from '../lib/security-utils.mjs';
+import { TIMEOUTS } from '../lib/config-constants.mjs';
 
 const PROJECT_ROOT = process.cwd();
 function resolveReportDirectoryOrExit() {
@@ -83,7 +84,7 @@ const log = {
 function getGitDiffFiles(diffBase) {
   try {
     const output = execFileSync('git', ['diff', '--name-only', diffBase], {
-      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000,
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: TIMEOUTS.GIT_OPERATION,
     });
     return output.trim().split('\n').filter(Boolean);
   } catch {

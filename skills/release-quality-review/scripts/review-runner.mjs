@@ -26,6 +26,7 @@ import {
   extractResultScoresFromRound, persistPhasePlan, persistPhaseResult,
 } from '../lib/phase-persistence.mjs';
 import { createCandidateRuntime } from '../lib/candidate-runtime.mjs';
+import { MAX_BUFFER, TIMEOUTS } from '../lib/config-constants.mjs';
 import {
   fetchRadarReviewerModel, selectRadarReviewerModel, validateReviewModelIdentity,
 } from '../lib/model-selector.mjs';
@@ -60,7 +61,7 @@ const CONFIG_FILE = join(SKILL_DIR, 'review-config.yaml');
 const TOOL_ENV = createSubprocessEnv();
 const OUTER_SANDBOX_ATTESTATION = outerSandboxAttestationFromEnv();
 const { env: CANDIDATE_ENV } = createCandidateRuntime(PROJECT_ROOT, 'runner', OUTER_SANDBOX_ATTESTATION);
-const REVIEWER_TIMEOUT_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_TIMEOUT_MS, 15 * 60 * 1000);
+const REVIEWER_TIMEOUT_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_TIMEOUT_MS, TIMEOUTS.REVIEWER);
 const REVIEWER_KILL_GRACE_MS = parsePositiveDuration(process.env.RELEASE_QUALITY_REVIEWER_KILL_GRACE_MS, 5000);
 const REVIEWER_RETRY_MAX = parseInt(process.env.RELEASE_QUALITY_REVIEWER_RETRY_MAX || '2', 10);
 const RETRY_BASE_DELAY_MS = parseInt(process.env.RELEASE_QUALITY_RETRY_BASE_DELAY_MS || '1000', 10);
@@ -199,7 +200,7 @@ function resolveDiffBase(ref) {
   }
   try {
     return nodeExecFileSync('git', ['merge-base', ref, 'HEAD'], {
-      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: 10000, env: TOOL_ENV,
+      encoding: 'utf-8', cwd: PROJECT_ROOT, timeout: TIMEOUTS.GIT_OPERATION, env: TOOL_ENV,
     }).trim();
   } catch {
     console.error(`Unable to resolve --base ref: ${ref}`);
@@ -301,17 +302,17 @@ function collectDryRunEvidence() {
   const changedFiles = nodeExecFileSync(
     'git',
     ['diff', '--name-only', resolvedDiffBase, ...pathArgs],
-    { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000, env: TOOL_ENV },
+    { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION, env: TOOL_ENV },
   ).trim().split('\n').filter(Boolean);
   const untracked = nodeExecFileSync(
     'git',
     ['ls-files', '--others', '--exclude-standard'],
-    { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000, env: TOOL_ENV },
+    { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION, env: TOOL_ENV },
   ).trim().split('\n').filter(file => file && (!targetPrefix || file.startsWith(`${targetPrefix}/`)));
   const diff = nodeExecFileSync(
     'git',
     ['diff', resolvedDiffBase, ...pathArgs],
-    { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000, maxBuffer: 10 * 1024 * 1024, env: TOOL_ENV },
+    { cwd: PROJECT_ROOT, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION, maxBuffer: MAX_BUFFER.GIT_OUTPUT, env: TOOL_ENV },
   );
   return {
     timestamp: new Date().toISOString(),
@@ -340,13 +341,13 @@ async function getGitInfo() {
   try {
     const [commit, tree, status] = await Promise.all([
       execFileAsync('git', ['rev-parse', 'HEAD'], {
-        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION,
       }),
       execFileAsync('git', ['rev-parse', 'HEAD^{tree}'], {
-        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION,
       }),
       execFileAsync('git', ['status', '--short'], {
-        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 10000,
+        cwd: PROJECT_ROOT, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION,
       }),
     ]);
     return {
@@ -558,7 +559,7 @@ async function runGateCheck(roundDir, profileName, round) {
         cwd: PROJECT_ROOT,
         env: TOOL_ENV,
         encoding: 'utf8',
-        maxBuffer: 20 * 1024 * 1024,
+        maxBuffer: MAX_BUFFER.GATE_OUTPUT,
       });
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
@@ -585,8 +586,8 @@ async function persistRoundEvidenceBeforeReview(roundDir, profileName, round) {
       cwd: PROJECT_ROOT,
       env: TOOL_ENV,
       encoding: 'utf8',
-      timeout: 10 * 60 * 1000,
-      maxBuffer: 20 * 1024 * 1024,
+      timeout: TIMEOUTS.GATE_SUBPROCESS,
+      maxBuffer: MAX_BUFFER.GATE_OUTPUT,
     });
   } catch (error) {
     if (error.exitCode !== 1) throw error;
@@ -767,7 +768,7 @@ async function runSingleReviewIteration(profileConfig, currentRound, onReviewCom
     getAgentInvocation, validatePacket, log, colors: c,
     onReviewComplete, evidence,
     preflightAgent: agent => execFileAsync(agent, ['--help'], {
-      cwd: PROJECT_ROOT, timeout: 10000, encoding: 'utf8', env: TOOL_ENV,
+      cwd: PROJECT_ROOT, timeout: TIMEOUTS.GIT_OPERATION, encoding: 'utf8', env: TOOL_ENV,
     }),
   });
 

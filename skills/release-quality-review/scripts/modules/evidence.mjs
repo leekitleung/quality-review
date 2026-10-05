@@ -10,6 +10,7 @@ import {
 } from '../../lib/review-utils.mjs';
 import { createCandidateRuntime } from '../../lib/candidate-runtime.mjs';
 import { INSTALL_GATE_COMMAND } from '../../lib/automated-gate-policy.mjs';
+import { TIMEOUTS } from '../../lib/config-constants.mjs';
 import { resolveVerificationCommands, validateVerificationCommands } from './verification-policy.mjs';
 
 export function formatGitEvidenceFailure(error) {
@@ -60,10 +61,10 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
   // Git info
   try {
     const changedFiles = gitExecFile('git', ['diff', '--name-only', resolvedDiffBase], {
-      encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+      encoding: 'utf8', cwd: projectRoot, timeout: TIMEOUTS.GIT_OPERATION,
     }).trim().split('\n').filter(Boolean);
     const numstat = gitExecFile('git', ['diff', '--numstat', resolvedDiffBase], {
-      encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+      encoding: 'utf8', cwd: projectRoot, timeout: TIMEOUTS.GIT_OPERATION,
     }).trim().split('\n').filter(Boolean);
     const totals = numstat.reduce((sum, line) => {
       const [added, deleted] = line.split('\t');
@@ -74,16 +75,16 @@ export function collectEvidence(config, projectRoot, diffBase, resolvedDiffBase,
     }, { added: 0, deleted: 0 });
     evidence.git = {
       branch: gitExecFile('git', ['branch', '--show-current'], {
-        encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+        encoding: 'utf8', cwd: projectRoot, timeout: TIMEOUTS.GIT_OPERATION,
       }).trim(),
       commit: gitExecFile('git', ['rev-parse', 'HEAD'], {
-        encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+        encoding: 'utf8', cwd: projectRoot, timeout: TIMEOUTS.GIT_OPERATION,
       }).trim().substring(0, 8),
       status: gitExecFile('git', ['status', '--short'], {
-        encoding: 'utf8', cwd: projectRoot, timeout: 10000,
+        encoding: 'utf8', cwd: projectRoot, timeout: TIMEOUTS.GIT_OPERATION,
       }).trim(),
       diff: gitExecFile('git', ['diff', '--stat', resolvedDiffBase], {
-        encoding: 'utf-8', cwd: projectRoot, timeout: 10000,
+        encoding: 'utf-8', cwd: projectRoot, timeout: TIMEOUTS.GIT_OPERATION,
       }).trim(),
       changedFiles,
     };
@@ -197,7 +198,7 @@ export function validateEvidenceCompleteness(evidence, projectRoot) {
  * @returns {object} Evidence record
  */
 export function runEvidenceCommand(cmd, cwd, executor = execSync) {
-  const timeoutMs = 30000;
+  const timeoutMs = TIMEOUTS.EVIDENCE_COMMAND;
   const started = new Date();
   try {
     const rawOutput = executor(cmd, { cwd, encoding: 'utf-8', timeout: timeoutMs });
@@ -287,7 +288,7 @@ export function scanCircularDependencies(projectRoot) {
   const tracked = execFileSync('git', ['ls-files', 'skills', 'scripts'], {
     cwd: projectRoot,
     encoding: 'utf8',
-    timeout: 30000,
+    timeout: TIMEOUTS.REPO_SCAN,
   }).trim().split('\n').filter(file => /\.(?:js|mjs|ts)$/.test(file));
   const files = new Set(tracked.map(file => resolve(projectRoot, file)));
   const graph = new Map();
@@ -371,7 +372,7 @@ export function runAutomatedChecks(
   try {
     const output = execSync(
       'find skills scripts .claude .agents -type f \\( -name "*.ts" -o -name "*.js" -o -name "*.mjs" \\) -exec wc -l {} + 2>/dev/null | sort -rn | head -20',
-      { encoding: 'utf-8', cwd: projectRoot, timeout: 30000 }
+      { encoding: 'utf-8', cwd: projectRoot, timeout: TIMEOUTS.REPO_SCAN }
     );
     const lines = output.trim().split('\n');
     for (const line of lines) {

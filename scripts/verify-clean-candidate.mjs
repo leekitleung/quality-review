@@ -8,6 +8,7 @@ import {
   createCandidateSubprocessEnv, createSubprocessEnv, redactSensitiveText, resolveWithinRoot, writeContainedFile,
   outerSandboxAttestationFromEnv, wrapCandidateCommand,
 } from '../skills/release-quality-review/lib/security-utils.mjs';
+import { MAX_BUFFER, TIMEOUTS } from '../skills/release-quality-review/lib/config-constants.mjs';
 import {
   CLEAN_CANDIDATE_COMMANDS, findTrivialVerificationScripts, hasConcreteVerificationOutput,
 } from '../skills/release-quality-review/lib/review-utils.mjs';
@@ -45,7 +46,7 @@ function run(id, command, args, cwd, env = subprocessEnv, displayCommand = null,
   const startedAt = new Date().toISOString();
   const executable = sandboxOptions ? wrapCandidateCommand(command, args, sandboxOptions) : { command, args };
   const result = spawnSync(executable.command, executable.args, {
-    cwd, encoding: 'utf8', timeout: 180000, maxBuffer: 8 * 1024 * 1024, env,
+    cwd, encoding: 'utf8', timeout: TIMEOUTS.ROLLBACK_OPERATION, maxBuffer: MAX_BUFFER.ROLLBACK_OUTPUT, env,
   });
   const raw = `${result.stdout || ''}${result.stderr || ''}`;
   const redacted = redactSensitiveText(raw);

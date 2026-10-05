@@ -5,11 +5,12 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import {
   createCandidateSubprocessEnv, ensureContainedDirectorySync, isPathWithin, wrapCandidateCommand,
 } from './security-utils.mjs';
+import { TIMEOUTS } from './config-constants.mjs';
 
 export function resolveRepositoryContext(projectRoot, gitExecFile = nodeExecFileSync) {
   const projectPath = resolve(projectRoot);
   const repositoryRoot = resolve(gitExecFile('git', ['rev-parse', '--show-toplevel'], {
-    cwd: projectPath, encoding: 'utf8', timeout: 10000,
+    cwd: projectPath, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION,
   }).trim());
   const projectRelative = relative(repositoryRoot, projectPath);
   if (!isPathWithin(repositoryRoot, projectPath) || isAbsolute(projectRelative)) {
@@ -66,7 +67,7 @@ export function createCandidateRuntime(projectRoot, label, outerSandboxAttestati
   }
 
   function readIdentity(root) {
-    const options = { cwd: root, encoding: 'utf8', timeout: 10000, sandboxReadOnlyRoots: [root] };
+    const options = { cwd: root, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION, sandboxReadOnlyRoots: [root] };
     return {
       commit: execFileSync('git', ['rev-parse', 'HEAD'], options).trim(),
       tree: execFileSync('git', ['rev-parse', 'HEAD^{tree}'], options).trim(),
@@ -80,7 +81,7 @@ export function createCandidateRuntime(projectRoot, label, outerSandboxAttestati
     const projectCheckout = join(repositoryCheckout, projectRelative);
     if (!existsSync(repositoryCheckout)) {
       execFileSync('git', ['clone', '--quiet', '--no-hardlinks', repositoryRoot, repositoryCheckout], {
-        cwd: repositoryRoot, encoding: 'utf8', timeout: 30000,
+        cwd: repositoryRoot, encoding: 'utf8', timeout: TIMEOUTS.GIT_CLONE,
         sandboxReadOnlyRoots: [repositoryRoot],
         sandboxWriteRoots: [isolatedHome, checkoutParent],
       });

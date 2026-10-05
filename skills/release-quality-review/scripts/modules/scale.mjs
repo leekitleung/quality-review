@@ -1,5 +1,6 @@
 import { execFileSync } from 'child_process';
 import { colors } from './constants.mjs';
+import { TIMEOUTS } from '../../lib/config-constants.mjs';
 
 /**
  * Detect the scale of changes based on git diff stats
@@ -12,7 +13,7 @@ export function detectChangeScale(projectRoot, diffBase) {
     const diff = execFileSync('git', ['diff', '--numstat', diffBase], {
       encoding: 'utf-8',
       cwd: projectRoot,
-      timeout: 10000,
+      timeout: TIMEOUTS.GIT_OPERATION,
     });
 
     let totalFiles = 0;
@@ -31,7 +32,7 @@ export function detectChangeScale(projectRoot, diffBase) {
     const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard'], {
       encoding: 'utf-8',
       cwd: projectRoot,
-      timeout: 10000,
+      timeout: TIMEOUTS.GIT_OPERATION,
     }).trim().split('\n').filter(Boolean);
     totalFiles += untracked.length;
 

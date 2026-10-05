@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { TIMEOUTS } from '../skills/release-quality-review/lib/config-constants.mjs';
 
 const projectRoot = process.cwd();
 const workDir = mkdtempSync(join(tmpdir(), 'quality-review-package-'));
@@ -15,7 +16,7 @@ const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
 const npmArgs = args => process.platform === 'win32' ? [npmCli, ...args] : args;
 try {
   const packOutput = execFileSync(npmCommand, npmArgs(['pack', '--json', '--pack-destination', workDir]), {
-    cwd: projectRoot, encoding: 'utf8', timeout: 60000,
+    cwd: projectRoot, encoding: 'utf8', timeout: TIMEOUTS.NPM_OPERATION,
   });
   const pack = JSON.parse(packOutput)[0];
   if (!pack?.filename || !Number.isInteger(pack.entryCount) || pack.entryCount < 1) {
@@ -28,7 +29,7 @@ try {
   const tarball = join(workDir, pack.filename);
   const consumer = join(workDir, 'consumer');
   execFileSync(npmCommand, npmArgs(['install', '--ignore-scripts', '--no-audit', '--no-fund', '--prefix', consumer, tarball]), {
-    cwd: projectRoot, encoding: 'utf8', timeout: 60000,
+    cwd: projectRoot, encoding: 'utf8', timeout: TIMEOUTS.NPM_OPERATION,
   });
   const installedRoot = join(consumer, 'node_modules', 'quality-review-skills');
   const installedManifest = JSON.parse(readFileSync(join(installedRoot, 'package.json'), 'utf8'));

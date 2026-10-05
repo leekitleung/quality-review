@@ -10,6 +10,7 @@ import {
 } from '../../lib/review-utils.mjs';
 import { INSTALL_GATE_COMMAND, requiredCommandGateKeys } from '../../lib/automated-gate-policy.mjs';
 import { readContainedFileSync } from '../../lib/security-utils.mjs';
+import { TIMEOUTS } from '../../lib/config-constants.mjs';
 import { validCandidateCheckoutEvidence, validCommandEvidence } from './evidence.mjs';
 import { resolveVerificationCommands } from './verification-policy.mjs';
 
@@ -26,13 +27,13 @@ export function loadPersistedGateEvidence({ roundDir, projectRoot, profile, conf
   const automatedContent = readContainedFileSync(roundDir, automatedPath, 'utf8');
   const automatedChecks = JSON.parse(automatedContent);
   const currentCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
-    cwd: projectRoot, encoding: 'utf8', timeout: 10000,
+    cwd: projectRoot, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION,
   }).trim();
   const currentTree = execFileSync('git', ['rev-parse', 'HEAD^{tree}'], {
-    cwd: projectRoot, encoding: 'utf8', timeout: 10000,
+    cwd: projectRoot, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION,
   }).trim();
   const currentStatus = execFileSync('git', ['status', '--short'], {
-    cwd: projectRoot, encoding: 'utf8', timeout: 10000,
+    cwd: projectRoot, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION,
   }).trim();
   if (currentStatus !== '' || metadata.candidate_commit !== currentCommit ||
       metadata.candidate_tree !== currentTree || metadata.automated_checks_sha256 !== sha256(automatedContent)) {
