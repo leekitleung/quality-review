@@ -10,6 +10,7 @@ import { lstat, open, readFile, realpath, rename, rm, stat } from 'node:fs/promi
 
 import { buildCandidateSandboxProfile } from './sandbox-profile.mjs';
 import { FILE_PERMISSIONS } from './config-constants.mjs';
+import { gateError } from './error-messages.mjs';
 
 export function isPathWithin(root, candidate) {
   const rootPath = path.resolve(root);
@@ -106,9 +107,13 @@ function useVerifiedOuterSandbox(command, args, {
     path.isAbsolute(readCanary || '') && path.isAbsolute(writeCanary || '') && existsSync(readCanary) &&
     !existsSync(writeCanary) &&
     declaredRoots.every(root => !isPathWithin(root, readCanary) && !isPathWithin(root, writeCanary));
-  if (!canariesAreValid) throw new Error('candidate filesystem sandbox unavailable; nested execution fails closed');
+  if (!canariesAreValid) throw gateError('Sandbox', 'nested candidate execution',
+    'outer sandbox attestation canaries are missing or invalid',
+    'run the candidate from a sandboxed host (macOS or an attested container)');
   if (requireExactWriteIsolation) {
-    throw new Error('reviewer filesystem sandbox unavailable; exact write isolation is required');
+    throw gateError('Sandbox', 'reviewer execution',
+      'exact write isolation is unavailable on this host',
+      'run reviewers under macOS sandbox-exec or provide outer-sandbox attestation');
   }
   const capability = spawnSync(process.execPath, ['-e', `
     const fs = require('node:fs');
@@ -119,7 +124,9 @@ function useVerifiedOuterSandbox(command, args, {
   `], { encoding: 'utf8' });
   if (capability.status !== 0 || existsSync(writeCanary)) {
     rmSync(writeCanary, { force: true });
-    throw new Error('outer sandbox capability check failed closed');
+    throw gateError('Sandbox', 'capability check',
+      'outer sandbox failed the read/write canary probe',
+      'verify the attestation environment before running the gate');
   }
   return { command, args };
 }
@@ -131,7 +138,9 @@ export function wrapCandidateCommand(command, args, {
   if (process.platform !== 'darwin') {
     const isDockerContainer = process.platform === 'linux' && existsSync('/.dockerenv');
     if (!isDockerContainer || !outerSandboxAttestation) {
-      throw new Error(`candidate filesystem sandbox is unavailable on ${process.platform}`);
+      throw gateError('Sandbox', 'candidate initialization',
+        `candidate filesystem sandbox is unavailable on ${process.platform}`,
+        'run on macOS, or inside an attested Linux container');
     }
     return useVerifiedOuterSandbox(command, args, {
       allowedRoots, readOnlyRoots, writeRoots, outerSandboxAttestation, requireExactWriteIsolation,
@@ -145,10 +154,14 @@ export function wrapCandidateCommand(command, args, {
       allowedRoots, readOnlyRoots, writeRoots, outerSandboxAttestation, requireExactWriteIsolation,
     });
   }
-  if (probe.status !== 0) throw new Error('candidate filesystem sandbox probe failed closed');
+  if (probe.status !== 0) throw gateError('Sandbox', 'probe',
+      'sandbox-exec probe failed unexpectedly', 'verify that macOS seatbelt is available');
   hostHome ||= userInfo().homedir;
   const writable = [...allowedRoots, ...writeRoots];
-  if (readOnlyRoots.length === 0 && writable.length === 0) throw new Error('candidate sandbox roots are required');
+  if (readOnlyRoots.length === 0 && writable.length === 0) {
+    throw gateError('Sandbox', 'configuration', 'candidate sandbox roots are required',
+      'pass at least one read-only or writable root');
+  }
   const canonicalize = root => existsSync(root) ? realpathSync(path.resolve(root)) : path.resolve(root);
   const readable = [...new Set([...readOnlyRoots, ...writable].map(canonicalize))];
   const roots = [...new Set(writable.map(canonicalize))];
@@ -160,7 +173,10 @@ export function wrapCandidateCommand(command, args, {
   const profile = buildCandidateSandboxProfile({
     readRoots, writeRoots: [...roots, '/dev'], allowNetwork,
   });
-  if (readable.some(root => root === realpathSync(hostHome))) throw new Error('host home cannot be a candidate sandbox root');
+  if (readable.some(root => root === realpathSync(hostHome))) {
+    throw gateError('Sandbox', 'configuration', 'host home cannot be a candidate sandbox root',
+      'isolate the candidate home via createCandidateSubprocessEnv');
+  }
   return { command: '/usr/bin/sandbox-exec', args: ['-p', profile, command, ...args] };
 }
 

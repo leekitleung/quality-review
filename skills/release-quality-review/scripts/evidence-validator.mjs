@@ -100,10 +100,10 @@ function checkSelfReferencePatterns(content, reviewer) {
 
   // Pattern 1: "我们添加" / "我写的" / "上面的代码"
   const selfRefPatterns = [
-    { pattern: /我们添加|我们修改|我们实现|我们创建/g, desc: '使用"我们"' },
-    { pattern: /我写的|我添加的|我实现的/g, desc: '使用"我"' },
-    { pattern: /上面的代码|刚才的|刚才实现/g, desc: '引用刚写的代码' },
-    { pattern: /按照上述|根据上面|依据上文/g, desc: '引用实现过程' },
+    { pattern: /我们添加|我们修改|我们实现|我们创建/g, desc: 'first-person plural self-reference ("we implemented")' },
+    { pattern: /我写的|我添加的|我实现的/g, desc: 'first-person self-reference ("I wrote")' },
+    { pattern: /上面的代码|刚才的|刚才实现/g, desc: 'references code written earlier in the session' },
+    { pattern: /按照上述|根据上面|依据上文/g, desc: 'references the implementation process' },
   ];
 
   for (const { pattern, desc } of selfRefPatterns) {
@@ -138,7 +138,7 @@ function verifyFileLineReferences(content, roundDir) {
     if (!directPath) {
       violations.push({
         type: 'invalid_file_reference',
-        desc: `引用了仓库外的文件: ${ref.file}:${ref.line}`,
+        desc: `references a file outside the repository: ${ref.file}:${ref.line}`,
         ref: ref.full,
       });
       continue;
@@ -170,7 +170,7 @@ function verifyFileLineReferences(content, roundDir) {
     if (!fileExists) {
       violations.push({
         type: 'invalid_file_reference',
-        desc: `引用了不存在的文件: ${ref.file}:${ref.line}`,
+        desc: `references a nonexistent file: ${ref.file}:${ref.line}`,
         ref: ref.full
       });
     } else if (checkedPath && ref.line > 0) {
@@ -182,14 +182,14 @@ function verifyFileLineReferences(content, roundDir) {
         if (ref.line > lineCount) {
           violations.push({
             type: 'invalid_line_reference',
-            desc: `引用了 ${ref.file}:${ref.line} 但文件仅有 ${lineCount} 行`,
+            desc: `references ${ref.file}:${ref.line} but the file has only ${lineCount} lines`,
             ref: ref.full
           });
         } else if (ref.line > lineCount * 0.95) {
           // Warning for near-end-of-file references
           warnings.push({
             type: 'suspicious_line_reference',
-            desc: `引用了 ${ref.file}:${ref.line}（接近文件末尾 ${lineCount} 行）`,
+            desc: `references ${ref.file}:${ref.line} (near the end of a ${lineCount}-line file)`,
             ref: ref.full
           });
         }
@@ -214,8 +214,8 @@ function checkEvidenceQuality(content, requireCommandEvidence = false) {
 
   // Check for vague evidence
   const vaguePatterns = [
-    { pattern: /代码看起来正确|看起来没问题|应该能工作|代码正确/g, desc: '主观描述' },
-    { pattern: /根据经验|通常|一般说来/g, desc: '主观判断' },
+    { pattern: /代码看起来正确|看起来没问题|应该能工作|代码正确/g, desc: 'subjective description' },
+    { pattern: /根据经验|通常|一般说来/g, desc: 'subjective judgment' },
   ];
 
   for (const { pattern, desc } of vaguePatterns) {
@@ -230,7 +230,7 @@ function checkEvidenceQuality(content, requireCommandEvidence = false) {
   if (!hasMinimumEvidence) {
     violations.push({
       type: 'insufficient_evidence',
-      desc: `证据不足：仅 ${fileLineRefs.length} 个文件引用, ${commandOutputs.length} 个命令输出, ${testOutputs.length} 个测试结果`,
+      desc: `insufficient evidence: ${fileLineRefs.length} file references, ${commandOutputs.length} command outputs, ${testOutputs.length} test results`,
       minRefs: 5,
       minCommands: 1,
     });
@@ -238,7 +238,7 @@ function checkEvidenceQuality(content, requireCommandEvidence = false) {
   if (requireCommandEvidence && commandOutputs.length === 0) {
     violations.push({
       type: 'missing_command_evidence',
-      desc: 'status: pass 的 reviewer packet 必须包含至少一个带 exit 0 和输出摘要的共享命令证据',
+      desc: 'a reviewer packet with status: pass must include at least one shared command evidence with exit 0 and an output summary',
     });
   }
 
@@ -252,10 +252,10 @@ function checkEvidenceQuality(content, requireCommandEvidence = false) {
   const hasRealEvidence = hasTestOutput || hasCommandOutput || hasFileRefs;
 
   const hollowPatterns = [
-    { pattern: /Self Assessment(?!.*evidence)/i, desc: '自我评估模式（应使用独立审查）', onlyIfNoEvidence: true },
-    { pattern: /需要人工补充|人工评审(?!.*自动化)/i, desc: '需要人工介入（应自动完成）', onlyIfNoEvidence: true },
-    { pattern: /需要进一步检查|需确认|further check(?!.*已完成)/i, desc: '未完成审查', onlyIfNoEvidence: true },
-    { pattern: /\*\*(N\/A|n\/a)\*\*/i, desc: 'N/A 未提供适用性证据', onlyIfNoEvidence: true },
+    { pattern: /Self Assessment(?!.*evidence)/i, desc: 'self-assessment pattern (independent review required)', onlyIfNoEvidence: true },
+    { pattern: /需要人工补充|人工评审(?!.*自动化)/i, desc: 'requires manual intervention (should be automated)', onlyIfNoEvidence: true },
+    { pattern: /需要进一步检查|需确认|further check(?!.*已完成)/i, desc: 'review not completed', onlyIfNoEvidence: true },
+    { pattern: /\*\*(N\/A|n\/a)\*\*/i, desc: 'N/A without applicability evidence', onlyIfNoEvidence: true },
   ];
 
   for (const { pattern, desc, onlyIfNoEvidence } of hollowPatterns) {
@@ -273,10 +273,10 @@ function checkEvidenceQuality(content, requireCommandEvidence = false) {
   // Detect implementation steps being described as goals
   // Use context to reduce false positives
   const goalViolationPatterns = [
-    { pattern: /实现了.*功能|实现了.*模块|实现了.*组件/g, desc: '描述实现而非目标达成', falsePositiveContext: ['目标', '验收', '需求'] },
-    { pattern: /按照.*步骤.*实现|分.*步骤.*实现|逐步.*实现/g, desc: '描述实现步骤而非最终状态' },
-    { pattern: /添加了.*代码|写了.*函数|创建了.*类/g, desc: '描述代码变更而非功能结果', falsePositiveContext: ['为了', '实现', '满足'] },
-    { pattern: /我们.*实现|我们.*添加|我.*写了/g, desc: '自我描述实现过程' },
+    { pattern: /实现了.*功能|实现了.*模块|实现了.*组件/g, desc: 'describes implementation instead of goal completion', falsePositiveContext: ['目标', '验收', '需求'] },
+    { pattern: /按照.*步骤.*实现|分.*步骤.*实现|逐步.*实现/g, desc: 'describes implementation steps instead of the final state' },
+    { pattern: /添加了.*代码|写了.*函数|创建了.*类/g, desc: 'describes code changes instead of functional outcomes', falsePositiveContext: ['为了', '实现', '满足'] },
+    { pattern: /我们.*实现|我们.*添加|我.*写了/g, desc: 'self-describes the implementation process' },
   ];
 
   for (const { pattern, desc, falsePositiveContext } of goalViolationPatterns) {
@@ -319,14 +319,14 @@ function checkEvidenceQuality(content, requireCommandEvidence = false) {
     if (claimedScore >= 85 && evidenceCount < 3) {
       violations.push({
         type: 'score_evidence_inconsistency',
-        desc: `声称 ${claimedScore} 分但仅有 ${evidenceCount} 个证据（高分低证）`,
+        desc: `claims ${claimedScore} points with only ${evidenceCount} evidence items (high score, low evidence)`,
         suggestedScore: Math.min(claimedScore, 60)
       });
     } else if (claimedScore >= 90 && evidenceCount < 5) {
       // Even stricter for claiming pass
       violations.push({
         type: 'score_evidence_inconsistency',
-        desc: `声称 ${claimedScore} 分（通过）但仅有 ${evidenceCount} 个证据，不足 5 个`,
+        desc: `claims ${claimedScore} points (pass) with only ${evidenceCount} evidence items, fewer than 5`,
         suggestedScore: Math.min(claimedScore, 55)
       });
     }
@@ -355,7 +355,7 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity, auto
     return {
       reviewer,
       status: 'violations',
-      violations: [{ type: 'missing_score_report', desc: '缺少必需的 score.md，不能验证 reviewer 证据' }],
+      violations: [{ type: 'missing_score_report', desc: 'missing required score.md; reviewer evidence cannot be verified' }],
       warnings: [],
       totalViolations: 1,
       totalWarnings: 0,
@@ -370,7 +370,7 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity, auto
   let packet = null;
 
   if (!existsSync(resultPath)) {
-    allViolations.push({ type: 'missing_result_packet', desc: '缺少必需的 result.yaml，无法绑定候选身份' });
+    allViolations.push({ type: 'missing_result_packet', desc: 'missing required result.yaml; candidate identity cannot be bound' });
   } else {
     const yamlContent = readFileSync(resultPath, 'utf8');
     const contract = validateResultYamlContract(yamlContent);
@@ -381,7 +381,7 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity, auto
     if (!candidateIdentity.valid || packet.candidateCommit !== candidateIdentity.commit || packet.candidateTree !== candidateIdentity.tree) {
       allViolations.push({
         type: 'candidate_identity_mismatch',
-        desc: `reviewer packet 未绑定当前 candidate commit/tree`,
+        desc: `reviewer packet is not bound to the current candidate commit/tree`,
       });
     }
     if (!candidateIdentity.reviewIdentityValid ||
@@ -389,7 +389,7 @@ function validateReviewer(roundDir, reviewer, diffFiles, candidateIdentity, auto
         packet.reviewModel !== candidateIdentity.model) {
       allViolations.push({
         type: 'review_backend_model_mismatch',
-        desc: 'reviewer packet 未绑定本轮 backend/model',
+        desc: 'reviewer packet is not bound to this round backend/model',
       });
     }
   }
@@ -456,10 +456,10 @@ function generateReport(results) {
     if (result.quality) {
       output += `  Evidence Quality:\n`;
       output += `    - File:Line references: ${result.quality.fileLineRefs}`;
-      if (result.quality.fileLineRefs < 5) output += ` ${c.red}(需要 ≥5)${c.reset}`;
+      if (result.quality.fileLineRefs < 5) output += ` ${c.red}(requires >= 5)${c.reset}`;
       output += '\n';
       output += `    - Command outputs: ${result.quality.commandOutputs}`;
-      if (result.quality.commandOutputs < 1) output += ` ${c.red}(需要 ≥1)${c.reset}`;
+      if (result.quality.commandOutputs < 1) output += ` ${c.red}(requires >= 1)${c.reset}`;
       output += '\n';
       output += `    - Test results: ${result.quality.testOutputs}\n`;
 
@@ -467,7 +467,7 @@ function generateReport(results) {
       if (result.quality.claimedScore !== null) {
         output += `    - Claimed Score: ${result.quality.claimedScore}/100\n`;
         if (result.quality.claimedScore >= 85 && result.quality.evidenceCount < 5) {
-          output += `      ${c.red}⚠️ 高分低证: ${result.quality.claimedScore}分 仅 ${result.quality.evidenceCount} 个证据${c.reset}\n`;
+          output += `      ${c.red}⚠️ High score, low evidence: ${result.quality.claimedScore}/100 with only ${result.quality.evidenceCount} evidence items${c.reset}\n`;
         }
       }
 
@@ -632,7 +632,7 @@ function main({ targetRound, targetReviewer, diffBase }) {
       status: 'violations',
       violations: [{
         type: 'insufficient_reviewers',
-        desc: `仅 ${reviewers.length} 个 reviewer（至少需要 ${MIN_REVIEWERS} 个）。缺少 score.md 和 result.yaml。`,
+        desc: `only ${reviewers.length} reviewer(s); at least ${MIN_REVIEWERS} required. score.md and result.yaml are missing.`,
       }],
       warnings: [],
       quality: {

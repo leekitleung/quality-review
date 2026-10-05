@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 export const CODEX_RADAR_SUMMARY_URL = 'https://codexradar.com/current.json';
-export const RADAR_ATTRIBUTION = '数据来自 Codex 雷达 codexradar.com';
+export const RADAR_ATTRIBUTION = 'Data from Codex Radar (codexradar.com)';
 export const DEFAULT_RADAR_MAX_AGE_HOURS = 48;
 
 const LIGHTWEIGHT_EFFORTS = new Set(['low', 'medium']);

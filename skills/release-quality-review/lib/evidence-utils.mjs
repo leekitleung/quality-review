@@ -38,10 +38,10 @@ export function checkMissingEvidenceOutput(content) {
   const violations = [];
   const commandEvidence = extractCommandEvidence(content);
   const claims = [
-    { pattern: /测试通过|tests? passed|test.*success/gi, command: /\btest\b/i, need: 'npm test 的 exit 0 与输出摘要' },
-    { pattern: /类型检查通过|typecheck.*passed|tsc.*success/gi, command: /\btypecheck\b|\btsc\b/i, need: 'typecheck 的 exit 0 与输出摘要' },
-    { pattern: /构建成功|build.*success|build.*pass/gi, command: /\bbuild\b/i, need: 'build 的 exit 0 与输出摘要' },
-    { pattern: /功能正常|功能正确|工作正常/g, command: null, need: '实际命令的 exit 0 与输出摘要' },
+    { pattern: /测试通过|tests? passed|test.*success/gi, command: /\btest\b/i, need: 'exit 0 and output summary from npm test' },
+    { pattern: /类型检查通过|typecheck.*passed|tsc.*success/gi, command: /\btypecheck\b|\btsc\b/i, need: 'exit 0 and output summary from typecheck' },
+    { pattern: /构建成功|build.*success|build.*pass/gi, command: /\bbuild\b/i, need: 'exit 0 and output summary from the build' },
+    { pattern: /功能正常|功能正确|工作正常/g, command: null, need: 'exit 0 and output summary from the actual command' },
   ];
 
   for (const claim of claims) {
@@ -53,7 +53,7 @@ export function checkMissingEvidenceOutput(content) {
         type: 'missing_evidence_output',
         claim: claim.pattern.source,
         need: claim.need,
-        desc: '声称“通过”但没有结构化命令输出',
+        desc: 'claims success without structured command output',
       });
     }
   }
@@ -93,7 +93,7 @@ export function checkFindingEvidenceBindings(findings, blockersContent) {
     if (!section) {
       violations.push({
         type: 'missing_finding_section',
-        desc: `未找到与 finding 绑定的 blockers.md 章节: ${String(finding).slice(0, 120)}`,
+        desc: `no blockers.md section bound to finding: ${String(finding).slice(0, 120)}`,
       });
       continue;
     }
@@ -101,7 +101,7 @@ export function checkFindingEvidenceBindings(findings, blockersContent) {
     if (references.length === 0) {
       violations.push({
         type: 'unbound_finding_evidence',
-        desc: `finding 章节没有 file:line 证据: ${String(finding).slice(0, 120)}`,
+        desc: `finding section has no file:line evidence: ${String(finding).slice(0, 120)}`,
       });
       continue;
     }
@@ -111,7 +111,7 @@ export function checkFindingEvidenceBindings(findings, blockersContent) {
     if (affected.length === 0) {
       violations.push({
         type: 'missing_finding_affected_files',
-        desc: `finding 章节缺少 Affected files 字段: ${String(finding).slice(0, 120)}`,
+        desc: `finding section is missing an Affected files field: ${String(finding).slice(0, 120)}`,
       });
       continue;
     }
@@ -119,7 +119,7 @@ export function checkFindingEvidenceBindings(findings, blockersContent) {
     if (!affected.every(file => cited.includes(file))) {
       violations.push({
         type: 'irrelevant_finding_evidence',
-        desc: `finding 引用未绑定其 Affected files: ${String(finding).slice(0, 120)}`,
+        desc: `finding evidence is not bound to its Affected files: ${String(finding).slice(0, 120)}`,
       });
     }
   }

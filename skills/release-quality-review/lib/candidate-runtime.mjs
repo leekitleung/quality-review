@@ -6,6 +6,7 @@ import {
   createCandidateSubprocessEnv, ensureContainedDirectorySync, isPathWithin, wrapCandidateCommand,
 } from './security-utils.mjs';
 import { TIMEOUTS } from './config-constants.mjs';
+import { gateError } from './error-messages.mjs';
 
 export function resolveRepositoryContext(projectRoot, gitExecFile = nodeExecFileSync) {
   const projectPath = resolve(projectRoot);
@@ -14,7 +15,9 @@ export function resolveRepositoryContext(projectRoot, gitExecFile = nodeExecFile
   }).trim());
   const projectRelative = relative(repositoryRoot, projectPath);
   if (!isPathWithin(repositoryRoot, projectPath) || isAbsolute(projectRelative)) {
-    throw new Error('project root must be contained by its Git repository');
+    throw gateError('Repository', 'context resolution',
+      'project root must be contained by its Git repository',
+      'run the gate from inside the repository checkout');
   }
   return Object.freeze({ repositoryRoot, projectRelative });
 }

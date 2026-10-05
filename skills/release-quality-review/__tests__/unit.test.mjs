@@ -934,7 +934,7 @@ test.describe('adversarial review detection', () => {
     const content = '测试通过，功能正常';
     const violations = checkMissingEvidenceOutput(content);
     assertEqual(violations.length, 2);
-    assertEqual(violations[0].need, 'npm test 的 exit 0 与输出摘要');
+    assertEqual(violations[0].need, 'exit 0 and output summary from npm test');
   });
 
   test('allows valid test output citation', () => {
@@ -1031,7 +1031,7 @@ test.describe('adversarial review detection', () => {
     const content = '构建成功，代码可以发布';
     const violations = checkMissingEvidenceOutput(content);
     assertEqual(violations.length, 1);
-    assertEqual(violations[0].need, 'build 的 exit 0 与输出摘要');
+    assertEqual(violations[0].need, 'exit 0 and output summary from the build');
   });
 });
 
