@@ -73,6 +73,15 @@ The canonical source is `skills/release-quality-review/`. Claude and Codex
 adapters are generated from `skill-registry.yaml`; do not edit generated
 adapters directly.
 
+### Platform support
+
+The candidate and reviewer filesystem sandbox is native on macOS and verified
+inside attested Linux containers; on Windows it fails closed by design. Windows
+native supports the unit test suite (121/122, POSIX fixtures skip), typecheck,
+skill sync, and package verification; full gate collection requires macOS or an
+attested container. See [docs/WINDOWS-SETUP.md](docs/WINDOWS-SETUP.md) for the
+capability matrix and WSL2 guidance.
+
 ```bash
 # Regenerate adapters and lock hashes after canonical changes
 npm run skill:sync
@@ -274,6 +283,10 @@ Troubleshooting:
   shell or supported CI runner, not from inside another workspace sandbox; then
   resume the same round with its locked backend and model. The runner includes
   this recovery action directly in Git evidence-collection errors.
+- `[Sandbox] candidate initialization failed: ... unavailable on win32`:
+  expected on Windows native; run gate collection on macOS or inside an attested
+  Linux container. Tests and non-sandboxed scripts still work natively — see
+  [docs/WINDOWS-SETUP.md](docs/WINDOWS-SETUP.md).
 
 `skills.lock.yaml` records canonical and adapter SHA-256 hashes. CI runs the
 drift check, tests, syntax validation, and review-gate dry-run.
