@@ -63,6 +63,7 @@ locally reproduced it plus two more findings, all fixed:
 | CI `skill:check` failed on macOS ("Skill drift detected") | `sync-skills.mjs` hashed `path.relative()` output (host separators) and raw bytes (CRLF on autocrlf checkouts), so the lock hash was host-dependent | POSIX-normalized paths + LF-folded content before hashing; adapter drift comparison normalized likewise; 2 spawned-CLI regression tests; lock recomputed (`0d188a6`) |
 | `resolveRepositoryContext` rejected valid nested projects on macOS | git reports the physical toplevel (`/private/var/...`) while the caller sits under the logical path (`/var/...`); containment compared raw strings | Both sides canonicalized with `realpathSync` (`3789cdf`) — a product bug that would have hit any macOS user with a symlinked project path |
 | Darwin-only sandbox test failed | matched the pre-`518871b` error text that the error-standardization commit renamed; Windows host never executed the test | Expectation aligned with the standardized message; invariant unchanged (`59f859e`) |
+| CI failed even after the hash fix | `actions/checkout` defaults to a shallow clone, where the gate's default `HEAD~1` diff base does not exist; `skill:check` exited 4 (this is why the job had been red since July) | Workflow checkout uses `fetch-depth: 0` (`1a1e2c8`); `Skill quality` verified green on `macos-latest` |
 
 The Windows "100% coverage" reading was also re-interpreted: with ~58
 POSIX fixture tests skipped, their modules never loaded and were absent
@@ -153,9 +154,8 @@ diagnostics language change, in the same commit as the change.
 
 ## Recommended next steps
 
-1. Verify the `Skill quality` CI job turns green after the platform fixes
-   (`3789cdf`, `59f859e`, `0d188a6`) — it runs the same battery on
-   macos-latest.
+1. ~~Verify the `Skill quality` CI job turns green~~ ✅ Done — green on
+   `macos-latest` at `1a1e2c8` after the platform and checkout fixes.
 2. Authenticate the codex CLI, then run a real `quick` round
    (`npm run review -- --profile quick --round N --base HEAD~1 --agent codex`)
    to convert this engineering verification into a gate approval.
