@@ -377,7 +377,7 @@ test.describe('security boundaries', () => {
     const writeCanary = join(attestationDir, 'write-canary');
     writeFileSync(readCanary, 'trusted');
     const securityUtilsUrl = new URL('../lib/security-utils.mjs', import.meta.url).href;
-    const exactScript = `import(${JSON.stringify(securityUtilsUrl)}).then(({wrapCandidateCommand})=>{try{wrapCandidateCommand(process.execPath,['-e',''],{readOnlyRoots:[${JSON.stringify(PROJECT_ROOT)}],writeRoots:[${JSON.stringify(isolated)}],outerSandboxAttestation:{attested:true,readCanary:${JSON.stringify(readCanary)},writeCanary:${JSON.stringify(writeCanary)}},requireExactWriteIsolation:true});process.exit(6)}catch(error){process.exit(error.message.includes('exact write isolation is required')?0:7)}})`;
+    const exactScript = `import(${JSON.stringify(securityUtilsUrl)}).then(({wrapCandidateCommand})=>{try{wrapCandidateCommand(process.execPath,['-e',''],{readOnlyRoots:[${JSON.stringify(PROJECT_ROOT)}],writeRoots:[${JSON.stringify(isolated)}],outerSandboxAttestation:{attested:true,readCanary:${JSON.stringify(readCanary)},writeCanary:${JSON.stringify(writeCanary)}},requireExactWriteIsolation:true});process.exit(6)}catch(error){process.exit(error.message.includes('exact write isolation is unavailable')?0:7)}})`;
     const exactOuter = wrapCandidateCommand(process.execPath, ['-e', exactScript], {
       readOnlyRoots: [PROJECT_ROOT], writeRoots: [isolated], hostHome,
     });
