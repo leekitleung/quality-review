@@ -113,11 +113,12 @@ cat EXECUTION-PLAN.md | less
 
 | Metric | Current | Target | Status |
 |--------|---------|--------|--------|
-| Tests Passing | 134/135 (1 platform skip on Windows; 135/135 on macOS/Linux) | 100% | ✅ |
-| Coverage | 100% lines/branches/functions | 100% | ✅ |
+| Tests Passing | Windows: 134/135 (POSIX fixture suites skipped by guards); macOS: 195/195, 0 skip | 100% | ✅ |
+| Coverage | Full-suite macOS: 83.9/64.8/84.3 (thresholds 75/60/75); Windows "100%" was an artifact of skipped suites — see completion report Session 3 | ≥ thresholds | ✅ |
 | Windows Support | Documented (docs/WINDOWS-SETUP.md); gate fails closed by design | Documented | ✅ |
 | Configuration | Centralized (lib/config-constants.mjs) | Centralized | ✅ |
 | Error Messages | Standardized format (lib/error-messages.mjs), English diagnostics | Consistent | ✅ |
+| Skill distribution | Lock hash platform-independent (`0d188a6`); CI on macos-latest was red at `1f599ed`, fix committed | Host-independent | ✅ |
 | Documentation | TESTING.md, CONFIGURATION.md, WINDOWS-SETUP.md | Complete | ✅ |
 | Overall Quality | 9.2/10 baseline; Phase 2/3 improvements applied | 9.2+ | ✅ |
 
@@ -128,22 +129,28 @@ cat EXECUTION-PLAN.md | less
   - Task 2.1: Windows support documented (Option C — the candidate sandbox has no native Windows equivalent and fails closed by design); review-remediation commits also added Windows npm handling and CRLF tolerance
   - Task 2.2: `lib/config-constants.mjs` — TIMEOUTS, MAX_BUFFER, FILE_PERMISSIONS, SCAN_LIMITS; doctor/verify-package/verify-clean-candidate share the same module
   - Task 2.3: `lib/error-messages.mjs` standard format adopted for sandbox/repository errors; user-facing diagnostics translated to English (functional Chinese detection patterns intentionally kept)
-- **Phase 3** (Quality Enhancements): ◐ Partial 2026-10-05
-  - Task 3.1 (JSDoc/security-rationale pass): ⏳ Pending
+- **Phase 3** (Quality Enhancements): ✅ Complete 2026-10-05
+  - Task 3.1: ✅ Security invariants documented in sandbox, runtime, and gate code (`3b11365`); `docs/CONTRIBUTING.md` standards
   - Task 3.2: ✅ `scripts/verify-dependencies.mjs` + doctor integration (node >= 22, git >= 2.30; injected-runner tests)
   - Task 3.3: ✅ `docs/TESTING.md`
-- **Phase 4** (Validation): ◐ Partial — tests/coverage/typecheck/skill:check/doctor/build/test:e2e all green on Windows; macOS/Linux CI run, doc accuracy sweep, and the completion report remain
+- **Phase 4** (Validation): ◐ Partial — Windows + macOS batteries green; real gate round blocked on reviewer CLI authentication
 
-### Verification Log (2026-10-05, Windows native)
+### Verification Log (2026-10-05, macOS native — cross-platform checkpoint)
+
+Full POSIX fixture suite ran here (Windows skips ~58 guarded tests), which
+surfaced and fixed three cross-platform defects: the host-dependent skill
+lock hash that failed CI's `skill:check` on macos-latest (`0d188a6`), a
+`resolveRepositoryContext` symlink-path rejection (`3789cdf`), and one stale
+darwin-only error-text expectation (`59f859e`).
 
 ```
-npm test             # 135 tests: 134 pass, 0 fail, 1 skip
-npm run coverage     # 100.00 lines / 100.00 branches / 100.00 functions
+npm test             # 195 tests: 195 pass, 0 fail, 0 skip
+npm run coverage     # 83.90 lines / 64.78 branches / 84.26 functions (thresholds 75/60/75)
 npm run lint         # syntax checked: 50 files
-npm run skill:check-drift  # in sync (14 adapters)
-npm run build        # package artifact verified: 150 files
-npm run test:e2e     # pass (POSIX e2e skips on win32)
-npm run doctor       # PASS node/git floors; Agent CLI fails only if no CLI installed
+npm run skill:check  # in sync (14 adapters) + gate dry-run OK
+npm run build        # package artifact verified
+npm run test:e2e     # 4/4 pass
+npm run doctor       # PASS node/git floors; codex CLI 0.153.4 present, NOT authenticated
 ```
 
 ---

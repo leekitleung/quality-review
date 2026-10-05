@@ -13,12 +13,12 @@
 | Phase 1 — Critical fixes | ✅ Complete (2026-10-04, commit `43c456a`) |
 | Phase 2 — Platform compatibility | ✅ Complete (2026-10-05) |
 | Phase 3 — Quality enhancements | ✅ Complete (Tasks 3.1–3.3 all delivered) |
-| Phase 4 — Validation & sign-off | ✅ Complete on Windows; macOS/Linux CI run still pending |
-| Tests | 135 total: **134 pass, 0 fail, 1 platform skip** on Windows; full suite expected on macOS/Linux/WSL2 |
-| Coverage | **100% lines / 100% branches / 100% functions** |
+| Phase 4 — Validation & sign-off | ✅ Windows + macOS batteries green; real gate round still pending reviewer authentication |
+| Tests | Windows: 134/135 (POSIX fixture suites skipped by platform guards); macOS (2026-10-05): **195/195, 0 fail, 0 skip** |
+| Coverage | Windows reading of 100% was an artifact of skipped suites (their modules never loaded); full-suite macOS run: **83.9 lines / 64.8 branches / 84.3 functions**, above the configured 75/60/75 thresholds |
 | Typecheck | 50 files, syntax clean |
-| Package build | `quality-review-skills-1.0.0.tgz` verified (151 files) |
-| Skill distribution | In sync (14 adapters, lock hash refreshed) |
+| Package build | `quality-review-skills-1.0.0.tgz` verified |
+| Skill distribution | In sync (14 adapters); lock hash made platform-independent on 2026-10-05 (`0d188a6`) after it was found host-dependent |
 
 Per the skill's own P4.1 policy (`skills/release-quality-review/SKILL.md`),
 this report is **engineering verification only, not a quality-gate approval**.
@@ -53,6 +53,24 @@ planned work executed:
 | 4.2 Documentation review | All referenced files verified to exist; stale test counts corrected in three guides | `1b8b9bc` |
 | 4.1 Integration validation | Full battery below, all green | (this report) |
 
+**Session 3 (2026-10-05, macOS native — the plan's cross-platform
+checkpoint).** The GitHub Actions `Skill quality` job (macos-latest) was
+already red on `1f599ed` at the `skill:check` step, and running the battery
+locally reproduced it plus two more findings, all fixed:
+
+| Finding | Root cause | Fix |
+|---|---|---|
+| CI `skill:check` failed on macOS ("Skill drift detected") | `sync-skills.mjs` hashed `path.relative()` output (host separators) and raw bytes (CRLF on autocrlf checkouts), so the lock hash was host-dependent | POSIX-normalized paths + LF-folded content before hashing; adapter drift comparison normalized likewise; 2 spawned-CLI regression tests; lock recomputed (`0d188a6`) |
+| `resolveRepositoryContext` rejected valid nested projects on macOS | git reports the physical toplevel (`/private/var/...`) while the caller sits under the logical path (`/var/...`); containment compared raw strings | Both sides canonicalized with `realpathSync` (`3789cdf`) — a product bug that would have hit any macOS user with a symlinked project path |
+| Darwin-only sandbox test failed | matched the pre-`518871b` error text that the error-standardization commit renamed; Windows host never executed the test | Expectation aligned with the standardized message; invariant unchanged (`59f859e`) |
+
+The Windows "100% coverage" reading was also re-interpreted: with ~58
+POSIX fixture tests skipped, their modules never loaded and were absent
+from the coverage table, so the remaining loaded files happened to read
+100%. The full macOS suite shows the real profile (83.9/64.8/84.3,
+thresholds 75/60/75). The plan's Phase 1 "coverage held at 100%" claims
+refer to the same Windows-only reading.
+
 ## Validation battery (2026-10-05, Windows native)
 
 ```
@@ -70,12 +88,30 @@ npm run reports:retention-check -- --days 30   # informational: round-051 listed
 this host — an environment fact, not a defect. It blocks running a real gate
 round here, which is why sign-off below is engineering-only.
 
+## Validation battery (2026-10-05, macOS native — arm64, Node 22.22.2, git 2.49.0)
+
+```
+npm test                    # 195 tests: 195 pass, 0 fail, 0 skip (full POSIX fixture suite)
+npm run coverage            # 83.90 lines / 64.78 branches / 84.26 functions (thresholds 75/60/75)
+npm run lint                # syntax checked: 50 files
+npm run test:e2e            # 4/4 pass
+npm run build               # package artifact verified
+npm run skill:check         # drift in sync + reviewer discovery + gate dry-run OK (after 0d188a6)
+npm run doctor              # PASS node >= 22.0.0, git >= 2.30.0; codex CLI 0.153.4 present but NOT authenticated
+```
+
+Unlike the Windows run, this battery exercised the POSIX fixture suites and
+the darwin-only sandbox tests, and it found the three issues above before
+the fixes; the post-fix run above is clean.
+
 ## Metrics
 
 | Metric | Before (2026-10-04) | After (2026-10-05) | Change |
 |---|---|---|---|
 | Tests passing (Windows) | 121/122, 0 fail | 134/135, 0 fail | +13 tests, suite green |
-| Coverage | 100% | 100% | held |
+| Tests passing (macOS full suite) | not run | 195/195, 0 fail | cross-platform checkpoint |
+| Coverage (full suite, macOS reading) | not measured | 83.9 / 64.8 / 84.3 vs 75/60/75 thresholds | real profile visible |
+| Coverage (Windows reading) | 100% | 100% | artifact of skipped suites; see Session 3 |
 | Hardcoded timeouts | 30+ sites, 6 files+ | 0 (centralized) | ✅ |
 | Error format | ad-hoc, mixed language | standard + English diagnostics | ✅ |
 | Platform documentation | none | matrix + setup guide | ✅ |
@@ -86,7 +122,10 @@ round here, which is why sign-off below is engineering-only.
 
 **Code**: `lib/config-constants.mjs`, `lib/error-messages.mjs`,
 `scripts/verify-dependencies.mjs`, doctor integration, 12 commits total
-(`43c456a..1b8b9bc`, 46 files, +3497/−179 including docs).
+(`43c456a..1b8b9bc`, 46 files, +3497/−179 including docs). Session 3 added
+`3789cdf` (repository-context canonicalization), `59f859e` (darwin test
+expectation), `0d188a6` (platform-independent lock hash + 2 regression
+tests).
 
 **Documentation**: `docs/TESTING.md`, `docs/CONFIGURATION.md`,
 `docs/WINDOWS-SETUP.md`, `docs/CONTRIBUTING.md`, README platform section,
@@ -101,21 +140,28 @@ diagnostics language change, in the same commit as the change.
 1. **Windows sandbox**: the gate fails closed on win32 by design; there is no
    native Windows sandbox and no plan to add one. macOS or an attested Linux
    container is required for evidence collection (`docs/WINDOWS-SETUP.md`).
-2. **No macOS/Linux run in this window**: the suite's POSIX behavior is covered
-   by design (guards + cross-platform assertions) but not re-executed here.
-3. **Retention backlog**: `round-051` (2026-07-21) exceeds the 30-day window;
-   remove it through the approved retention workflow when appropriate.
-4. **No gate round executed**: requires an authenticated Agent CLI; see P4.1
-   note above.
+2. **Linux not re-executed**: macOS (native + CI runner) is the POSIX
+   checkpoint of record; Linux behavior is covered by the same guarded suite
+   but was not re-run on a Linux host in this window.
+3. **Retention backlog**: the macOS host holds 108 report rounds whose
+   modified time exceeds the 30-day window (July 2026 review/test artifacts,
+   gitignored); removal is pending a scope decision through the approved
+   `reports:retention-check --delete` workflow.
+4. **No gate round executed**: the macOS host has the codex CLI (0.153.4) but
+   it is not authenticated; a real review round stays blocked until a
+   reviewer CLI is logged in on a sandbox-capable host. See P4.1 note above.
 
 ## Recommended next steps
 
-1. Push the branch and run CI on macOS/Linux (the plan's cross-platform
-   checkpoint).
-2. Run a real `quick` round (`npm run review -- --profile quick --round N
-   --base HEAD~1 --agent codex`) on a capable host to convert this engineering
-   verification into a gate approval.
-3. Schedule the retention cleanup of `round-051`.
+1. Verify the `Skill quality` CI job turns green after the platform fixes
+   (`3789cdf`, `59f859e`, `0d188a6`) — it runs the same battery on
+   macos-latest.
+2. Authenticate the codex CLI, then run a real `quick` round
+   (`npm run review -- --profile quick --round N --base HEAD~1 --agent codex`)
+   to convert this engineering verification into a gate approval.
+3. Decide the retention-cleanup scope for the 108 expired local report
+   rounds and execute it via `npm run reports:retention-check -- --delete
+   --confirm DELETE-EXPIRED-ROUNDS`.
 
 ---
 
