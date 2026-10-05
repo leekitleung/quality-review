@@ -13,7 +13,7 @@
  * 5. parseYamlResult - result.yaml parsing (from production code)
  */
 
-import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, rmdirSync, symlinkSync, mkdtempSync, cpSync } from 'fs';
+import { chmodSync, copyFileSync, readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, rmSync, rmdirSync, symlinkSync, mkdtempSync, cpSync } from 'fs';
 import { join, relative } from 'path';
 import { tmpdir, userInfo } from 'node:os';
 import { fileURLToPath } from 'url';
@@ -756,7 +756,7 @@ test('repository context preserves a nested project path', () => {
   mkdirSync(projectRoot, { recursive: true });
   spawnSync('git', ['init', '--quiet'], { cwd: repositoryRoot });
   const context = resolveRepositoryContext(projectRoot);
-  assertEqual(context.repositoryRoot, repositoryRoot);
+  assertEqual(context.repositoryRoot, realpathSync(repositoryRoot));
   assertEqual(context.projectRelative, join('apps', 'sticky-card'));
 });
 

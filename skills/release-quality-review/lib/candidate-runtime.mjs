@@ -1,5 +1,5 @@
 import { execFileSync as nodeExecFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import {
@@ -21,10 +21,14 @@ import { gateError } from './error-messages.mjs';
  * @throws {Error} When the path is not contained by its repository.
  */
 export function resolveRepositoryContext(projectRoot, gitExecFile = nodeExecFileSync) {
-  const projectPath = resolve(projectRoot);
-  const repositoryRoot = resolve(gitExecFile('git', ['rev-parse', '--show-toplevel'], {
+  // SECURITY: both sides are canonicalized before comparison. Git reports the
+  // physical toplevel (macOS resolves /var -> /private/var, plus user-level
+  // symlinks), while the caller may sit under a logical path; comparing the
+  // raw strings would wrongly reject a legitimate nested project root.
+  const projectPath = realpathSync(resolve(projectRoot));
+  const repositoryRoot = realpathSync(resolve(gitExecFile('git', ['rev-parse', '--show-toplevel'], {
     cwd: projectPath, encoding: 'utf8', timeout: TIMEOUTS.GIT_OPERATION,
-  }).trim());
+  }).trim()));
   const projectRelative = relative(repositoryRoot, projectPath);
   if (!isPathWithin(repositoryRoot, projectPath) || isAbsolute(projectRelative)) {
     throw gateError('Repository', 'context resolution',
