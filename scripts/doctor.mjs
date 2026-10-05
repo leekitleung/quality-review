@@ -2,6 +2,7 @@
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants } from 'node:fs';
 import { TIMEOUTS } from '../skills/release-quality-review/lib/config-constants.mjs';
+import { checkDependency, REQUIRED_DEPENDENCIES } from './verify-dependencies.mjs';
 
 const args = process.argv.slice(2);
 const agentIndex = args.indexOf('--agent');
@@ -14,7 +15,11 @@ if ((agentIndex >= 0 && !agent) || args.some((arg, index) => arg.startsWith('-')
 
 const checks = [];
 const record = (name, passed, detail) => checks.push({ name, passed, detail });
-record('Node.js 22+', Number(process.versions.node.split('.')[0]) >= 22, process.version);
+for (const dependency of REQUIRED_DEPENDENCIES) {
+  const result = checkDependency(dependency);
+  record(`${dependency.command} >= ${dependency.minimum}`, result.compatible,
+    result.version || result.error || 'not found');
+}
 const git = spawnSync('git', ['rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' });
 record('Git checkout', git.status === 0 && git.stdout.trim() === 'true', git.stderr.trim() || git.stdout.trim());
 try {
